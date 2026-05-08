@@ -30,6 +30,60 @@ warn()  { echo -e "  ${YELLOW}!!${NC}  $*"; }
 error() { echo -e "${RED}[x]${NC} $*" >&2; }
 step()  { echo -e "\n${CYAN}${BOLD}── $* ──${NC}"; }
 
+repo_has_local_changes() {
+  local repo_dir="${1:?repo_has_local_changes: missing repo dir}"
+  [ -n "$(git -C "$repo_dir" status --porcelain --untracked-files=all 2>/dev/null || true)" ]
+}
+
+repo_current_branch() {
+  local repo_dir="${1:?repo_current_branch: missing repo dir}"
+  git -C "$repo_dir" symbolic-ref --quiet --short HEAD 2>/dev/null || printf 'detached\n'
+}
+
+update_existing_repo_checkout() {
+  local repo_dir="${1:?update_existing_repo_checkout: missing repo dir}"
+  local current_branch
+  local local_head
+  local remote_head
+
+  info "Found existing git repository at $repo_dir"
+
+  if repo_has_local_changes "$repo_dir"; then
+    warn "Local changes detected in $repo_dir — skipping bootstrap git update."
+    return 0
+  fi
+
+  current_branch="$(repo_current_branch "$repo_dir")"
+  if [ "$current_branch" != "$REPO_BRANCH" ]; then
+    warn "Repository is on '$current_branch'; bootstrap will not switch to '$REPO_BRANCH' automatically."
+    return 0
+  fi
+
+  if ! git -C "$repo_dir" fetch --quiet origin "$REPO_BRANCH"; then
+    warn "Could not fetch origin/$REPO_BRANCH — continuing with the current checkout."
+    return 0
+  fi
+
+  if ! git -C "$repo_dir" rev-parse --verify "refs/remotes/origin/$REPO_BRANCH" >/dev/null 2>&1; then
+    warn "Remote branch origin/$REPO_BRANCH is unavailable after fetch — continuing with the current checkout."
+    return 0
+  fi
+
+  local_head="$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || true)"
+  remote_head="$(git -C "$repo_dir" rev-parse "origin/$REPO_BRANCH" 2>/dev/null || true)"
+  if [ -n "$local_head" ] && [ "$local_head" = "$remote_head" ]; then
+    info "Existing installation is already up to date"
+    return 0
+  fi
+
+  if git -C "$repo_dir" merge --ff-only "origin/$REPO_BRANCH" >/dev/null 2>&1; then
+    info "Fast-forwarded existing installation to origin/$REPO_BRANCH"
+    return 0
+  fi
+
+  warn "Existing checkout is not a clean fast-forward to origin/$REPO_BRANCH — continuing without updating."
+}
+
 # ── Defaults ───────────────────────────────────────────────────────────────
 GNSS_FLAG=""
 GPS_FLAG=""
@@ -100,10 +154,7 @@ fi
 step "Preparing MowgliNext"
 
 if [ -d "$INSTALL_DIR/.git" ]; then
-  info "Updating existing installation at $INSTALL_DIR"
-  git -C "$INSTALL_DIR" fetch origin
-  git -C "$INSTALL_DIR" checkout "$REPO_BRANCH" 2>/dev/null || true
-  git -C "$INSTALL_DIR" pull origin "$REPO_BRANCH"
+  update_existing_repo_checkout "$INSTALL_DIR"
 elif [ -d "$INSTALL_DIR" ]; then
   warn "$INSTALL_DIR exists but is not a git repo — backing up"
   mv "$INSTALL_DIR" "${INSTALL_DIR}.bak.$(date +%s)"

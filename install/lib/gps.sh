@@ -58,6 +58,12 @@ configure_gps() {
   GPS_DEBUG_UART_RULE=""
   : "${GNSS_BACKEND:=gps}"
 
+  if [[ "${GNSS_BACKEND:-}" == "nmea" ]]; then
+    warn_legacy_nmea_backend_once
+    GNSS_BACKEND="gps"
+    GPS_PROTOCOL="NMEA"
+  fi
+
   # If preset values exist (from web composer or CLI), skip interactive prompts
   if [[ "${PRESET_LOADED:-false}" == "true" && -n "${GNSS_BACKEND:-}" && -n "${GPS_CONNECTION:-}" && -n "${GPS_PROTOCOL:-}" ]]; then
     if ! is_supported_gnss_backend "${GNSS_BACKEND}"; then
@@ -101,10 +107,9 @@ configure_gps() {
 
     echo ""
     echo "Select GNSS backend:"
-    echo "  1) Generic GPS (legacy, UBX-only despite the name)"
+    echo "  1) Generic GPS (legacy container, UBX or NMEA)"
     echo "  2) u-blox (F9P, UBX HP + NTRIP bundled)"
     echo "  3) Unicore (UM98x)"
-    echo "  4) Generic NMEA (any NMEA-0183 receiver, UART or USB)"
     prompt "$MSG_CHOICE" "1"
     local gnss_choice="$REPLY"
 
@@ -117,9 +122,6 @@ configure_gps() {
         ;;
       3)
         GNSS_BACKEND="unicore"
-        ;;
-      4)
-        GNSS_BACKEND="nmea"
         ;;
       *)
         error "Invalid GNSS backend choice"
@@ -182,7 +184,7 @@ configure_gps() {
         ;;
       2)
         GPS_PROTOCOL="NMEA"
-        GPS_BAUD="115200"
+        GPS_BAUD="9600"
         ;;
       *)
         error "$MSG_GPS_INVALID_PROTOCOL"
@@ -190,11 +192,9 @@ configure_gps() {
         ;;
     esac
 
-    # Generic NMEA backend forces NMEA protocol and prompts for baud
-    # since NMEA receivers vary widely (9600 default, 38400/115200 common
-    # for higher rates).
-    if [ "$GNSS_BACKEND" = "nmea" ]; then
-      GPS_PROTOCOL="NMEA"
+    # Generic GPS in NMEA mode prompts for baud since NMEA receivers vary
+    # widely (9600 default, 38400/115200 common for higher rates).
+    if [ "$GNSS_BACKEND" = "gps" ] && [ "$GPS_PROTOCOL" = "NMEA" ]; then
       echo ""
       echo "NMEA baud rate (typical: 9600, 38400, 115200):"
       prompt "$MSG_CHOICE" "9600"

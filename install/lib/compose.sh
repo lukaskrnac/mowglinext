@@ -69,9 +69,6 @@ build_compose_stack() {
       gnss_unicore)
         COMPOSE_FILES+=("$COMPOSE_SRC_DIR/docker-compose.unicore.yaml")
         ;;
-      gnss_nmea)
-        COMPOSE_FILES+=("$COMPOSE_SRC_DIR/docker-compose.nmea.yaml")
-        ;;
       *)
         error "No compose fragment mapped for GNSS backend: ${gnss_backend}"
         return 1

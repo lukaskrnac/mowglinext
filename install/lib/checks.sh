@@ -8,7 +8,6 @@ container_name_for_service() {
     gps)          printf 'mowgli-gps\n' ;;
     gnss_ublox)   printf 'mowgli-gps\n' ;;
     gnss_unicore) printf 'mowgli-gps\n' ;;
-    gnss_nmea)    printf 'mowgli-gps\n' ;;
     lidar)        printf 'mowgli-lidar\n' ;;
     gui)          printf 'mowgli-gui\n' ;;
     mosquitto)    printf 'mowgli-mqtt\n' ;;
@@ -268,8 +267,13 @@ check_gps() {
   : "${GNSS_BACKEND:=gps}"
   local gnss_backend
   local gps_container
+  local gps_protocol="${GPS_PROTOCOL:-UBX}"
 
   gnss_backend="$(effective_gnss_backend 2>/dev/null || true)"
+
+  if [[ "${GNSS_BACKEND:-}" == "nmea" ]]; then
+    gps_protocol="NMEA"
+  fi
 
   if [[ "${HARDWARE_BACKEND:-mowgli}" == "mavros" ]]; then
     info "MAVROS backend: GPS is handled through Pixhawk/MAVROS"
@@ -391,8 +395,8 @@ check_gps() {
     info "GNSS backend ${gnss_backend}: direct /gps/fix check passed"
   fi
 
-  if [[ "$gnss_backend" == "nmea" ]]; then
-    info "GNSS backend nmea: skipping bundled NTRIP check"
+  if [[ "$gnss_backend" == "gps" && "$gps_protocol" == "NMEA" ]]; then
+    info "GPS protocol NMEA on the generic gps backend: skipping bundled NTRIP check"
   else
     local ntrip_logs
     ntrip_logs="$(docker_cmd logs "$gps_container" --tail 80 2>&1 || true)"

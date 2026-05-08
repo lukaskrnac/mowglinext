@@ -149,6 +149,7 @@ assert_contains "--help shows usage" "Usage:" "$help_output"
 assert_contains "--help shows --gps" "--gps=PRESET" "$help_output"
 assert_contains "--help shows --lidar" "--lidar=PRESET" "$help_output"
 assert_contains "--help shows --tfluna" "--tfluna=PRESET" "$help_output"
+assert_not_contains "--help does not advertise gnss=nmea" "nmea (generic NMEA-0183)" "$help_output"
 
 # =============================================================================
 # Test 2: Preset file generation — GPS presets

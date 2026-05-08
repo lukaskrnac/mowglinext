@@ -2,13 +2,12 @@
 # =============================================================================
 # A.4 GPS backend matrix
 #
-# The installer supports four direct GNSS backends:
+# The installer supports three direct GNSS backends:
 #   gps     — generic legacy GPS container       (docker-compose.gps.yml)
 #   ublox   — u-blox F9P (ublox_dgnss launch)    (docker-compose.ublox.yaml)
 #   unicore — Unicore UM98x (unicore_gnss launch)(docker-compose.unicore.yaml)
-#   nmea    — generic NMEA-0183 receiver         (docker-compose.nmea.yaml)
-# Each must select the right compose fragment AND propagate the protocol
-# (UBX/NMEA) and connection (USB/UART) into .env.
+# Generic NMEA receivers are modeled as GNSS_BACKEND=gps with
+# GPS_PROTOCOL=NMEA, not as a separate GNSS backend.
 # =============================================================================
 
 set -uo pipefail
@@ -60,25 +59,14 @@ harness_set_preset gnss=gps gps=nmea-uart lidar=none tfluna=none
 harness_run >/dev/null 2>&1
 assert_eq "nmea/uart: GPS_PROTOCOL=NMEA" "NMEA"   "$(env_value "$repo" GPS_PROTOCOL)"
 assert_eq "nmea/uart: GPS_BAUD=115200"   "115200" "$(env_value "$repo" GPS_BAUD)"
-
-# ── Generic NMEA backend ───────────────────────────────────────────────────
-section "gnss=nmea (generic NMEA backend)"
-
-repo="$SANDBOX/repo_gnss_nmea"
-sandbox_repo "$repo"
-harness_init "$repo"
-harness_set_preset gnss=nmea gps=nmea-uart lidar=none tfluna=none
-if harness_run; then pass "harness_run gnss=nmea"; else fail "harness_run gnss=nmea"; fi
-assert_eq "gnss=nmea: GNSS_BACKEND=nmea" "nmea" "$(env_value "$repo" GNSS_BACKEND)"
-assert_eq "gnss=nmea: GPS_PROTOCOL=NMEA" "NMEA" "$(env_value "$repo" GPS_PROTOCOL)"
-nmea_fragments=$(selected_fragments_in_current_run)
-case "$nmea_fragments" in
-  *docker-compose.nmea.yaml*) pass "gnss=nmea: nmea fragment present" ;;
-  *)                          fail "gnss=nmea: nmea fragment present" "got: $nmea_fragments" ;;
+gps_nmea_fragments=$(selected_fragments_in_current_run)
+case "$gps_nmea_fragments" in
+  *docker-compose.gps.yml*)  pass "nmea/uart: gps fragment present" ;;
+  *)                         fail "nmea/uart: gps fragment present" "got: $gps_nmea_fragments" ;;
 esac
-case "$nmea_fragments" in
-  *docker-compose.gps.yml*) fail "gnss=nmea: NO legacy gps fragment" "legacy gps leaked when nmea selected" ;;
-  *)                        pass "gnss=nmea: NO legacy gps fragment" ;;
+case "$gps_nmea_fragments" in
+  *docker-compose.nmea.yaml*) fail "nmea/uart: NO dormant nmea fragment" "nmea fragment leaked when protocol NMEA selected on gps backend" ;;
+  *)                          pass "nmea/uart: NO dormant nmea fragment" ;;
 esac
 
 # ── UBX over USB ───────────────────────────────────────────────────────────

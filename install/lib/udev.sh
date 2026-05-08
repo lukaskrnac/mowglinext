@@ -91,8 +91,12 @@ EOF
 build_dynamic_udev_rules() {
   local by_id_path
   local gnss_backend
+  local gps_protocol="${GPS_PROTOCOL:-UBX}"
 
   gnss_backend="$(effective_gnss_backend 2>/dev/null || true)"
+  if [[ "${GNSS_BACKEND:-}" == "nmea" ]]; then
+    gps_protocol="NMEA"
+  fi
 
   echo "# ========================================================="
   echo "# Mowgli II - dynamic rules from current hardware selection"
@@ -120,10 +124,17 @@ build_dynamic_udev_rules() {
       emit_by_id_udev_rule "$GPS_BY_ID" "gps"
     elif [ "${HARDWARE_BACKEND:-mowgli}" != "mavros" ]; then
       case "$gnss_backend" in
-        gps|ublox)
+        gps)
+          if [[ "$gps_protocol" != "NMEA" ]]; then
+            by_id_path="$(find_serial_by_id "*u-blox*" "*ublox*" || true)"
+          else
+            by_id_path=""
+          fi
+          ;;
+        ublox)
           by_id_path="$(find_serial_by_id "*u-blox*" "*ublox*" || true)"
           ;;
-        unicore|nmea)
+        unicore)
           by_id_path=""
           ;;
         *)

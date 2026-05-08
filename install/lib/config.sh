@@ -170,8 +170,29 @@ effective_vesc_enabled() {
   return 1
 }
 
+warn_legacy_nmea_backend_once() {
+  if [ "${LEGACY_GNSS_NMEA_WARNING_SHOWN:-false}" = "true" ]; then
+    return 0
+  fi
+
+  warn "Legacy GNSS_BACKEND=nmea detected — normalizing to GNSS_BACKEND=gps with GPS_PROTOCOL=NMEA."
+  LEGACY_GNSS_NMEA_WARNING_SHOWN=true
+}
+
+normalize_gnss_backend() {
+  local backend="${1:-}"
+
+  if [[ "$backend" == "nmea" ]]; then
+    warn_legacy_nmea_backend_once
+    printf 'gps\n'
+    return 0
+  fi
+
+  printf '%s\n' "$backend"
+}
+
 list_supported_gnss_backends() {
-  local backends="gps ublox unicore nmea"
+  local backends="gps ublox unicore"
   if [[ "${HARDWARE_BACKEND:-mowgli}" == "mavros" ]]; then
     printf '%s disabled\n' "$backends"
   else
@@ -183,7 +204,7 @@ is_supported_gnss_backend() {
   local backend="${1:-}"
 
   case "$backend" in
-    gps|ublox|unicore|nmea)
+    gps|ublox|unicore)
       return 0
       ;;
     disabled)
@@ -198,6 +219,8 @@ is_supported_gnss_backend() {
 
 effective_gnss_backend() {
   local backend="${1:-${GNSS_BACKEND:-gps}}"
+
+  backend="$(normalize_gnss_backend "$backend")"
 
   if [[ "${HARDWARE_BACKEND:-mowgli}" == "mavros" ]]; then
     printf 'disabled\n'
@@ -220,9 +243,6 @@ compose_gnss_service_name() {
       ;;
     unicore)
       printf 'gnss_unicore\n'
-      ;;
-    nmea)
-      printf 'gnss_nmea\n'
       ;;
     disabled)
       return 0
@@ -258,11 +278,11 @@ parse_args() {
         CLI_PRESET=true
         local gnss_spec="${1#*=}"
         case "$gnss_spec" in
-          gps|ublox|unicore|nmea)
+          gps|ublox|unicore)
             GNSS_BACKEND="$gnss_spec"
             ;;
           *)
-            error "Unknown GNSS backend: $gnss_spec (expected gps|ublox|unicore|nmea)"
+            error "Unknown GNSS backend: $gnss_spec (expected gps|ublox|unicore)"
             exit 1
             ;;
         esac

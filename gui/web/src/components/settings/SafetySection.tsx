@@ -1,7 +1,6 @@
 import React from "react";
-import { Alert, Card, Col, Form, InputNumber, Row, Space, Switch, Typography } from "antd";
-import { SafetyOutlined, WarningOutlined } from "@ant-design/icons";
-import { useThemeMode } from "../../theme/ThemeContext.tsx";
+import { Alert, Card, Col, Form, InputNumber, Row, Typography } from "antd";
+import { WarningOutlined } from "@ant-design/icons";
 
 const { Text, Paragraph } = Typography;
 
@@ -11,8 +10,6 @@ type Props = {
 };
 
 export const SafetySection: React.FC<Props> = ({ values, onChange }) => {
-    const { colors } = useThemeMode();
-
     return (
         <div>
             <Alert

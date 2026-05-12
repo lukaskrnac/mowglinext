@@ -25,7 +25,7 @@ install_all_mocks
 SANDBOX_REPO="$SANDBOX/repo"
 sandbox_repo "$SANDBOX_REPO"
 harness_init "$SANDBOX_REPO"
-harness_set_preset gps=ubx-uart lidar=ldlidar-uart tfluna=front
+harness_set_preset gps=ubx-uart lidar=ldlidar-uart tfluna=none
 
 if ! harness_run; then
   fail "harness_run for default preset" "non-zero exit"
@@ -49,6 +49,9 @@ REQUIRED_KEYS=(
   GPS_PORT
   GPS_BAUD
   GPS_UART_DEVICE
+  UNICORE_COM_PORT
+  UBLOX_DEVICE_FAMILY
+  UBLOX_DEVICE_SERIAL_STRING
   GPS_DEBUG_ENABLED
   GPS_DEBUG_PORT
   GPS_DEBUG_BAUD
@@ -92,14 +95,14 @@ section ".env values match the requested preset"
 
 ENV_CONTENT="$(cat "$ENV_FILE")"
 assert_contains "GPS_PROTOCOL=UBX (preset)" "GPS_PROTOCOL=UBX" "$ENV_CONTENT"
-assert_contains "GPS_BAUD=460800 (preset)" "GPS_BAUD=460800" "$ENV_CONTENT"
+assert_contains "GPS_BAUD=921600 (runtime target)" "GPS_BAUD=921600" "$ENV_CONTENT"
 assert_contains "GPS_CONNECTION=uart (preset)" "GPS_CONNECTION=uart" "$ENV_CONTENT"
 assert_contains "LIDAR_TYPE=ldlidar (preset)" "LIDAR_TYPE=ldlidar" "$ENV_CONTENT"
 assert_contains "LIDAR_BAUD=230400 (preset)" "LIDAR_BAUD=230400" "$ENV_CONTENT"
 assert_contains "HARDWARE_BACKEND=mowgli (default)" "HARDWARE_BACKEND=mowgli" "$ENV_CONTENT"
 assert_contains "GNSS_BACKEND=gps (default)" "GNSS_BACKEND=gps" "$ENV_CONTENT"
-assert_contains "TFLUNA_FRONT_ENABLED=true (preset)" "TFLUNA_FRONT_ENABLED=true" "$ENV_CONTENT"
-assert_contains "TFLUNA_EDGE_ENABLED=false (preset)" "TFLUNA_EDGE_ENABLED=false" "$ENV_CONTENT"
+assert_contains "TFLUNA_FRONT_ENABLED=false (default)" "TFLUNA_FRONT_ENABLED=false" "$ENV_CONTENT"
+assert_contains "TFLUNA_EDGE_ENABLED=false (default)" "TFLUNA_EDGE_ENABLED=false" "$ENV_CONTENT"
 
 section ".env image references point at ghcr.io"
 
@@ -115,7 +118,7 @@ done
 
 section ".env permissions are reasonable"
 
-mode=$(stat -f '%A' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE" 2>/dev/null)
+mode=$(stat -c '%a' "$ENV_FILE" 2>/dev/null || stat -f '%A' "$ENV_FILE" 2>/dev/null)
 case "$mode" in
   6??|644|640|600) pass ".env permissions ($mode)" ;;
   *)               fail ".env permissions ($mode)" "expected 6xx, got $mode" ;;

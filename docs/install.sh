@@ -30,11 +30,66 @@ warn()  { echo -e "  ${YELLOW}!!${NC}  $*"; }
 error() { echo -e "${RED}[x]${NC} $*" >&2; }
 step()  { echo -e "\n${CYAN}${BOLD}── $* ──${NC}"; }
 
+repo_has_local_changes() {
+  local repo_dir="${1:?repo_has_local_changes: missing repo dir}"
+  [ -n "$(git -C "$repo_dir" status --porcelain --untracked-files=all 2>/dev/null || true)" ]
+}
+
+repo_current_branch() {
+  local repo_dir="${1:?repo_current_branch: missing repo dir}"
+  git -C "$repo_dir" symbolic-ref --quiet --short HEAD 2>/dev/null || printf 'detached\n'
+}
+
+update_existing_repo_checkout() {
+  local repo_dir="${1:?update_existing_repo_checkout: missing repo dir}"
+  local current_branch
+  local local_head
+  local remote_head
+
+  info "Found existing git repository at $repo_dir"
+
+  if repo_has_local_changes "$repo_dir"; then
+    warn "Local changes detected in $repo_dir — skipping bootstrap git update."
+    return 0
+  fi
+
+  current_branch="$(repo_current_branch "$repo_dir")"
+  if [ "$current_branch" != "$REPO_BRANCH" ]; then
+    warn "Repository is on '$current_branch'; bootstrap will not switch to '$REPO_BRANCH' automatically."
+    return 0
+  fi
+
+  if ! git -C "$repo_dir" fetch --quiet origin "$REPO_BRANCH"; then
+    warn "Could not fetch origin/$REPO_BRANCH — continuing with the current checkout."
+    return 0
+  fi
+
+  if ! git -C "$repo_dir" rev-parse --verify "refs/remotes/origin/$REPO_BRANCH" >/dev/null 2>&1; then
+    warn "Remote branch origin/$REPO_BRANCH is unavailable after fetch — continuing with the current checkout."
+    return 0
+  fi
+
+  local_head="$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || true)"
+  remote_head="$(git -C "$repo_dir" rev-parse "origin/$REPO_BRANCH" 2>/dev/null || true)"
+  if [ -n "$local_head" ] && [ "$local_head" = "$remote_head" ]; then
+    info "Existing installation is already up to date"
+    return 0
+  fi
+
+  if git -C "$repo_dir" merge --ff-only "origin/$REPO_BRANCH" >/dev/null 2>&1; then
+    info "Fast-forwarded existing installation to origin/$REPO_BRANCH"
+    return 0
+  fi
+
+  warn "Existing checkout is not a clean fast-forward to origin/$REPO_BRANCH — continuing without updating."
+}
+
 # ── Defaults ───────────────────────────────────────────────────────────────
 GNSS_FLAG=""
 GPS_FLAG=""
 LIDAR_FLAG=""
 TFLUNA_FLAG=""
+BACKEND_FLAG=""
 
 REPO_URL="https://github.com/cedbossneo/mowglinext.git"
 REPO_BRANCH="main"
@@ -43,6 +98,7 @@ INSTALL_DIR="${MOWGLI_HOME:-$HOME/mowglinext}"
 # ── Parse flags ────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --backend=*) BACKEND_FLAG="${1#--backend=}"; shift ;;
     --gnss=*)    GNSS_FLAG="${1#--gnss=}"; shift ;;
     --gps=*)     GPS_FLAG="${1#--gps=}"; shift ;;
     --lidar=*)   LIDAR_FLAG="${1#--lidar=}"; shift ;;
@@ -52,9 +108,10 @@ while [[ $# -gt 0 ]]; do
       echo "Usage: curl -sSL https://mowgli.garden/install.sh | bash -s -- [OPTIONS]"
       echo ""
       echo "Options:"
-      echo "  --gnss=BACKEND     GNSS driver: gps (legacy), ublox (F9P), unicore (UM98x)"
+      echo "  --backend=TYPE      Hardware backend: mowgli (default), mavros (advanced Pixhawk path)"
+      echo "  --gnss=BACKEND     GNSS driver: gps (legacy UBX/NMEA), ublox (F9P), unicore (UM98x)"
       echo "  --gps=PRESET       GPS protocol+wiring: ubx-usb, ubx-uart, nmea-usb, nmea-uart"
-      echo "                     (ignored by --gnss=unicore — driver picks its own protocol)"
+      echo "                     (ignored by --gnss=unicore and --gnss=ublox)"
       echo "  --lidar=PRESET     LiDAR config: none, ldlidar-usb, ldlidar-uart,"
       echo "                     rplidar-usb, rplidar-uart, stl27l-usb, stl27l-uart"
       echo "  --tfluna=PRESET    Rangefinder: none, front, edge, both"
@@ -100,10 +157,7 @@ fi
 step "Preparing MowgliNext"
 
 if [ -d "$INSTALL_DIR/.git" ]; then
-  info "Updating existing installation at $INSTALL_DIR"
-  git -C "$INSTALL_DIR" fetch origin
-  git -C "$INSTALL_DIR" checkout "$REPO_BRANCH" 2>/dev/null || true
-  git -C "$INSTALL_DIR" pull origin "$REPO_BRANCH"
+  update_existing_repo_checkout "$INSTALL_DIR"
 elif [ -d "$INSTALL_DIR" ]; then
   warn "$INSTALL_DIR exists but is not a git repo — backing up"
   mv "$INSTALL_DIR" "${INSTALL_DIR}.bak.$(date +%s)"
@@ -118,7 +172,7 @@ fi
 PRESET_FILE="$INSTALL_DIR/install/.preset"
 HAS_PRESET=false
 
-if [[ -n "$GNSS_FLAG" || -n "$GPS_FLAG" || -n "$LIDAR_FLAG" || -n "$TFLUNA_FLAG" ]]; then
+if [[ -n "$BACKEND_FLAG" || -n "$GNSS_FLAG" || -n "$GPS_FLAG" || -n "$LIDAR_FLAG" || -n "$TFLUNA_FLAG" ]]; then
   HAS_PRESET=true
   step "Writing hardware preset from composer"
 
@@ -127,6 +181,19 @@ if [[ -n "$GNSS_FLAG" || -n "$GPS_FLAG" || -n "$LIDAR_FLAG" || -n "$TFLUNA_FLAG"
 # These values pre-fill the interactive installer prompts.
 # The installer will skip questions for pre-configured sections.
 PRESET
+
+  # ── Hardware backend preset ────────────────────────────────────────────
+  if [[ -n "$BACKEND_FLAG" ]]; then
+    case "$BACKEND_FLAG" in
+      mowgli|mavros)
+        echo "HARDWARE_BACKEND=${BACKEND_FLAG}" >> "$PRESET_FILE"
+        info "Hardware backend: $BACKEND_FLAG"
+        ;;
+      *)
+        warn "Unknown hardware backend: $BACKEND_FLAG (expected mowgli|mavros) — will ask interactively"
+        ;;
+    esac
+  fi
 
   # ── GNSS backend preset ────────────────────────────────────────────────
   if [[ -n "$GNSS_FLAG" ]]; then
@@ -142,7 +209,7 @@ PRESET
   fi
 
   # ── GPS preset ─────────────────────────────────────────────────────────
-  if [[ -n "$GPS_FLAG" ]]; then
+  if [[ -n "$GPS_FLAG" && "${GNSS_FLAG:-}" != "ublox" ]]; then
     case "$GPS_FLAG" in
       ubx-usb)
         cat >> "$PRESET_FILE" <<'EOF'
@@ -150,7 +217,6 @@ GPS_CONNECTION=usb
 GPS_PROTOCOL=UBX
 GPS_PORT=/dev/gps
 GPS_UART_DEVICE=
-GPS_BAUD=460800
 GPS_DEBUG_ENABLED=false
 EOF
         ;;
@@ -160,7 +226,6 @@ GPS_CONNECTION=uart
 GPS_PROTOCOL=UBX
 GPS_PORT=/dev/gps
 GPS_UART_DEVICE=/dev/ttyAMA4
-GPS_BAUD=460800
 GPS_DEBUG_ENABLED=false
 EOF
         ;;
@@ -170,7 +235,6 @@ GPS_CONNECTION=usb
 GPS_PROTOCOL=NMEA
 GPS_PORT=/dev/gps
 GPS_UART_DEVICE=
-GPS_BAUD=115200
 GPS_DEBUG_ENABLED=false
 EOF
         ;;
@@ -180,7 +244,6 @@ GPS_CONNECTION=uart
 GPS_PROTOCOL=NMEA
 GPS_PORT=/dev/gps
 GPS_UART_DEVICE=/dev/ttyAMA4
-GPS_BAUD=115200
 GPS_DEBUG_ENABLED=false
 EOF
         ;;
@@ -189,6 +252,8 @@ EOF
         ;;
     esac
     info "GPS: $GPS_FLAG"
+  elif [[ -n "$GPS_FLAG" && "${GNSS_FLAG:-}" == "ublox" ]]; then
+    info "GPS preset ignored for GNSS_BACKEND=ublox (dedicated USB/libusb driver)"
   fi
 
   # ── LiDAR preset ──────────────────────────────────────────────────────
@@ -342,6 +407,13 @@ fi
 
 chmod +x "$INSTALLER"
 
+# Forward the chosen channel to the installer so it skips the image-channel
+# prompt and stays consistent with the branch we just cloned.
+INSTALLER_ARGS=()
+if [[ "$REPO_BRANCH" == "main" || "$REPO_BRANCH" == "dev" ]]; then
+  INSTALLER_ARGS+=("--branch=$REPO_BRANCH")
+fi
+
 echo ""
 if $HAS_PRESET; then
   info "Hardware sensors pre-configured — installer will skip those prompts."
@@ -354,8 +426,8 @@ echo ""
 # `curl ... | bash`, stdin is the pipe and `read` prompts in the
 # interactive installer would otherwise return immediately.
 if [ -e /dev/tty ]; then
-  exec bash "$INSTALLER" </dev/tty
+  exec bash "$INSTALLER" "${INSTALLER_ARGS[@]+"${INSTALLER_ARGS[@]}"}" </dev/tty
 else
   warn "No /dev/tty available — interactive prompts may not work."
-  exec bash "$INSTALLER"
+  exec bash "$INSTALLER" "${INSTALLER_ARGS[@]+"${INSTALLER_ARGS[@]}"}"
 fi

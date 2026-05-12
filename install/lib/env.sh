@@ -23,14 +23,24 @@ setup_env() {
   : "${DISABLE_BLUETOOTH:=true}"
   : "${ENABLE_FOXGLOVE:=true}"
 
-  # GPS
+  # Main GNSS receiver
+  # GPS_BAUD is the runtime baud for the main GNSS receiver exposed as /dev/gps.
+  # GPS_BY_ID, GPS_UART_DEVICE, and UNICORE_COM_PORT are installer/support
+  # variables kept for compatibility and installer re-runs; they do not model
+  # separate runtime GPS devices.
+  #
+  # Dedicated GNSS_BACKEND=ublox uses the vendor USB/libusb driver and selects
+  # the receiver via UBLOX_DEVICE_SERIAL_STRING instead of /dev/gps.
   : "${GNSS_BACKEND:=gps}"
   : "${GPS_CONNECTION:=uart}"
   : "${GPS_PROTOCOL:=UBX}"
   : "${GPS_PORT:=/dev/gps}"
   : "${GPS_BY_ID:=}"
   : "${GPS_UART_DEVICE:=/dev/ttyAMA4}"
-  : "${GPS_BAUD:=460800}"
+  : "${GPS_BAUD:=921600}"
+  : "${UNICORE_COM_PORT:=COM1}"
+  : "${UBLOX_DEVICE_FAMILY:=F9P}"
+  : "${UBLOX_DEVICE_SERIAL_STRING:=}"
 
   : "${GPS_DEBUG_ENABLED:=false}"
   : "${GPS_DEBUG_PORT:=/dev/gps_debug}"
@@ -56,6 +66,17 @@ setup_env() {
   : "${TFLUNA_EDGE_PORT:=/dev/tfluna_edge}"
   : "${TFLUNA_EDGE_UART_DEVICE:=/dev/ttyAMA2}"
   : "${TFLUNA_EDGE_BAUD:=115200}"
+
+  # Image channel — re-validate IMAGE_TAG (might have been loaded from .env
+  # by load_env_defaults_file or set by --branch=/preset) and rebuild the
+  # *_IMAGE_DEFAULT vars to match. mowglinext.sh unsets all *_IMAGE values
+  # before this step, so the defaults below are what gets written.
+  : "${IMAGE_TAG:=main}"
+  if ! is_valid_image_tag "$IMAGE_TAG"; then
+    warn "Invalid IMAGE_TAG=${IMAGE_TAG} in environment — defaulting to main"
+    IMAGE_TAG="main"
+  fi
+  recompute_image_defaults
 
   # Images — select LiDAR image based on type
   : "${MOWGLI_ROS2_IMAGE:=${MOWGLI_ROS2_IMAGE_DEFAULT}}"
@@ -86,6 +107,13 @@ setup_env() {
   # Si MAVROS → GNSS backend désactivé
   if [[ "$HARDWARE_BACKEND" == "mavros" ]]; then
     GNSS_BACKEND="disabled"
+  elif [[ "${GNSS_BACKEND:-gps}" == "nmea" ]]; then
+    warn_legacy_nmea_backend_once
+    GNSS_BACKEND="gps"
+    GPS_PROTOCOL="NMEA"
+  elif ! is_supported_gnss_backend "${GNSS_BACKEND:-gps}"; then
+    warn "Unknown GNSS_BACKEND=${GNSS_BACKEND:-unset} — defaulting to gps"
+    GNSS_BACKEND="gps"
   fi
 
   local enable_mavros="false"
@@ -100,6 +128,7 @@ setup_env() {
   upsert_env_key "$env_file" "MOWER_IP" "$MOWER_IP"
   upsert_env_key "$env_file" "DISABLE_BLUETOOTH" "$DISABLE_BLUETOOTH"
   upsert_env_key "$env_file" "ENABLE_FOXGLOVE" "$ENABLE_FOXGLOVE"
+  upsert_env_key "$env_file" "IMAGE_TAG" "$IMAGE_TAG"
 
   upsert_env_key "$env_file" "GNSS_BACKEND" "$GNSS_BACKEND"
   upsert_env_key "$env_file" "GPS_CONNECTION" "$GPS_CONNECTION"
@@ -108,6 +137,9 @@ setup_env() {
   upsert_env_key "$env_file" "GPS_BY_ID" "$GPS_BY_ID"
   upsert_env_key "$env_file" "GPS_UART_DEVICE" "$GPS_UART_DEVICE"
   upsert_env_key "$env_file" "GPS_BAUD" "$GPS_BAUD"
+  upsert_env_key "$env_file" "UNICORE_COM_PORT" "$UNICORE_COM_PORT"
+  upsert_env_key "$env_file" "UBLOX_DEVICE_FAMILY" "$UBLOX_DEVICE_FAMILY"
+  upsert_env_key "$env_file" "UBLOX_DEVICE_SERIAL_STRING" "$UBLOX_DEVICE_SERIAL_STRING"
   upsert_env_key "$env_file" "GPS_DEBUG_ENABLED" "$GPS_DEBUG_ENABLED"
   upsert_env_key "$env_file" "GPS_DEBUG_PORT" "$GPS_DEBUG_PORT"
   upsert_env_key "$env_file" "GPS_DEBUG_UART_DEVICE" "$GPS_DEBUG_UART_DEVICE"

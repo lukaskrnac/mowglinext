@@ -75,6 +75,7 @@ GPS_BAUD=$(parse_yaml gps_baudrate)
 GPS_BAUD="${GPS_BAUD:-921600}"
 UNICORE_TARGET_BAUD="${UNICORE_TARGET_BAUD:-921600}"
 UNICORE_PROFILE="${UNICORE_PROFILE:-normal}"
+UNICORE_OUTPUT_FORMAT="${UNICORE_OUTPUT_FORMAT:-ascii}"
 
 # Optional one-shot UM98x config blast — sends MODE ROVER + LOG
 # directives via /configure_receiver.sh. SAVECONFIG persists in NVRAM,
@@ -129,7 +130,8 @@ ros2 run mowgli_unicore_gnss um982_node --ros-args \
   -p "enable_rf_status:=$(unicore_bool_string "$UNICORE_ENABLE_RF")" \
   -p "enable_hw_status:=$(unicore_bool_string "$UNICORE_ENABLE_HARDWARE")" \
   -p "enable_jamming_status:=$(unicore_bool_string "$UNICORE_ENABLE_JAMMING")" \
-  -p "rf_diag_timeout_sec:=5.0" &
+  -p "rf_diag_timeout_sec:=5.0" \
+  -p "enable_unicore_binary:=$(unicore_binary_enabled_from_output_format "$UNICORE_OUTPUT_FORMAT")" &
 GPS_PID=$!
 
 if is_truthy "$NTRIP_ENABLED"; then

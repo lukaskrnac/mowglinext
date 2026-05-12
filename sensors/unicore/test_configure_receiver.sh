@@ -62,6 +62,7 @@ reset_mocks() {
 
 reset_profile_env() {
   UNICORE_PROFILE="normal"
+  UNICORE_OUTPUT_FORMAT="ascii"
   UNICORE_SIGNALGROUP_OVERRIDE=""
   UNICORE_MAIN_LOG_PERIOD=""
   UNICORE_BESTNAV_LOG_PERIOD=""
@@ -182,6 +183,18 @@ unicore_apply_profile_defaults
 HIGH_PRECISION_COMMANDS="$(build_profile_commands)"
 assert_contains "high_precision enables PVTALG MULTI" "CONFIG PVTALG MULTI" "$HIGH_PRECISION_COMMANDS"
 assert_contains "high_precision enables RTCMDECAUTO" "CONFIG RTCMDECAUTO ENABLE" "$HIGH_PRECISION_COMMANDS"
+
+reset_profile_env
+UNICORE_OUTPUT_FORMAT="hybrid"
+unicore_apply_profile_defaults
+assert_eq "hybrid output format is preserved" "hybrid" "$UNICORE_OUTPUT_FORMAT"
+assert_eq "hybrid enables binary transport" "true" "$(unicore_binary_enabled_from_output_format "$UNICORE_OUTPUT_FORMAT")"
+
+reset_profile_env
+UNICORE_OUTPUT_FORMAT="broken"
+unicore_apply_profile_defaults
+assert_eq "invalid output format falls back to ascii" "ascii" "$UNICORE_OUTPUT_FORMAT"
+assert_eq "ascii keeps binary transport disabled" "false" "$(unicore_binary_enabled_from_output_format "$UNICORE_OUTPUT_FORMAT")"
 
 if [ "$failures" -ne 0 ]; then
   echo ""

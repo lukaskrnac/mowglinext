@@ -39,6 +39,7 @@ set -euo pipefail
 TARGET_BAUD="${UNICORE_TARGET_BAUD:-921600}"
 UNICORE_COM_PORT="${UNICORE_COM_PORT:-COM1}"
 UNICORE_PROFILE="${UNICORE_PROFILE:-normal}"
+UNICORE_OUTPUT_FORMAT="${UNICORE_OUTPUT_FORMAT:-ascii}"
 UNICORE_SIGNALGROUP_OVERRIDE="${UNICORE_SIGNALGROUP_OVERRIDE:-}"
 UNICORE_MAIN_LOG_PERIOD="${UNICORE_MAIN_LOG_PERIOD:-}"
 UNICORE_BESTNAV_LOG_PERIOD="${UNICORE_BESTNAV_LOG_PERIOD:-}"
@@ -82,6 +83,29 @@ unicore_normalize_profile() {
     *)
       log "WARN: unknown UNICORE_PROFILE='${1:-}'; falling back to normal."
       printf '%s\n' "normal"
+      ;;
+  esac
+}
+
+unicore_normalize_output_format() {
+  case "${1:-ascii}" in
+    ascii|binary|hybrid)
+      printf '%s\n' "${1:-ascii}"
+      ;;
+    *)
+      log "WARN: unknown UNICORE_OUTPUT_FORMAT='${1:-}'; falling back to ascii."
+      printf '%s\n' "ascii"
+      ;;
+  esac
+}
+
+unicore_binary_enabled_from_output_format() {
+  case "$(unicore_normalize_output_format "${1:-ascii}")" in
+    binary|hybrid)
+      printf '%s\n' "true"
+      ;;
+    *)
+      printf '%s\n' "false"
       ;;
   esac
 }
@@ -146,6 +170,7 @@ unicore_profile_default_flag() {
 
 unicore_apply_profile_defaults() {
   UNICORE_PROFILE="$(unicore_normalize_profile "$UNICORE_PROFILE")"
+  UNICORE_OUTPUT_FORMAT="$(unicore_normalize_output_format "$UNICORE_OUTPUT_FORMAT")"
   UNICORE_MAIN_LOG_PERIOD="${UNICORE_MAIN_LOG_PERIOD:-$(unicore_profile_default_period "$UNICORE_PROFILE" main)}"
   UNICORE_BESTNAV_LOG_PERIOD="${UNICORE_BESTNAV_LOG_PERIOD:-$(unicore_profile_default_period "$UNICORE_PROFILE" bestnav)}"
   UNICORE_DIAGNOSTIC_LOG_PERIOD="${UNICORE_DIAGNOSTIC_LOG_PERIOD:-$(unicore_profile_default_period "$UNICORE_PROFILE" diagnostic)}"
@@ -333,6 +358,9 @@ signalgroup_for_model() {
 }
 
 build_log_commands() {
+  # PR6A keeps the receiver in ASCII mode by default. `UNICORE_OUTPUT_FORMAT`
+  # is normalized here for future binary/hybrid profile work but does not yet
+  # switch LOG commands to `...B`.
   printf '%s\n' "LOG GPGGA ONTIME ${UNICORE_MAIN_LOG_PERIOD}"
   printf '%s\n' "LOG PVTSLNA ONTIME ${UNICORE_MAIN_LOG_PERIOD}"
   printf '%s\n' "LOG BESTNAVA ONTIME ${UNICORE_BESTNAV_LOG_PERIOD}"
@@ -498,7 +526,7 @@ apply_receiver_configuration() {
   cmds+=( "${log_cmds[@]}" )
 
   log "Applying UM98x rover config to ${port} @ ${TARGET_BAUD}..."
-  log "Profile=${UNICORE_PROFILE} main=${UNICORE_MAIN_LOG_PERIOD}s bestnav=${UNICORE_BESTNAV_LOG_PERIOD}s diag=${UNICORE_DIAGNOSTIC_LOG_PERIOD}s sat=${UNICORE_SATELLITE_LOG_PERIOD}s rf=${UNICORE_RF_LOG_PERIOD}s raw=${UNICORE_RAW_LOG_PERIOD}s sat_enabled=$(unicore_bool_string "$UNICORE_ENABLE_SATELLITES") rf_enabled=$(unicore_bool_string "$UNICORE_ENABLE_RF") jam_enabled=$(unicore_bool_string "$UNICORE_ENABLE_JAMMING")"
+  log "Profile=${UNICORE_PROFILE} output=${UNICORE_OUTPUT_FORMAT} main=${UNICORE_MAIN_LOG_PERIOD}s bestnav=${UNICORE_BESTNAV_LOG_PERIOD}s diag=${UNICORE_DIAGNOSTIC_LOG_PERIOD}s sat=${UNICORE_SATELLITE_LOG_PERIOD}s rf=${UNICORE_RF_LOG_PERIOD}s raw=${UNICORE_RAW_LOG_PERIOD}s sat_enabled=$(unicore_bool_string "$UNICORE_ENABLE_SATELLITES") rf_enabled=$(unicore_bool_string "$UNICORE_ENABLE_RF") jam_enabled=$(unicore_bool_string "$UNICORE_ENABLE_JAMMING")"
   send_config_batch "$port" "${cmds[@]}"
 
   if ! verify_receiver_at_baud "$port" "$TARGET_BAUD"; then

@@ -43,11 +43,13 @@ EOF
 
 run_profile() {
   local profile="${1:?run_profile: missing profile}"
+  local output_format="${2:-ascii}"
   local log_file="$WORKDIR/${profile}.log"
   PATH="$WORKDIR/bin:$PATH" \
   ROS2_LOG_PATH="$log_file" \
   MOWGLI_CONFIG_PATH="$WORKDIR/mowgli_robot.yaml" \
   UNICORE_PROFILE="$profile" \
+  UNICORE_OUTPUT_FORMAT="$output_format" \
   "$SCRIPT_DIR/start_gps.sh" >/dev/null 2>&1 || true
   cat "$log_file"
 }
@@ -60,12 +62,16 @@ assert_contains "normal disables satellite diagnostics" "enable_satellite_status
 assert_contains "normal disables RF diagnostics" "enable_rf_status:=false" "$NORMAL_ARGS"
 assert_contains "normal disables hardware diagnostics" "enable_hw_status:=false" "$NORMAL_ARGS"
 assert_contains "normal disables jamming diagnostics" "enable_jamming_status:=false" "$NORMAL_ARGS"
+assert_contains "normal keeps binary transport disabled" "enable_unicore_binary:=false" "$NORMAL_ARGS"
 
 DEBUG_ARGS="$(run_profile debug)"
 assert_contains "debug enables satellite diagnostics" "enable_satellite_status:=true" "$DEBUG_ARGS"
 assert_contains "debug enables RF diagnostics" "enable_rf_status:=true" "$DEBUG_ARGS"
 assert_contains "debug enables hardware diagnostics" "enable_hw_status:=true" "$DEBUG_ARGS"
 assert_contains "debug enables jamming diagnostics" "enable_jamming_status:=true" "$DEBUG_ARGS"
+
+HYBRID_ARGS="$(run_profile debug hybrid)"
+assert_contains "hybrid output enables binary transport" "enable_unicore_binary:=true" "$HYBRID_ARGS"
 
 if [ "$failures" -ne 0 ]; then
   echo ""

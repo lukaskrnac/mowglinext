@@ -168,6 +168,18 @@ def generate_launch_description() -> LaunchDescription:
             # self-gates the stationary anchor on |wheel_omega| (won't
             # republish a stale forward-motion yaw while the robot is
             # pivoting in place).
+            #
+            # Sim-only TF / cadence overrides. Hardware defaults
+            # (declared in navigation.launch.py / fusion_graph.launch.py)
+            # are 0.0 forward-stamp + 25 Hz factor-graph because the
+            # 100 ms lead costs ~5° yaw error per pivot at 0.5 rad/s on
+            # real hardware. Under sim_time, the publish/lookup phase
+            # offset routinely throws ExtrapolationException without the
+            # lead, and the controller queries align poorly with the
+            # 25 Hz TF cadence — restore the sim-tested values here.
+            "ekf_transform_time_offset": "0.1",
+            "fusion_graph_tf_lead_s": "0.1",
+            "fusion_graph_node_period_s": "0.02",
         }.items(),
     )
 

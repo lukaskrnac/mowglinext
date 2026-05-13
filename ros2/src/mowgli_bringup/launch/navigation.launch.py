@@ -205,6 +205,32 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
+    # TF forward-stamp / fusion_graph cadence — sim vs hardware.
+    # Defaults are the HARDWARE-correct values (no forward extrapolation,
+    # 25 Hz factor-graph). sim_full_system.launch.py overrides these to
+    # the sim-friendly values (0.1 s lead, 50 Hz) where the sim_time
+    # phase offset between publish and lookup forces ExtrapolationException
+    # at lower rates / no lead. On real hardware, forward-stamping the
+    # map TF by 100 ms costs 5° of yaw error per pivot at 0.5 rad/s
+    # — visible on Foxglove and pushed into FTC's heading PID.
+    # ------------------------------------------------------------------
+    ekf_transform_time_offset_arg = DeclareLaunchArgument(
+        "ekf_transform_time_offset",
+        default_value="0.0",
+        description="robot_localization transform_time_offset for both ekf_odom_node and ekf_map_node. Hardware default 0.0 (no extrapolation). Sim should set 0.1 to absorb sim_time/publish phase jitter.",
+    )
+    fusion_graph_tf_lead_arg = DeclareLaunchArgument(
+        "fusion_graph_tf_lead_s",
+        default_value="0.0",
+        description="fusion_graph map→odom TF forward-stamp (seconds). Hardware default 0.0. Sim should set 0.1.",
+    )
+    fusion_graph_node_period_arg = DeclareLaunchArgument(
+        "fusion_graph_node_period_s",
+        default_value="0.04",
+        description="fusion_graph factor-graph node cadence (seconds). Hardware default 0.04 = 25 Hz (5x faster than 5 Hz controller queries, sustainable on Pi). Sim default 0.02 = 50 Hz to absorb sim_time TF gaps.",
+    )
+
+    # ------------------------------------------------------------------
     # Resolved substitutions
     # ------------------------------------------------------------------
     use_sim_time = LaunchConfiguration("use_sim_time")
@@ -215,6 +241,9 @@ def generate_launch_description() -> LaunchDescription:
     use_scan_matching = LaunchConfiguration("use_scan_matching")
     use_loop_closure = LaunchConfiguration("use_loop_closure")
     primary_mode = LaunchConfiguration("primary_mode")
+    ekf_transform_time_offset = LaunchConfiguration("ekf_transform_time_offset")
+    fusion_graph_tf_lead_s = LaunchConfiguration("fusion_graph_tf_lead_s")
+    fusion_graph_node_period_s = LaunchConfiguration("fusion_graph_node_period_s")
 
     # ------------------------------------------------------------------
     # Config paths
@@ -578,7 +607,8 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
         parameters=[
             robot_localization_params,
-            {"use_sim_time": use_sim_time},
+            {"use_sim_time": use_sim_time,
+             "transform_time_offset": ekf_transform_time_offset},
         ],
         remappings=[
             ("odometry/filtered", "/odometry/filtered"),
@@ -610,7 +640,8 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
         parameters=[
             robot_localization_params,
-            {"use_sim_time": use_sim_time},
+            {"use_sim_time": use_sim_time,
+             "transform_time_offset": ekf_transform_time_offset},
         ],
         remappings=[
             ("odometry/filtered", "/odometry/filtered_map"),
@@ -642,6 +673,8 @@ def generate_launch_description() -> LaunchDescription:
             "use_scan_matching": use_scan_matching,
             "use_loop_closure": use_loop_closure,
             "primary_mode": primary_mode,
+            "tf_publish_lead_s": fusion_graph_tf_lead_s,
+            "node_period_s": fusion_graph_node_period_s,
         }.items(),
     )
 
@@ -788,6 +821,9 @@ def generate_launch_description() -> LaunchDescription:
             use_loop_closure_arg,
             primary_mode_arg,
             cog_stationary_seed_rate_hz_arg,
+            ekf_transform_time_offset_arg,
+            fusion_graph_tf_lead_arg,
+            fusion_graph_node_period_arg,
             # robot_localization dual EKF + helpers
             static_gps_link_alias,
             ekf_odom_node,

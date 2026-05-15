@@ -130,12 +130,21 @@ func (r *RosSubscriber) run() {
 // RosProvider implements types2.IRosProvider using a foxglove WebSocket
 // client. All topic access uses logical keys defined in topicMap; the actual
 // ROS2 topic names are an internal concern.
+//
+// Upstream foxglove_bridge subscriptions are managed lazily: a logical key is
+// subscribed on the bridge only when at least one downstream listener is
+// registered for it, and unsubscribed when the last listener leaves. This
+// keeps the per-message CDR→JSON deserialization (in gui/pkg/foxglove) off
+// the hot path for topics nobody is using right now — e.g. /scan, /imu/data,
+// and /wheel_odom no longer chew CPU when the browser is closed and the
+// optional MQTT/HomeKit providers are disabled.
 type RosProvider struct {
 	client *foxglove.Client
 
-	mtx         sync.Mutex
-	subscribers map[string]map[string]*RosSubscriber // logicalKey -> id -> subscriber
-	lastMessage map[string][]byte                     // logicalKey -> last JSON bytes
+	mtx                sync.Mutex
+	subscribers        map[string]map[string]*RosSubscriber // logicalKey -> id -> subscriber
+	lastMessage        map[string][]byte                    // logicalKey -> last JSON bytes
+	foxgloveSubscribed map[string]bool                      // logicalKey -> upstream-subscribed?
 
 	// Cached docking pose from map_server_node (guarded by mtx)
 	dockPoseSet bool
@@ -145,8 +154,15 @@ type RosProvider struct {
 
 	// Charging state from hardware_bridge/status (guarded by mtx)
 
-	dbProvider      types2.IDBProvider
-	sessionTracker  *SessionTracker
+	dbProvider     types2.IDBProvider
+	sessionTracker *SessionTracker
+}
+
+// foxgloveAdapters maps logicalKey to a per-message transform applied between
+// the foxglove client and the fanOut. Topics absent from this map are
+// forwarded as-is (snake_case JSON from CDR deserialization).
+var foxgloveAdapters = map[string]func([]byte) ([]byte, error){
+	"pose": adaptPose,
 }
 
 // NewRosProvider constructs a RosProvider, reads the foxglove URL from the
@@ -161,18 +177,18 @@ func NewRosProvider(dbProvider types2.IDBProvider) types2.IRosProvider {
 	}
 
 	r := &RosProvider{
-		client:         foxglove.NewClient(foxgloveURL),
-		subscribers:    make(map[string]map[string]*RosSubscriber),
-		lastMessage:    make(map[string][]byte),
-		dbProvider:     dbProvider,
-		sessionTracker: NewSessionTracker(dbProvider),
+		client:             foxglove.NewClient(foxgloveURL),
+		subscribers:        make(map[string]map[string]*RosSubscriber),
+		lastMessage:        make(map[string][]byte),
+		foxgloveSubscribed: make(map[string]bool),
+		dbProvider:         dbProvider,
+		sessionTracker:     NewSessionTracker(dbProvider),
 	}
 
 	go func() {
 		if err := r.client.Connect(context.Background()); err != nil {
 			logrus.Errorf("RosProvider: foxglove initial connect failed: %v", err)
 		}
-		r.initFoxgloveSubscriptions()
 		r.initDockPoseSubscription()
 		r.initMapPolling()
 	}()
@@ -180,47 +196,62 @@ func NewRosProvider(dbProvider types2.IDBProvider) types2.IRosProvider {
 	return r
 }
 
-// initFoxgloveSubscriptions sends subscribe ops to foxglove_bridge for every
-// real (non-virtual) topic in topicMap. Shape-changing topics are passed
-// through dedicated adapter functions (defined in transform.go); all other
-// topics are forwarded as-is (snake_case JSON from CDR deserialization).
-func (r *RosProvider) initFoxgloveSubscriptions() {
-	adapters := map[string]func([]byte) ([]byte, error){
-		"pose": adaptPose,
+// ensureFoxgloveSubscribed subscribes the foxglove client to the ROS2 topic
+// backing logicalKey if it isn't already. No-op for virtual keys (empty
+// MsgType) or unknown keys. Caller must hold r.mtx.
+func (r *RosProvider) ensureFoxgloveSubscribed(logicalKey string) {
+	if r.foxgloveSubscribed[logicalKey] {
+		return
+	}
+	def, ok := topicMap[logicalKey]
+	if !ok || def.MsgType == "" {
+		return
 	}
 
-	for logicalKey, def := range topicMap {
-		if def.MsgType == "" {
-			continue
+	key := logicalKey // capture for closure
+	var cb func(json.RawMessage)
+	if adapt, ok := foxgloveAdapters[key]; ok {
+		fn := adapt
+		cb = func(msg json.RawMessage) {
+			adapted, err := fn([]byte(msg))
+			if err != nil {
+				logrus.Errorf("RosProvider: adapt %s: %v", key, err)
+				return
+			}
+			r.fanOut(key, adapted)
 		}
-		key := logicalKey // capture for closure
-
-		if adapt, ok := adapters[key]; ok {
-			fn := adapt // capture
-			err := r.client.Subscribe(def.ROS2Topic, def.MsgType, "gui-"+key, func(msg json.RawMessage) {
-				adapted, err := fn([]byte(msg))
-				if err != nil {
-					logrus.Errorf("RosProvider: adapt %s: %v", key, err)
-					return
-				}
-				r.fanOut(key, adapted)
-			})
-			if err != nil {
-				logrus.Errorf("RosProvider: subscribe %s (%s): %v", def.ROS2Topic, key, err)
-			} else {
-				logrus.Infof("RosProvider: subscribed to %s as '%s'", def.ROS2Topic, key)
-			}
-		} else {
-			err := r.client.Subscribe(def.ROS2Topic, def.MsgType, "gui-"+key, func(msg json.RawMessage) {
-				r.fanOut(key, []byte(msg))
-			})
-			if err != nil {
-				logrus.Errorf("RosProvider: subscribe %s (%s): %v", def.ROS2Topic, key, err)
-			} else {
-				logrus.Infof("RosProvider: subscribed to %s as '%s'", def.ROS2Topic, key)
-			}
+	} else {
+		cb = func(msg json.RawMessage) {
+			r.fanOut(key, []byte(msg))
 		}
 	}
+
+	if err := r.client.Subscribe(def.ROS2Topic, def.MsgType, "gui-"+key, cb); err != nil {
+		logrus.Errorf("RosProvider: subscribe %s (%s): %v", def.ROS2Topic, key, err)
+		return
+	}
+	r.foxgloveSubscribed[key] = true
+	logrus.Infof("RosProvider: subscribed to %s as '%s'", def.ROS2Topic, key)
+}
+
+// maybeUnsubscribeFoxglove drops the upstream foxglove subscription for
+// logicalKey if no downstream listeners remain. Caller must hold r.mtx.
+func (r *RosProvider) maybeUnsubscribeFoxglove(logicalKey string) {
+	if !r.foxgloveSubscribed[logicalKey] {
+		return
+	}
+	if subs := r.subscribers[logicalKey]; len(subs) > 0 {
+		return
+	}
+	def, ok := topicMap[logicalKey]
+	if !ok || def.MsgType == "" {
+		return
+	}
+	r.client.Unsubscribe(def.ROS2Topic, "gui-"+logicalKey)
+	delete(r.foxgloveSubscribed, logicalKey)
+	// Drop the cached last-message — stale once we stop receiving updates.
+	delete(r.lastMessage, logicalKey)
+	logrus.Infof("RosProvider: unsubscribed from %s (no listeners)", def.ROS2Topic)
 }
 
 // fanOut stores msg as the latest value for logicalKey and delivers it to all
@@ -385,7 +416,8 @@ func (r *RosProvider) CallService(ctx context.Context, service string, req any, 
 
 // Subscribe registers cb to receive JSON messages on the given logical topic
 // key. If a message was already received for this key, cb is invoked
-// immediately with the cached value.
+// immediately with the cached value. The first listener for a non-virtual
+// topic also triggers the upstream foxglove_bridge subscription.
 func (r *RosProvider) Subscribe(topic string, id string, cb func(msg []byte)) error {
 	r.mtx.Lock()
 	defer r.mtx.Unlock()
@@ -397,6 +429,10 @@ func (r *RosProvider) Subscribe(topic string, id string, cb func(msg []byte)) er
 		r.subscribers[topic][id] = NewRosSubscriber(topic, id, cb)
 	}
 
+	// Subscribe upstream on first listener for this logical key. Safe to call
+	// repeatedly — ensureFoxgloveSubscribed short-circuits on the second hit.
+	r.ensureFoxgloveSubscribed(topic)
+
 	// Replay the most recent message so the subscriber is immediately usable.
 	if last, ok := r.lastMessage[topic]; ok {
 		r.subscribers[topic][id].Publish(last)
@@ -405,6 +441,8 @@ func (r *RosProvider) Subscribe(topic string, id string, cb func(msg []byte)) er
 }
 
 // UnSubscribe stops and removes the subscriber identified by (topic, id).
+// When the last subscriber for a logical key is removed, the upstream
+// foxglove_bridge subscription is dropped too.
 func (r *RosProvider) UnSubscribe(topic string, id string) {
 	r.mtx.Lock()
 	defer r.mtx.Unlock()
@@ -419,6 +457,10 @@ func (r *RosProvider) UnSubscribe(topic string, id string) {
 	}
 	sub.Close()
 	delete(subs, id)
+	if len(subs) == 0 {
+		delete(r.subscribers, topic)
+		r.maybeUnsubscribeFoxglove(topic)
+	}
 }
 
 // Publish sends msg to the named ROS2 topic via foxglove_bridge.

@@ -351,13 +351,17 @@ global_costmap:
   global_costmap:
     ros__parameters:
       use_sim_time: false
-      # 2 Hz after the 2026-04-24 shrink from 30×30 to 20×20 m (160 k cells
-      # vs 360 k). Previously capped at 1 Hz because obstacle_layer raycast
-      # over the larger grid ate ARM CPU; the 44 % smaller grid gives
-      # enough headroom to double both the update and publish rates, which
-      # roughly halves the costmap-contributed Foxglove visual lag.
-      update_frequency: 2.0
-      publish_frequency: 2.0
+      # 1 Hz after the 2026-05-15 idle-CPU triage. Background: observed
+      # planner_server burning ~50 % of one ARM core while the robot was
+      # idle — obstacle_layer raytracing 700-ray scans × clearing rays
+      # (inf_is_valid=true means every no-return ray traces the full 8 m
+      # to mark cells as free), plus inflation_layer recomputation across
+      # the full 250×250-cell window every tick. At 1 Hz that work is
+      # halved, and the local_costmap @ 10 Hz still drives real-time
+      # collision avoidance, so the planner is never working off costmap
+      # data older than 1 s — comfortably less than the planning horizon.
+      update_frequency: 1.0
+      publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_footprint
       # TF tolerance: how stale a transform can be before the costmap rejects
@@ -378,7 +382,13 @@ global_costmap:
       always_send_full_costmap: false
       # Footprint computed from mowgli_robot.yaml at launch time
       footprint: "[[0.50, 0.20], [0.50, -0.20], [-0.10, -0.20], [-0.10, 0.20]]"
-      resolution: 0.05
+      # 0.08 m (was 0.05). At 20×20 m that drops the grid from 400×400 =
+      # 160 k cells to 250×250 = 62.5 k — ~2.5× less data per update +
+      # publish. The robot footprint (0.40 m wide) still spans ≥5 cells,
+      # which is plenty for SmacPlanner2D collision checking. Local
+      # costmap stays at 0.05 m so close-range avoidance keeps the finer
+      # grid.
+      resolution: 0.08
       track_unknown_space: false
       # Rolling window large enough to cover transit across any garden.
       # Unknown space is treated as free (track_unknown_space: false) so the

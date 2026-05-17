@@ -90,19 +90,38 @@ public:
 
     yaw_var_ = declare_parameter<double>("seed_yaw_variance", 0.1);
 
-    // Dock yaw + sigma come from mowgli_robot.yaml via the launch wrapper.
-    // Calibration (calibrate_imu_yaw_node) and manual GUI overrides
-    // (map_server_node /set_docking_point) write back to that file, so
-    // the param value is always the latest persisted dock yaw.
+    // Dock pose + yaw sigma come from mowgli_robot.yaml via the launch
+    // wrapper. Calibration (calibrate_imu_yaw_node) and manual GUI
+    // overrides (map_server_node /set_docking_point) write back to
+    // that file, so the param values are always the latest persisted
+    // dock reference.
     const double dock_yaw_rad = declare_parameter<double>("dock_pose_yaw", 0.0);
     const double dock_yaw_sigma_rad = declare_parameter<double>("dock_pose_yaw_sigma_rad", 0.035);
     cfg_yaw_rad_ = dock_yaw_rad;
     // Floor at variance 0.03 (~10°) so a tiny configured sigma does not
     // pin the EKF too hard on the first seed.
     cfg_yaw_var_ = std::max(dock_yaw_sigma_rad * dock_yaw_sigma_rad, 0.03);
+
+    // Dock x/y in map frame — used as the canonical seed position so a
+    // re-docking deterministically lands on the calibrated dock pose
+    // instead of wherever the GPS happens to think we are right now.
+    // RTK Float / multipath / lever-arm yaw error / wrong-fix can all
+    // drift the live GPS by 1-10 cm; seeding from GPS would push the
+    // graph to a slightly different (X, Y) every dock cycle even
+    // though the dock physically hasn't moved. Seeding from the
+    // stored dock_pose_x/y treats the contact-charging signal as
+    // ground truth on the robot's location and lets GnssLeverArmFactor
+    // observations gently pull the trajectory back to GPS over the
+    // next few graph nodes.
+    cfg_dock_x_ = declare_parameter<double>("dock_pose_x", 0.0);
+    cfg_dock_y_ = declare_parameter<double>("dock_pose_y", 0.0);
+
     RCLCPP_INFO(get_logger(),
-                "dock_yaw_to_set_pose started — yaw=%.2f° (σ=%.2f°) from "
-                "mowgli_robot.yaml. Waits for rising edge of is_charging.",
+                "dock_yaw_to_set_pose started — dock_pose=(%.3f, %.3f) "
+                "yaw=%.2f° (σ=%.2f°) from mowgli_robot.yaml. Waits "
+                "for rising edge of is_charging.",
+                cfg_dock_x_,
+                cfg_dock_y_,
                 dock_yaw_rad * 180.0 / M_PI,
                 dock_yaw_sigma_rad * 180.0 / M_PI);
   }
@@ -186,8 +205,12 @@ private:
     geometry_msgs::msg::PoseWithCovarianceStamped map_seed;
     map_seed.header.stamp = now();
     map_seed.header.frame_id = "map";
-    map_seed.pose.pose.position.x = latest_gps_->pose.pose.position.x;
-    map_seed.pose.pose.position.y = latest_gps_->pose.pose.position.y;
+    // Use the persisted dock_pose_x/y (the operator-calibrated dock
+    // location in the map frame) rather than latest_gps_->pose.
+    // The dock physically doesn't move; the GPS does. See node-level
+    // comment in the constructor for the full rationale.
+    map_seed.pose.pose.position.x = cfg_dock_x_;
+    map_seed.pose.pose.position.y = cfg_dock_y_;
     map_seed.pose.pose.orientation = yaw_quat;
     map_seed.pose.covariance = cov;
     pub_map_->publish(map_seed);
@@ -233,6 +256,8 @@ private:
 
   double cfg_yaw_rad_{0.0};
   double cfg_yaw_var_{0.03};
+  double cfg_dock_x_{0.0};
+  double cfg_dock_y_{0.0};
 };
 
 }  // namespace mowgli_localization

@@ -60,6 +60,11 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
   gp.prior_sigma_theta = declare_parameter<double>("prior_sigma_theta", 0.05);
   gp.lever_arm_x = declare_parameter<double>("lever_arm_x", 0.0);
   gp.lever_arm_y = declare_parameter<double>("lever_arm_y", 0.0);
+  // Cache the radial lever-arm magnitude for the RTK wrong-fix gate.
+  // The graph itself consumes lever_arm_x/y via GnssLeverArmFactor;
+  // we only mirror the magnitude here for the gate-side threshold
+  // and never re-apply the offset to the GPS sample.
+  lever_arm_radius_m_ = std::hypot(gp.lever_arm_x, gp.lever_arm_y);
   gp.cov_update_every_n = declare_parameter<int>("cov_update_every_n", 10);
   gp.isam2_relinearize_skip = declare_parameter<int>("isam2_relinearize_skip", 5);
   gp.stationary_motion_thresh_m = declare_parameter<double>("stationary_motion_thresh_m", 0.02);
@@ -119,6 +124,20 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
   tf_publish_lead_s_ = declare_parameter<double>("tf_publish_lead_s", 0.0);
 
   graph_ = std::make_shared<GraphManager>(gp);
+
+  // ── Dock pose seed (always declared) ────────────────────────────
+  // Read from mowgli_robot.yaml — calibrate_imu_yaw_node and the
+  // map_server /set_docking_point service write back to that file,
+  // so the values here are always the latest persisted dock anchor.
+  // Declared outside the scan_matching gate because SeedFromDockPose()
+  // is the only seed path that fires while the robot boots docked
+  // and stationary (COG needs motion, mag is off by default) — the
+  // no-LiDAR config must still be able to bootstrap.
+  dock_pose_x_ = declare_parameter<double>("dock_pose_x", 0.0);
+  dock_pose_y_ = declare_parameter<double>("dock_pose_y", 0.0);
+  dock_pose_yaw_ = declare_parameter<double>("dock_pose_yaw", 0.0);
+  dock_pose_yaw_sigma_rad_ =
+      declare_parameter<double>("dock_pose_yaw_sigma_rad", 0.035);
 
   // ── Scan matching (optional) ─────────────────────────────────────
   use_scan_matching_ = declare_parameter<bool>("use_scan_matching", false);
@@ -189,12 +208,6 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
       static_cast<uint64_t>(declare_parameter<int>("isam2_rebase_every_nodes", 2000));
   const bool autoload = declare_parameter<bool>("autoload_graph", true);
 
-  // Dock yaw read from mowgli_robot.yaml via the launch wrapper. Used
-  // as a yaw seed at cold boot when GPS+COG aren't available yet but
-  // a persisted graph exists — the robot is on the dock so this is
-  // a tight prior.
-  dock_pose_yaw_ = declare_parameter<double>("dock_pose_yaw", 0.0);
-
   // RTK-Fixed override of the autoloaded pose: if the autoloaded graph
   // disagrees with the first incoming RTK-Fixed sample by more than this
   // many metres, force a re-anchor at the GPS pose. Handles the case of
@@ -236,6 +249,11 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
 
   // ── Pubs/subs ─────────────────────────────────────────────────────
   pub_odom_ = create_publisher<nav_msgs::msg::Odometry>("/odometry/filtered_map", 10);
+  // /odometry/filtered + odom→base_footprint TF — replaces ekf_odom_node.
+  // Continuous local-frame dead reckoning (wheel vx + gyro_z), never
+  // sees GPS, never jumps. Nav2's odom_topic in nav2_params.yaml still
+  // points here.
+  pub_local_odom_ = create_publisher<nav_msgs::msg::Odometry>("/odometry/filtered", 10);
 
   // High-rate extrapolated pose (item #15). Off by default — set
   // fast_pose_publish_rate_hz > 0 in yaml to enable. 100 Hz is the
@@ -333,16 +351,22 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
         "/scan", sensor_qos, std::bind(&FusionGraphNode::OnScan, this, std::placeholders::_1));
   }
 
+  // /hardware_bridge/status is always subscribed — OnHardwareStatus
+  // serves two purposes that are independent of auto-save:
+  //   1. Dock-arrival pose seed (rising edge of is_charging anchors
+  //      the graph at the operator-calibrated dock_pose_*).
+  //   2. Auto-checkpoint to disk (gated on auto_save_enabled_).
+  sub_hw_status_ = create_subscription<mowgli_interfaces::msg::Status>(
+      "/hardware_bridge/status",
+      10,
+      std::bind(&FusionGraphNode::OnHardwareStatus, this, std::placeholders::_1));
+
   if (auto_save_enabled_)
   {
     sub_hl_status_ = create_subscription<mowgli_interfaces::msg::HighLevelStatus>(
         "/behavior_tree_node/high_level_status",
         10,
         std::bind(&FusionGraphNode::OnHighLevelStatus, this, std::placeholders::_1));
-    sub_hw_status_ = create_subscription<mowgli_interfaces::msg::Status>(
-        "/hardware_bridge/status",
-        10,
-        std::bind(&FusionGraphNode::OnHardwareStatus, this, std::placeholders::_1));
     if (periodic_save_period_s > 0.0)
     {
       periodic_save_timer_ =
@@ -354,10 +378,10 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
   // ── External set-pose channel ───────────────────────────────────
   // Equivalent to robot_localization's /<node>/set_pose: takes a
   // PoseWithCovarianceStamped, anchors the latest graph node at the
-  // given pose with covariance-derived sigmas. dock_yaw_to_set_pose
-  // dual-publishes to /ekf_map_node/set_pose AND to this topic so
-  // the dock-yaw seeding works regardless of which localizer is the
-  // map-frame primary.
+  // given pose with covariance-derived sigmas. Used by the BT
+  // calibration nodes after a yaw-cal manoeuvre. The dock-arrival
+  // seed (formerly dock_yaw_to_set_pose_node) now bypasses this
+  // topic entirely — see SeedFromDockPose().
   //
   // QoS: TRANSIENT_LOCAL with depth-1, matching dock_yaw_to_set_pose's
   // publisher. The boot seed is a one-shot rising-edge event; with
@@ -652,6 +676,10 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
 void FusionGraphNode::OnWheelOdom(nav_msgs::msg::Odometry::ConstSharedPtr msg)
 {
   const rclcpp::Time stamp(msg->header.stamp);
+  // Latest forward velocity for the local-frame DR integration in OnImu.
+  // twist.linear.y is non-holonomically locked to 0 by hardware_bridge
+  // (tight vy covariance) — we mirror that by only integrating vx.
+  wheel_vx_ = msg->twist.twist.linear.x;
   if (last_wheel_stamp_)
   {
     double dt = (stamp - *last_wheel_stamp_).seconds();
@@ -681,6 +709,20 @@ void FusionGraphNode::OnImu(sensor_msgs::msg::Imu::ConstSharedPtr msg)
     if (dt > 0.0 && dt < 1.0)
     {
       graph_->AddGyroDelta(msg->angular_velocity.z, dt);
+      // Local-frame dead reckoning. Yaw integrates the bias-corrected
+      // gyro_z (hardware_bridge subtracts the dock-time IMU bias);
+      // position uses the latest wheel vx with the just-updated yaw.
+      // Sub-cm/sub-° accuracy per IMU sample at typical 91 Hz / 0.5 m/s.
+      const double gz = msg->angular_velocity.z;
+      dr_yaw_ += gz * dt;
+      dr_x_ += wheel_vx_ * std::cos(dr_yaw_) * dt;
+      dr_y_ += wheel_vx_ * std::sin(dr_yaw_) * dt;
+      // Accumulate |Δθ| since the last accepted GPS for the wrong-fix
+      // gate. A stationary pivot sweeps the GPS antenna by lever_arm
+      // × Δθ in the map frame; without this term the gate sees a
+      // pure-sweep jump as if it were a phantom translation and
+      // rejects every legitimate fix.
+      abs_dtheta_since_last_gps_rad_ += std::abs(gz) * dt;
     }
   }
   last_imu_stamp_ = stamp;
@@ -694,6 +736,10 @@ void FusionGraphNode::OnGnss(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
 {
   if (msg->status.status < sensor_msgs::msg::NavSatStatus::STATUS_FIX)
     return;
+  // First valid fix gates the dock-arrival pose seed below. Without
+  // this, a robot that boots already docked could anchor on the dock
+  // before GPS is ready and walk the graph over once GPS arrives.
+  gps_seen_once_ = true;
   if (datum_lat_ == 0.0 && datum_lon_ == 0.0)
   {
     // Self-seed datum from first valid fix. Not ideal — operator should
@@ -722,25 +768,39 @@ void FusionGraphNode::OnGnss(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
   if (last_gps_map_xy_)
   {
     const double jump = std::hypot(mx - (*last_gps_map_xy_).x(), my - (*last_gps_map_xy_).y());
-    if (jump > rtk_wrongfix_max_jump_m_ && wheel_dist_since_last_gps_m_ < rtk_wrongfix_max_wheel_m_)
+    // Lever-arm sweep budget. A pure body rotation by |Δθ| shifts the
+    // antenna in the map frame by up to lever_arm_radius·|Δθ| with no
+    // chassis translation; without this slack the gate rejects every
+    // GPS sample taken while the controller is pivoting in place
+    // (PRE_ROTATE, headland turn), starving the graph of corrections
+    // exactly when σ_x has nothing else pinning it. NOT applied to
+    // mx/my themselves — the graph's GnssLeverArmFactor handles the
+    // offset; we only loosen the gate threshold.
+    const double expected_pivot_jump_m =
+        lever_arm_radius_m_ * abs_dtheta_since_last_gps_rad_;
+    const double jump_budget = rtk_wrongfix_max_jump_m_ + expected_pivot_jump_m;
+    if (jump > jump_budget && wheel_dist_since_last_gps_m_ < rtk_wrongfix_max_wheel_m_)
     {
       graph_->RecordGpsRejectWrongFix();
       RCLCPP_WARN_THROTTLE(get_logger(),
                            *get_clock(),
                            2000,
-                           "fusion_graph: RTK wrong-fix? jump=%.3f m, wheel=%.3f m — sample dropped",
+                           "fusion_graph: RTK wrong-fix? jump=%.3f m, wheel=%.3f m, sweep_budget=%.3f m — sample dropped",
                            jump,
-                           wheel_dist_since_last_gps_m_);
-      // Reset accumulator + cache so a repeated wrong-fix doesn't
+                           wheel_dist_since_last_gps_m_,
+                           expected_pivot_jump_m);
+      // Reset accumulators + cache so a repeated wrong-fix doesn't
       // permanently lock us out — once two consecutive samples agree,
       // last_gps_map_xy_ updates and we resume normal flow.
       last_gps_map_xy_ = gtsam::Vector2(mx, my);
       wheel_dist_since_last_gps_m_ = 0.0;
+      abs_dtheta_since_last_gps_rad_ = 0.0;
       return;
     }
   }
   last_gps_map_xy_ = gtsam::Vector2(mx, my);
   wheel_dist_since_last_gps_m_ = 0.0;
+  abs_dtheta_since_last_gps_rad_ = 0.0;
 
   // covariance[0] is variance of east; take sqrt for sigma. Use the
   // diagonal mean for a single sigma_xy (factor model is isotropic).
@@ -1049,14 +1109,76 @@ void FusionGraphNode::DispatchAsyncSave(const char* reason)
 
 void FusionGraphNode::OnHardwareStatus(mowgli_interfaces::msg::Status::ConstSharedPtr msg)
 {
-  // Rising edge of is_charging = robot just docked.
-  if (last_is_charging_valid_ && !last_is_charging_ && msg->is_charging &&
-      graph_->IsInitialized())
+  // Detect rising edge of is_charging = robot just docked, OR boot
+  // while already docked (no prior state known). The dock-arrival
+  // path serves two purposes that used to be split across two nodes:
+  //   * Save the graph to disk (auto-save).
+  //   * Anchor the graph at the operator-calibrated dock pose
+  //     (formerly published by dock_yaw_to_set_pose_node).
+  const bool docked = msg->is_charging;
+  const bool rising_edge =
+      last_is_charging_valid_ && !last_is_charging_ && docked;
+  const bool boot_while_docked = !last_is_charging_valid_ && docked;
+  const bool dock_event = rising_edge || boot_while_docked;
+  if (dock_event && auto_save_enabled_ && graph_->IsInitialized())
   {
     DispatchAsyncSave("dock-arrival");
   }
-  last_is_charging_ = msg->is_charging;
+  // Dock-pose seed: rising-edge / boot-while-docked one-shot is not
+  // enough on its own. /hardware_bridge/status starts streaming as
+  // soon as the bridge boots, well before /gps/fix is locked
+  // (~4 s in sim, several seconds on real hardware). If the dock
+  // event fires before gps_seen_once_ flips, the seed is lost
+  // permanently because last_is_charging_valid_ goes true and we
+  // never see a fall→rise of charging unless the robot physically
+  // undocks. Pre-init, keep retrying every status callback while
+  // docked + GPS-seen so the seed eventually lands once GPS arrives.
+  const bool pre_init_seed_pending =
+      docked && gps_seen_once_ && !graph_->IsInitialized();
+  if (pre_init_seed_pending || (dock_event && gps_seen_once_))
+  {
+    SeedFromDockPose();
+  }
+  last_is_charging_ = docked;
   last_is_charging_valid_ = true;
+}
+
+void FusionGraphNode::SeedFromDockPose()
+{
+  // Build a Pose2 from the dock_pose_* parameters and route it
+  // through the same Initialize/ForceAnchor path that OnSetPose uses.
+  // Using the persisted dock pose (vs. live GPS) makes re-docking
+  // deterministic: the dock physically doesn't move, but RTK-Float /
+  // multipath / lever-arm yaw error / wrong-fix can drift the live
+  // GPS by 1-10 cm. Seeding from the stored dock pose treats the
+  // charging signal as ground truth on the robot's location;
+  // GnssLeverArmFactor observations then pull the trajectory back
+  // toward GPS over the next few graph nodes.
+  const gtsam::Pose2 pose(dock_pose_x_, dock_pose_y_, dock_pose_yaw_);
+  const double sigma_xy = 0.10;  // 10 cm — robot is physically on the dock
+  const double sigma_theta = std::max(dock_pose_yaw_sigma_rad_, 0.035);
+
+  if (!graph_->IsInitialized())
+  {
+    graph_->Initialize(pose, this->now().seconds());
+    RCLCPP_INFO(get_logger(),
+                "fusion_graph: bootstrap init from dock pose "
+                "(%.2f, %.2f, %.1f°)",
+                pose.x(),
+                pose.y(),
+                pose.theta() * 180.0 / M_PI);
+    return;
+  }
+
+  auto snap = graph_->LatestSnapshot();
+  if (!snap)
+    return;
+  graph_->ForceAnchor(snap->node_index, pose, sigma_xy, sigma_theta);
+  RCLCPP_INFO(get_logger(),
+              "fusion_graph: re-anchored at dock (%.2f, %.2f, %.1f°)",
+              pose.x(),
+              pose.y(),
+              pose.theta() * 180.0 / M_PI);
 }
 
 void FusionGraphNode::OnPeriodicSaveTimer()
@@ -1224,13 +1346,18 @@ void FusionGraphNode::OnTimer()
     }
   }
 
-  // Always republish odom + TF from the latest snapshot, even when
-  // Tick returned nullopt (stationary throttle, init still pending,
-  // etc.). Nav2 / BT need a fresh map→odom TF at the OnTimer rate
-  // (10 Hz) — gating publish on node creation drops the rate to 0.2 Hz
-  // during stationary windows, which makes the planner think the
-  // pose is stale and skips goals. Cheap: just composes latest_ with
-  // odom→base_footprint and broadcasts.
+  // Local-frame DR (odom→base_footprint TF + /odometry/filtered) is
+  // always published — it's independent of graph state. Nav2's local
+  // costmap and FTCController need this TF before any GPS fix arrives,
+  // and before the graph has been initialized.
+  PublishLocalOdom();
+
+  // Map-frame outputs (map→odom TF + /odometry/filtered_map) are only
+  // published once the graph has a snapshot to read. Re-publishing
+  // from the latest snapshot even when Tick returned nullopt
+  // (stationary throttle, init still pending) keeps the rate at
+  // OnTimer cadence; gating it on node creation drops to 0.2 Hz
+  // during stationary windows and Nav2 starts skipping goals.
   if (auto snap = graph_->LatestSnapshot())
   {
     PublishOutputs(*snap);
@@ -1272,6 +1399,57 @@ bool FusionGraphNode::TrySeedInitialPose()
               *seed_yaw_,
               seed_xy_rtk_fixed_ ? " [RTK-Fixed seed, σ=5mm prior]" : " [non-Fixed seed]");
   return true;
+}
+
+void FusionGraphNode::PublishLocalOdom()
+{
+  // odom→base_footprint TF + /odometry/filtered from the dead-reckoning
+  // state. Replaces ekf_odom_node. Streams every OnTimer tick so the
+  // local frame is ready before the graph itself initializes (Nav2's
+  // local costmap and FTCController both rely on this TF, and they
+  // can come up before any GPS fix has landed).
+  const rclcpp::Time now = this->now();
+  // Same forward-stamp trick as map→odom: under sim_time, Nav2
+  // lookups can race a few ms ahead of the latest publish. Adding
+  // tf_publish_lead_s_ keeps tf2 in interpolation territory instead
+  // of ExtrapolationException. On real hardware (lead=0) this is a
+  // no-op.
+  const rclcpp::Time stamp = now + rclcpp::Duration::from_seconds(tf_publish_lead_s_);
+
+  const geometry_msgs::msg::Quaternion q_msg = QuatFromYaw(dr_yaw_);
+
+  geometry_msgs::msg::TransformStamped t_odom_base;
+  t_odom_base.header.stamp = stamp;
+  t_odom_base.header.frame_id = odom_frame_;
+  t_odom_base.child_frame_id = base_frame_;
+  t_odom_base.transform.translation.x = dr_x_;
+  t_odom_base.transform.translation.y = dr_y_;
+  t_odom_base.transform.translation.z = 0.0;
+  t_odom_base.transform.rotation = q_msg;
+  tf_broadcaster_->sendTransform(t_odom_base);
+
+  nav_msgs::msg::Odometry odom;
+  odom.header.stamp = now;
+  odom.header.frame_id = odom_frame_;
+  odom.child_frame_id = base_frame_;
+  odom.pose.pose.position.x = dr_x_;
+  odom.pose.pose.position.y = dr_y_;
+  odom.pose.pose.position.z = 0.0;
+  odom.pose.pose.orientation = q_msg;
+  odom.twist.twist.linear.x = wheel_vx_;
+  odom.twist.twist.linear.y = 0.0;
+  // Dead reckoning has unbounded drift — leave pose covariance loose
+  // and let Nav2 trust the graph's /odometry/filtered_map for absolute
+  // positioning. Tight roll/pitch/z so 2D consumers don't see NaN.
+  for (auto& v : odom.pose.covariance)
+    v = 0.0;
+  odom.pose.covariance[0] = 0.05;    // x
+  odom.pose.covariance[7] = 0.05;    // y
+  odom.pose.covariance[14] = 1e-9;   // z
+  odom.pose.covariance[21] = 1e-9;   // roll
+  odom.pose.covariance[28] = 1e-9;   // pitch
+  odom.pose.covariance[35] = 0.02;   // yaw — gyro short-term σ ≈ 0.14 rad
+  pub_local_odom_->publish(odom);
 }
 
 void FusionGraphNode::PublishOutputs(const TickOutput& out)
@@ -1341,29 +1519,17 @@ void FusionGraphNode::PublishOutputs(const TickOutput& out)
   if (!primary_mode_)
     return;
 
-  //    T_odom_base is the local EKF's odom->base_footprint TF.
-  geometry_msgs::msg::TransformStamped t_odom_base;
-  try
-  {
-    t_odom_base = tf_buffer_->lookupTransform(odom_frame_,
-                                              base_frame_,
-                                              tf2::TimePointZero,
-                                              tf2::durationFromSec(0.05));
-  }
-  catch (const tf2::TransformException& ex)
-  {
-    RCLCPP_WARN_THROTTLE(get_logger(),
-                         *get_clock(),
-                         2000,
-                         "fusion_graph: TF %s -> %s not available: %s",
-                         odom_frame_.c_str(),
-                         base_frame_.c_str(),
-                         ex.what());
-    return;
-  }
-
+  // T_odom_base comes from our own dead-reckoning state (dr_*).
+  // Previously we did tf_buffer_->lookupTransform(odom, base) to read
+  // it back from ekf_odom_node; now fusion_graph owns both TFs, so
+  // there's no listener race and no need to round-trip through tf2.
   tf2::Transform T_odom_base;
-  tf2::fromMsg(t_odom_base.transform, T_odom_base);
+  T_odom_base.setOrigin(tf2::Vector3(dr_x_, dr_y_, 0.0));
+  {
+    tf2::Quaternion q_odom_base;
+    q_odom_base.setRPY(0.0, 0.0, dr_yaw_);
+    T_odom_base.setRotation(q_odom_base);
+  }
 
   tf2::Transform T_map_base;
   T_map_base.setOrigin(tf2::Vector3(out.pose.x(), out.pose.y(), 0.0));

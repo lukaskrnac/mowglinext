@@ -20,29 +20,29 @@ navigation.launch.py
 Navigation stack launch file for the Mowgli robot mower.
 
 Brings up:
-  1. robot_localization dual-EKF — ekf_odom (wheels + gyro → odom→base_footprint
-     TF, continuous) and ekf_map (+ GPS via navsat_transform → map→odom
-     correction). Sub-cm σ_xy under RTK-Fixed.
-  2. Three helper nodes — dock_yaw_to_set_pose (seeds both EKFs with the dock
-     heading on the is_charging rising edge), cog_to_imu (GPS COG as a
-     continuous absolute-yaw observation with adaptive covariance), and
-     mag_yaw_publisher (tilt-compensated LIS3MDL magnetometer yaw, gated on
+  1. Localization — fusion_graph_node (GTSAM iSAM2 factor graph) owns
+     both map→odom AND odom→base_footprint. Map-frame inputs: wheel +
+     IMU + GPS + COG (+ optional LiDAR scan-matching and loop-closure).
+     Local-frame: wheel vx + gyro_z integrated at IMU rate (replaces
+     the standalone robot_localization ekf_odom_node).
+  2. Two helper nodes — cog_to_imu (GPS COG as a continuous absolute-
+     yaw observation with adaptive covariance) and mag_yaw_publisher
+     (tilt-compensated LIS3MDL magnetometer yaw, gated on
      /ros2_ws/maps/mag_calibration.yaml existing).
-  3. Nav2 bringup — full navigation stack (controllers, planners, recoveries,
-     BT navigator, costmaps, lifecycle).
+  3. Nav2 bringup — full navigation stack (controllers, planners,
+     recoveries, BT navigator, costmaps, lifecycle).
 
 Architecture (REP-105):
-  map → (ekf_map | fusion_graph) → odom → (ekf_odom) → base_footprint
-                                                       → base_link → sensors
-  ekf_map (default) fuses /gps/pose_cov (from navsat_to_absolute_pose_node,
-  datum + lever-arm corrected) as pose0. fusion_graph (opt-in, see
-  CLAUDE.md "Architecture Invariants" §1) is a 1-for-1 GTSAM iSAM2
-  replacement that adds LiDAR scan-matching + loop-closure factors
-  to ride through multi-minute RTK-Float windows; toggle with
-  `use_fusion_graph:=true` (or persistently in mowgli_robot.yaml).
-  The two are mutually exclusive — only one ever owns map→odom.
-  slam_toolbox / Kinematic-ICP / FusionCore have all been removed;
-  see CLAUDE.md "What NOT to Do" for the deprecated paths.
+  map → odom → base_footprint → base_link → sensors
+  fusion_graph_node owns both map→odom AND odom→base_footprint.
+  It runs WITHOUT LiDAR when use_scan_matching=false AND
+  use_loop_closure=false — the graph is then just a Pose2 backbone
+  with wheel between-factors, gyro between-factors, and GNSS
+  lever-arm + COG / mag unaries; local-frame DR is still produced
+  from the same wheel + gyro stream.
+  ekf_map_node, ekf_odom_node, slam_toolbox, Kinematic-ICP, and
+  FusionCore have all been removed — see CLAUDE.md "What NOT to Do"
+  for deprecated paths.
 """
 
 import os
@@ -81,7 +81,6 @@ def generate_launch_description() -> LaunchDescription:
     # ------------------------------------------------------------------
     _runtime_cfg_path = "/ros2_ws/config/mowgli_robot.yaml"
     _early_use_lidar = "true"
-    _early_use_fusion_graph = "false"
     _early_use_magnetometer = "false"
     _early_use_scan_matching = "false"
     _early_use_loop_closure = "false"
@@ -96,8 +95,6 @@ def generate_launch_description() -> LaunchDescription:
             # don't break.
             if "lidar_enabled" in _rp:
                 _early_use_lidar = "true" if bool(_rp["lidar_enabled"]) else "false"
-            _early_use_fusion_graph = "true" if bool(
-                _rp.get("use_fusion_graph", False)) else "false"
             _early_use_magnetometer = "true" if bool(
                 _rp.get("use_magnetometer", False)) else "false"
             _early_use_scan_matching = "true" if bool(
@@ -118,31 +115,14 @@ def generate_launch_description() -> LaunchDescription:
         _early_use_lidar = "true"
 
     # ------------------------------------------------------------------
-    # Auto-graduation rule for fusion_graph
+    # Loop-closure gating
     # ------------------------------------------------------------------
-    # When the operator opts in (`use_fusion_graph: true` in
-    # mowgli_robot.yaml), we still don't blindly hand over map→odom
-    # to fusion_graph_node — a polluted/half-built graph could spin
-    # Nav2 in a wrong frame. Instead:
-    #
-    #   - If a persisted graph exists on disk → fusion_graph runs as
-    #     PRIMARY (owns map→odom + /odometry/filtered_map). ekf_map
-    #     is skipped. Loop closure honours the operator yaml flag.
-    #   - If no graph file → fusion_graph runs in OBSERVER mode
-    #     (publishes to /fusion_graph/odometry, no TF). ekf_map keeps
-    #     driving Nav2. Loop closure is force-OFF (nothing meaningful
-    #     to close against in a bootstrapping graph). On dock arrival
-    #     fusion_graph auto-saves; the next boot picks up the file
-    #     and graduates to PRIMARY.
-    #
-    # This way the operator never has to time the use_fusion_graph
-    # flip — the system bootstraps itself.
+    # Loop closure (when use_loop_closure=true) is force-OFF on the
+    # very first boot — there is no persisted graph for the iSAM2
+    # backend to close against. fusion_graph_node auto-saves on dock
+    # arrival, so the next boot honours the operator yaml flag.
     _graph_file = "/ros2_ws/maps/fusion_graph.graph"
     _graph_exists = os.path.isfile(_graph_file)
-    _early_primary_mode = (
-        "true" if _early_use_fusion_graph == "true" and _graph_exists
-        else "false"
-    )
     _effective_use_loop_closure = (
         _early_use_loop_closure if _graph_exists else "false"
     )
@@ -168,12 +148,6 @@ def generate_launch_description() -> LaunchDescription:
         description="When false, use nav2_params_no_lidar.yaml (no obstacle layer, collision monitor pass-through). Default read from mowgli_robot.yaml.lidar_enabled; CLI/compose override wins.",
     )
 
-    use_fusion_graph_arg = DeclareLaunchArgument(
-        "use_fusion_graph",
-        default_value=_early_use_fusion_graph,
-        description="Replace ekf_map_node with fusion_graph_node (GTSAM). Default read from mowgli_robot.yaml.use_fusion_graph; CLI override wins. ekf_odom_node keeps publishing odom->base_footprint either way.",
-    )
-
     use_magnetometer_arg = DeclareLaunchArgument(
         "use_magnetometer",
         default_value=_early_use_magnetometer,
@@ -192,12 +166,6 @@ def generate_launch_description() -> LaunchDescription:
         description="Loop-closure search against earlier graph nodes (fusion_graph). Default read from mowgli_robot.yaml AND gated on a persisted graph file existing on disk — first session can't loop-close against itself.",
     )
 
-    primary_mode_arg = DeclareLaunchArgument(
-        "primary_mode",
-        default_value=_early_primary_mode,
-        description="Auto-set: true when use_fusion_graph is yes AND a persisted graph exists on disk (fusion_graph drives Nav2). False otherwise (fusion_graph runs in observer mode building a graph for next session, ekf_map_node drives Nav2).",
-    )
-
     cog_stationary_seed_rate_hz_arg = DeclareLaunchArgument(
         "cog_stationary_seed_rate_hz",
         default_value="2.0",
@@ -213,16 +181,13 @@ def generate_launch_description() -> LaunchDescription:
     # at lower rates / no lead. On real hardware, forward-stamping the
     # map TF by 100 ms costs 5° of yaw error per pivot at 0.5 rad/s
     # — visible on Foxglove and pushed into FTC's heading PID.
+    # fusion_graph_tf_lead_s is shared by map→odom AND odom→base
+    # publishers inside fusion_graph_node now that ekf_odom is gone.
     # ------------------------------------------------------------------
-    ekf_transform_time_offset_arg = DeclareLaunchArgument(
-        "ekf_transform_time_offset",
-        default_value="0.0",
-        description="robot_localization transform_time_offset for both ekf_odom_node and ekf_map_node. Hardware default 0.0 (no extrapolation). Sim should set 0.1 to absorb sim_time/publish phase jitter.",
-    )
     fusion_graph_tf_lead_arg = DeclareLaunchArgument(
         "fusion_graph_tf_lead_s",
         default_value="0.0",
-        description="fusion_graph map→odom TF forward-stamp (seconds). Hardware default 0.0. Sim should set 0.1.",
+        description="fusion_graph TF forward-stamp (seconds), applied to both map→odom and odom→base_footprint. Hardware default 0.0. Sim should set 0.1.",
     )
     fusion_graph_node_period_arg = DeclareLaunchArgument(
         "fusion_graph_node_period_s",
@@ -236,12 +201,9 @@ def generate_launch_description() -> LaunchDescription:
     use_sim_time = LaunchConfiguration("use_sim_time")
     use_ekf = LaunchConfiguration("use_ekf")
     use_lidar = LaunchConfiguration("use_lidar")
-    use_fusion_graph = LaunchConfiguration("use_fusion_graph")
     use_magnetometer = LaunchConfiguration("use_magnetometer")
     use_scan_matching = LaunchConfiguration("use_scan_matching")
     use_loop_closure = LaunchConfiguration("use_loop_closure")
-    primary_mode = LaunchConfiguration("primary_mode")
-    ekf_transform_time_offset = LaunchConfiguration("ekf_transform_time_offset")
     fusion_graph_tf_lead_s = LaunchConfiguration("fusion_graph_tf_lead_s")
     fusion_graph_node_period_s = LaunchConfiguration("fusion_graph_node_period_s")
 
@@ -647,20 +609,14 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
-    # Alternative localization backend: robot_localization
+    # gps_link → gps static alias.
     # ------------------------------------------------------------------
-    # Three nodes. Active only when localization_backend == "robot_localization".
-    # ekf_odom_node         : wheels + IMU gyro → odom → base_footprint TF
-    # navsat_transform_node : /gps/fix + /odometry/filtered → /odometry/gps
-    # ekf_map_node          : wheels + IMU + /odometry/gps → map → odom TF
-    robot_localization_params = os.path.join(
-        bringup_dir, "config", "robot_localization.yaml"
-    )
-
-    # navsat_transform_node looks up a TF from base_footprint to the frame
-    # named in the NavSatFix header. Our URDF calls that frame gps_link,
-    # but the ublox_dgnss driver publishes frame_id=gps. Alias gps_link →
-    # gps as a static identity so the lookup finds a chain.
+    # Historical: navsat_transform_node used to look up a TF from
+    # base_footprint to the NavSatFix header frame. Our URDF calls
+    # that frame gps_link; the ublox_dgnss driver publishes frame_id=gps.
+    # navsat_transform was removed 2026-04-26, but the alias is still
+    # cheap insurance for any third-party tool that walks the frame
+    # tree from gps.
     static_gps_link_alias = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
@@ -675,62 +631,11 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{"use_sim_time": use_sim_time}],
     )
 
-    ekf_odom_node = Node(
-        package="robot_localization",
-        executable="ekf_node",
-        name="ekf_odom_node",
-        output="screen",
-        parameters=[
-            robot_localization_params,
-            {"use_sim_time": use_sim_time,
-             "transform_time_offset": ekf_transform_time_offset},
-        ],
-        remappings=[
-            ("odometry/filtered", "/odometry/filtered"),
-        ],
-    )
-
-    # Datum triple [lat, lon, yaw]. yaw stays 0 — our IMU has no
-    # magnetometer so yaw can't be anchored to true north at boot;
-    # robot yaw will align to GPS track after the first straight
-    # motion, and to dock_pose_yaw at dock reset. Datum lat/lon must
-    # match what was used to save areas / dock pose, otherwise saved
-    # coordinates shift.
-    # navsat_transform_node removed 2026-04-26 — its only output (/odometry/gps)
-    # had no subscribers in the active fusion path. /gps/pose_cov from the
-    # custom navsat_to_absolute_pose_node (which applies the lever-arm
-    # correction with map yaw) is what ekf_map actually fuses.
-    # /gps/filtered (foxglove visualisation) is replaced by /gps/absolute_pose.
-
-    # ekf_map_node — runs whenever fusion_graph is NOT in primary mode.
-    # That covers: use_fusion_graph=false (operator opted out) AND
-    # use_fusion_graph=true but no persisted graph yet (bootstrap
-    # session — fusion_graph builds the graph in observer mode while
-    # ekf_map keeps driving Nav2).
-    ekf_map_node = Node(
-        condition=UnlessCondition(primary_mode),
-        package="robot_localization",
-        executable="ekf_node",
-        name="ekf_map_node",
-        output="screen",
-        parameters=[
-            robot_localization_params,
-            {"use_sim_time": use_sim_time,
-             "transform_time_offset": ekf_transform_time_offset},
-        ],
-        remappings=[
-            ("odometry/filtered", "/odometry/filtered_map"),
-            # robot_localization defaults to a global /set_pose topic shared
-            # by both EKFs. Remap ekf_map's subscription to a node-unique
-            # name so seeding ekf_map does not also reset ekf_odom.
-            ("set_pose", "/ekf_map_node/set_pose"),
-        ],
-    )
-
-    # fusion_graph_node — GTSAM iSAM2 factor-graph localizer (planned
-    # replacement for ekf_map_node). Mutually exclusive with the EKF
-    # above. Reads datum + lever-arm from mowgli_robot.yaml inside the
-    # fusion_graph launch include.
+    # fusion_graph_node — GTSAM iSAM2 factor-graph localizer. Always
+    # primary (no fallback to ekf_map_node, which was removed alongside
+    # the use_fusion_graph flag in this refactor). Works WITHOUT LiDAR
+    # when use_scan_matching=false AND use_loop_closure=false (default).
+    # Reads datum + lever-arm from mowgli_robot.yaml inside the include.
     fusion_graph_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -738,41 +643,21 @@ def generate_launch_description() -> LaunchDescription:
                 "launch", "fusion_graph.launch.py",
             )
         ),
-        # Run whenever the operator wants fusion_graph at all — the
-        # primary_mode flag inside the include decides whether it
-        # owns map→odom or just observes.
-        condition=IfCondition(use_fusion_graph),
         launch_arguments={
             "use_sim_time": use_sim_time,
             "use_magnetometer": use_magnetometer,
             "use_scan_matching": use_scan_matching,
             "use_loop_closure": use_loop_closure,
-            "primary_mode": primary_mode,
+            "primary_mode": "true",
             "tf_publish_lead_s": fusion_graph_tf_lead_s,
             "node_period_s": fusion_graph_node_period_s,
         }.items(),
     )
 
-    # Seeds ekf_map with the dock heading on rising edges of is_charging.
-    # Fires once per docking event plus once at boot if the robot is
-    # already docked.
-    dock_yaw_to_set_pose = Node(
-        package="mowgli_localization",
-        executable="dock_yaw_to_set_pose",
-        name="dock_yaw_to_set_pose",
-        output="screen",
-        parameters=[
-            # dock_pose_x / dock_pose_y added 2026-05-17 (PR #238) — the
-            # node now seeds the SetPose at the calibrated dock pose
-            # instead of the live GPS sample, so it needs the persisted
-            # (x, y) alongside the existing yaw.
-            {"use_sim_time": use_sim_time,
-             "dock_pose_x": dock_pose_x,
-             "dock_pose_y": dock_pose_y,
-             "dock_pose_yaw": dock_pose_yaw,
-             "dock_pose_yaw_sigma_rad": dock_pose_yaw_sigma_rad},
-        ],
-    )
+    # dock_yaw_to_set_pose was inlined into fusion_graph_node
+    # (FusionGraphNode::SeedFromDockPose) on 2026-05-18 — the dock
+    # pose anchor is now applied directly by the localizer on
+    # is_charging rising edge, without a separate node + topic round-trip.
 
     # Publishes GPS course-over-ground as a synthetic sensor_msgs/Imu on
     # /imu/cog_heading so ekf_map_node can fuse it as an absolute-yaw
@@ -884,10 +769,6 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
-    # ekf_odom_node subscribes to /wheel_odom directly (see
-    # robot_localization.yaml). ekf_map_node fuses /gps/pose_cov directly
-    # as pose0 (published by navsat_to_absolute_pose_node).
-
     # ------------------------------------------------------------------
     # LaunchDescription
     # ------------------------------------------------------------------
@@ -896,21 +777,17 @@ def generate_launch_description() -> LaunchDescription:
             use_sim_time_arg,
             use_ekf_arg,
             use_lidar_arg,
-            use_fusion_graph_arg,
             use_magnetometer_arg,
             use_scan_matching_arg,
             use_loop_closure_arg,
-            primary_mode_arg,
             cog_stationary_seed_rate_hz_arg,
-            ekf_transform_time_offset_arg,
             fusion_graph_tf_lead_arg,
             fusion_graph_node_period_arg,
-            # robot_localization dual EKF + helpers
+            # Localization helpers + fusion_graph_node (single localizer
+            # for both map→odom AND odom→base_footprint; ekf_odom_node
+            # was removed 2026-05-18).
             static_gps_link_alias,
-            ekf_odom_node,
-            ekf_map_node,
             fusion_graph_launch,
-            dock_yaw_to_set_pose,
             cog_to_imu,
             mag_yaw_publisher,
             scan_deskew,

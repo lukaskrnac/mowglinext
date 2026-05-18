@@ -60,6 +60,10 @@ private:
   void OnScan(sensor_msgs::msg::LaserScan::ConstSharedPtr msg);
   void OnHighLevelStatus(mowgli_interfaces::msg::HighLevelStatus::ConstSharedPtr msg);
   void OnHardwareStatus(mowgli_interfaces::msg::Status::ConstSharedPtr msg);
+  // Anchor the graph at the operator-calibrated dock pose. Called on
+  // the rising edge of is_charging once GPS has arrived at least once.
+  // Replaces the old dock_yaw_to_set_pose_node behavior.
+  void SeedFromDockPose();
   void OnSetPose(geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg);
   void OnTimer();
   void OnPeriodicSaveTimer();
@@ -73,6 +77,10 @@ private:
 
   // Publish TF map->odom and /odometry/filtered_map.
   void PublishOutputs(const TickOutput& out);
+  // Publishes /odometry/filtered + odom→base_footprint TF from the
+  // dead-reckoning state. Called unconditionally from OnTimer so the
+  // local frame keeps streaming even before the graph initializes.
+  void PublishLocalOdom();
 
   // Launch GraphManager::Save on a detached worker. No-op if a
   // previous async save is still running. `reason` is logged.
@@ -103,7 +111,6 @@ private:
   // re-anchor. Below this, the autoloaded pose is trusted and GPS just
   // contributes factors normally.
   double rtk_autoload_override_threshold_m_ = 0.3;
-  double dock_pose_yaw_ = 0.0;
 
   // Latched datum (read from parameters at startup).
   double datum_lat_ = 0.0;
@@ -113,6 +120,33 @@ private:
   // Most recent wheel timestamp (for accumulator dt).
   std::optional<rclcpp::Time> last_wheel_stamp_;
   std::optional<rclcpp::Time> last_imu_stamp_;
+
+  // ── Local-frame dead reckoning ──────────────────────────────────
+  // odom→base_footprint TF + /odometry/filtered. Wheel vx + gyro_z
+  // integrated at IMU rate (~91 Hz) so the local frame is continuous,
+  // GPS-independent, and never jumps — REP-105 odom invariants.
+  // Replaces the standalone robot_localization ekf_odom_node (which
+  // ran the same wheel+gyro fusion at 25 Hz via a generic EKF). The
+  // non-holonomic constraint is enforced implicitly: only twist.linear.x
+  // is integrated, twist.linear.y is ignored (matches hardware_bridge
+  // which already publishes vy=0 with tight covariance).
+  double dr_x_ = 0.0;
+  double dr_y_ = 0.0;
+  double dr_yaw_ = 0.0;
+  double wheel_vx_ = 0.0;  // latest forward velocity cached from /wheel_odom
+
+  // GPS antenna radial offset from base_link, hypot(lever_arm_x,
+  // lever_arm_y). Used by the RTK wrong-fix gate in OnGnss to
+  // predict how much antenna position can shift due to pure body
+  // rotation between two GPS samples, on top of any wheel travel.
+  // NOT used to correct mx/my — the graph's GnssLeverArmFactor
+  // already applies R(yaw)·lever_arm in its residual; the gate
+  // only consults this scalar to relax its threshold.
+  double lever_arm_radius_m_ = 0.0;
+  // |Δθ| (rad) accumulated from gyro_z since the last accepted GPS
+  // sample. Paired with wheel_dist_since_last_gps_m_; both are
+  // reset on every accepted (or wrong-fix-classified) sample.
+  double abs_dtheta_since_last_gps_rad_ = 0.0;
 
   // Latched seeds for initialization.
   std::optional<gtsam::Vector2> seed_xy_;  // from latest GPS
@@ -180,6 +214,10 @@ private:
 
   // Publishers.
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odom_;
+  // /odometry/filtered — local-frame dead reckoning (REP-105 odom),
+  // replaces what ekf_odom_node used to publish. Same topic name so
+  // Nav2 / GUI consumers need no rewiring.
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_local_odom_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr pub_fg_yaw_;
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr pub_diag_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_markers_;
@@ -217,6 +255,16 @@ private:
   bool last_hl_state_valid_ = false;
   bool last_is_charging_ = false;
   bool last_is_charging_valid_ = false;
+
+  // Dock-arrival pose seed (formerly the dock_yaw_to_set_pose node).
+  // On the rising edge of is_charging we anchor the graph at the
+  // operator-calibrated dock pose. The two are deduplicated by
+  // last_is_charging_/last_is_charging_valid_ above.
+  double dock_pose_x_ = 0.0;
+  double dock_pose_y_ = 0.0;
+  double dock_pose_yaw_ = 0.0;
+  double dock_pose_yaw_sigma_rad_ = 0.035;
+  bool gps_seen_once_ = false;  // gate dock seed on at least one GPS arrival
 
   // Per-tick counters for diagnostics.
   uint64_t scans_received_ = 0;

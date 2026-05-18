@@ -132,22 +132,8 @@ ament_target_dependencies(mag_yaw_publisher
 
 target_link_libraries(mag_yaw_publisher yaml-cpp)
 
-# ---------------------------------------------------------------------------
-# Executable: dock_yaw_to_set_pose (ported from dock_yaw_to_set_pose.py)
-# ---------------------------------------------------------------------------
-
-add_executable(dock_yaw_to_set_pose
-  src/dock_yaw_to_set_pose_node.cpp
-)
-
-ament_target_dependencies(dock_yaw_to_set_pose
-  rclcpp
-  geometry_msgs
-  sensor_msgs
-  mowgli_interfaces
-)
-
-target_link_libraries(dock_yaw_to_set_pose yaml-cpp)
+# dock_yaw_to_set_pose was inlined into fusion_graph_node (2026-05-18)
+# — see FusionGraphNode::SeedFromDockPose in fusion_graph/src/.
 
 # ---------------------------------------------------------------------------
 # Executable: calibrate_imu_yaw_node (ported from calibrate_imu_yaw_node.py)
@@ -215,7 +201,6 @@ install(
     localization_monitor_node
     cog_to_imu
     mag_yaw_publisher
-    dock_yaw_to_set_pose
     calibrate_imu_yaw_node
     costmap_scan_filter_node
     scan_deskew_node

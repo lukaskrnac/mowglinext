@@ -154,9 +154,14 @@ BT::NodeStatus CalibrateHeadingFromUndock::tick()
 
   if (!set_pose_pub_)
   {
-    auto qos = rclcpp::QoS(1).reliable();
+    // TRANSIENT_LOCAL matches fusion_graph_node's set_pose subscriber.
+    // The calibration seed is a one-shot, fire-and-forget message:
+    // VOLATILE on either side races subscription discovery (~tens of ms
+    // after node up) and silently drops the seed, leaving fusion_graph
+    // anchored at the persisted dock pose while the robot drives away.
+    auto qos = rclcpp::QoS(1).reliable().transient_local();
     set_pose_pub_ = ctx->node->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
-        "/ekf_map_node/set_pose", qos);
+        "/fusion_graph_node/set_pose", qos);
     set_pose_odom_pub_ =
         ctx->node->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("/set_pose",
                                                                                    qos);
@@ -234,9 +239,14 @@ BT::NodeStatus SeedYawFromMotion::onStart()
   }
   if (!set_pose_pub_)
   {
-    auto qos = rclcpp::QoS(1).reliable();
+    // TRANSIENT_LOCAL matches fusion_graph_node's set_pose subscriber.
+    // The calibration seed is a one-shot, fire-and-forget message:
+    // VOLATILE on either side races subscription discovery (~tens of ms
+    // after node up) and silently drops the seed, leaving fusion_graph
+    // anchored at the persisted dock pose while the robot drives away.
+    auto qos = rclcpp::QoS(1).reliable().transient_local();
     set_pose_pub_ = ctx->node->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
-        "/ekf_map_node/set_pose", qos);
+        "/fusion_graph_node/set_pose", qos);
     set_pose_odom_pub_ =
         ctx->node->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("/set_pose",
                                                                                    qos);

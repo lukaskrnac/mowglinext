@@ -136,6 +136,16 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
     sp.sigma_theta_base = declare_parameter<double>("icp_sigma_theta_base", 0.005);
     scan_matcher_ = std::make_unique<ScanMatcher>(sp);
 
+    // Dock pose seed (formerly emitted by dock_yaw_to_set_pose_node).
+    // Read from mowgli_robot.yaml — calibrate_imu_yaw_node and the
+    // map_server /set_docking_point service write back to that file,
+    // so the values here are always the latest persisted dock anchor.
+    dock_pose_x_ = declare_parameter<double>("dock_pose_x", 0.0);
+    dock_pose_y_ = declare_parameter<double>("dock_pose_y", 0.0);
+    dock_pose_yaw_ = declare_parameter<double>("dock_pose_yaw", 0.0);
+    dock_pose_yaw_sigma_rad_ =
+        declare_parameter<double>("dock_pose_yaw_sigma_rad", 0.035);
+
     // Per-tick ICP guard rails (see fusion_graph_node.hpp comments).
     icp_max_rmse_m_ = declare_parameter<double>("icp_max_rmse_m", 0.10);
     icp_max_delta_xy_m_ = declare_parameter<double>("icp_max_delta_xy_m", 0.30);
@@ -333,16 +343,22 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
         "/scan", sensor_qos, std::bind(&FusionGraphNode::OnScan, this, std::placeholders::_1));
   }
 
+  // /hardware_bridge/status is always subscribed — OnHardwareStatus
+  // serves two purposes that are independent of auto-save:
+  //   1. Dock-arrival pose seed (rising edge of is_charging anchors
+  //      the graph at the operator-calibrated dock_pose_*).
+  //   2. Auto-checkpoint to disk (gated on auto_save_enabled_).
+  sub_hw_status_ = create_subscription<mowgli_interfaces::msg::Status>(
+      "/hardware_bridge/status",
+      10,
+      std::bind(&FusionGraphNode::OnHardwareStatus, this, std::placeholders::_1));
+
   if (auto_save_enabled_)
   {
     sub_hl_status_ = create_subscription<mowgli_interfaces::msg::HighLevelStatus>(
         "/behavior_tree_node/high_level_status",
         10,
         std::bind(&FusionGraphNode::OnHighLevelStatus, this, std::placeholders::_1));
-    sub_hw_status_ = create_subscription<mowgli_interfaces::msg::Status>(
-        "/hardware_bridge/status",
-        10,
-        std::bind(&FusionGraphNode::OnHardwareStatus, this, std::placeholders::_1));
     if (periodic_save_period_s > 0.0)
     {
       periodic_save_timer_ =
@@ -354,10 +370,10 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
   // ── External set-pose channel ───────────────────────────────────
   // Equivalent to robot_localization's /<node>/set_pose: takes a
   // PoseWithCovarianceStamped, anchors the latest graph node at the
-  // given pose with covariance-derived sigmas. dock_yaw_to_set_pose
-  // dual-publishes to /ekf_map_node/set_pose AND to this topic so
-  // the dock-yaw seeding works regardless of which localizer is the
-  // map-frame primary.
+  // given pose with covariance-derived sigmas. Used by the BT
+  // calibration nodes after a yaw-cal manoeuvre. The dock-arrival
+  // seed (formerly dock_yaw_to_set_pose_node) now bypasses this
+  // topic entirely — see SeedFromDockPose().
   //
   // QoS: TRANSIENT_LOCAL with depth-1, matching dock_yaw_to_set_pose's
   // publisher. The boot seed is a one-shot rising-edge event; with
@@ -694,6 +710,10 @@ void FusionGraphNode::OnGnss(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
 {
   if (msg->status.status < sensor_msgs::msg::NavSatStatus::STATUS_FIX)
     return;
+  // First valid fix gates the dock-arrival pose seed below. Without
+  // this, a robot that boots already docked could anchor on the dock
+  // before GPS is ready and walk the graph over once GPS arrives.
+  gps_seen_once_ = true;
   if (datum_lat_ == 0.0 && datum_lon_ == 0.0)
   {
     // Self-seed datum from first valid fix. Not ideal — operator should
@@ -1049,14 +1069,64 @@ void FusionGraphNode::DispatchAsyncSave(const char* reason)
 
 void FusionGraphNode::OnHardwareStatus(mowgli_interfaces::msg::Status::ConstSharedPtr msg)
 {
-  // Rising edge of is_charging = robot just docked.
-  if (last_is_charging_valid_ && !last_is_charging_ && msg->is_charging &&
+  // Detect rising edge of is_charging = robot just docked, OR boot
+  // while already docked (no prior state known). The dock-arrival
+  // path serves two purposes that used to be split across two nodes:
+  //   * Save the graph to disk (auto-save).
+  //   * Anchor the graph at the operator-calibrated dock pose
+  //     (formerly published by dock_yaw_to_set_pose_node).
+  const bool rising_edge =
+      last_is_charging_valid_ && !last_is_charging_ && msg->is_charging;
+  const bool boot_while_docked = !last_is_charging_valid_ && msg->is_charging;
+  if ((rising_edge || boot_while_docked) && auto_save_enabled_ &&
       graph_->IsInitialized())
   {
     DispatchAsyncSave("dock-arrival");
   }
+  if ((rising_edge || boot_while_docked) && gps_seen_once_)
+  {
+    SeedFromDockPose();
+  }
   last_is_charging_ = msg->is_charging;
   last_is_charging_valid_ = true;
+}
+
+void FusionGraphNode::SeedFromDockPose()
+{
+  // Build a Pose2 from the dock_pose_* parameters and route it
+  // through the same Initialize/ForceAnchor path that OnSetPose uses.
+  // Using the persisted dock pose (vs. live GPS) makes re-docking
+  // deterministic: the dock physically doesn't move, but RTK-Float /
+  // multipath / lever-arm yaw error / wrong-fix can drift the live
+  // GPS by 1-10 cm. Seeding from the stored dock pose treats the
+  // charging signal as ground truth on the robot's location;
+  // GnssLeverArmFactor observations then pull the trajectory back
+  // toward GPS over the next few graph nodes.
+  const gtsam::Pose2 pose(dock_pose_x_, dock_pose_y_, dock_pose_yaw_);
+  const double sigma_xy = 0.10;  // 10 cm — robot is physically on the dock
+  const double sigma_theta = std::max(dock_pose_yaw_sigma_rad_, 0.035);
+
+  if (!graph_->IsInitialized())
+  {
+    graph_->Initialize(pose, this->now().seconds());
+    RCLCPP_INFO(get_logger(),
+                "fusion_graph: bootstrap init from dock pose "
+                "(%.2f, %.2f, %.1f°)",
+                pose.x(),
+                pose.y(),
+                pose.theta() * 180.0 / M_PI);
+    return;
+  }
+
+  auto snap = graph_->LatestSnapshot();
+  if (!snap)
+    return;
+  graph_->ForceAnchor(snap->node_index, pose, sigma_xy, sigma_theta);
+  RCLCPP_INFO(get_logger(),
+              "fusion_graph: re-anchored at dock (%.2f, %.2f, %.1f°)",
+              pose.x(),
+              pose.y(),
+              pose.theta() * 180.0 / M_PI);
 }
 
 void FusionGraphNode::OnPeriodicSaveTimer()

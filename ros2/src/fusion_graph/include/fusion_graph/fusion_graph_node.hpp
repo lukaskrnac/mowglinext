@@ -60,6 +60,10 @@ private:
   void OnScan(sensor_msgs::msg::LaserScan::ConstSharedPtr msg);
   void OnHighLevelStatus(mowgli_interfaces::msg::HighLevelStatus::ConstSharedPtr msg);
   void OnHardwareStatus(mowgli_interfaces::msg::Status::ConstSharedPtr msg);
+  // Anchor the graph at the operator-calibrated dock pose. Called on
+  // the rising edge of is_charging once GPS has arrived at least once.
+  // Replaces the old dock_yaw_to_set_pose_node behavior.
+  void SeedFromDockPose();
   void OnSetPose(geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg);
   void OnTimer();
   void OnPeriodicSaveTimer();
@@ -217,6 +221,16 @@ private:
   bool last_hl_state_valid_ = false;
   bool last_is_charging_ = false;
   bool last_is_charging_valid_ = false;
+
+  // Dock-arrival pose seed (formerly the dock_yaw_to_set_pose node).
+  // On the rising edge of is_charging we anchor the graph at the
+  // operator-calibrated dock pose. The two are deduplicated by
+  // last_is_charging_/last_is_charging_valid_ above.
+  double dock_pose_x_ = 0.0;
+  double dock_pose_y_ = 0.0;
+  double dock_pose_yaw_ = 0.0;
+  double dock_pose_yaw_sigma_rad_ = 0.035;
+  bool gps_seen_once_ = false;  // gate dock seed on at least one GPS arrival
 
   // Per-tick counters for diagnostics.
   uint64_t scans_received_ = 0;

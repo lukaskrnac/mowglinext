@@ -20,16 +20,19 @@ navigation.launch.py
 Navigation stack launch file for the Mowgli robot mower.
 
 Brings up:
-  1. robot_localization dual-EKF — ekf_odom (wheels + gyro → odom→base_footprint
-     TF, continuous) and ekf_map (+ GPS via navsat_transform → map→odom
-     correction). Sub-cm σ_xy under RTK-Fixed.
-  2. Three helper nodes — dock_yaw_to_set_pose (seeds both EKFs with the dock
-     heading on the is_charging rising edge), cog_to_imu (GPS COG as a
-     continuous absolute-yaw observation with adaptive covariance), and
-     mag_yaw_publisher (tilt-compensated LIS3MDL magnetometer yaw, gated on
+  1. Map-frame localization — fusion_graph_node (GTSAM iSAM2 factor
+     graph) anchors the robot in the map frame and broadcasts map→odom.
+     Inputs: wheel + IMU + GPS + COG (+ optional LiDAR scan-matching
+     and loop-closure). Replaces the legacy robot_localization
+     ekf_map_node + dock_yaw_to_set_pose combo.
+  2. Local-frame dead reckoning — ekf_odom_node (wheels + gyro →
+     odom→base_footprint, continuous).
+  3. Two helper nodes — cog_to_imu (GPS COG as a continuous absolute-
+     yaw observation with adaptive covariance) and mag_yaw_publisher
+     (tilt-compensated LIS3MDL magnetometer yaw, gated on
      /ros2_ws/maps/mag_calibration.yaml existing).
-  3. Nav2 bringup — full navigation stack (controllers, planners, recoveries,
-     BT navigator, costmaps, lifecycle).
+  4. Nav2 bringup — full navigation stack (controllers, planners,
+     recoveries, BT navigator, costmaps, lifecycle).
 
 Architecture (REP-105):
   map → fusion_graph → odom → (ekf_odom) → base_footprint
@@ -690,26 +693,10 @@ def generate_launch_description() -> LaunchDescription:
         }.items(),
     )
 
-    # Seeds ekf_map with the dock heading on rising edges of is_charging.
-    # Fires once per docking event plus once at boot if the robot is
-    # already docked.
-    dock_yaw_to_set_pose = Node(
-        package="mowgli_localization",
-        executable="dock_yaw_to_set_pose",
-        name="dock_yaw_to_set_pose",
-        output="screen",
-        parameters=[
-            # dock_pose_x / dock_pose_y added 2026-05-17 (PR #238) — the
-            # node now seeds the SetPose at the calibrated dock pose
-            # instead of the live GPS sample, so it needs the persisted
-            # (x, y) alongside the existing yaw.
-            {"use_sim_time": use_sim_time,
-             "dock_pose_x": dock_pose_x,
-             "dock_pose_y": dock_pose_y,
-             "dock_pose_yaw": dock_pose_yaw,
-             "dock_pose_yaw_sigma_rad": dock_pose_yaw_sigma_rad},
-        ],
-    )
+    # dock_yaw_to_set_pose was inlined into fusion_graph_node
+    # (FusionGraphNode::SeedFromDockPose) on 2026-05-18 — the dock
+    # pose anchor is now applied directly by the localizer on
+    # is_charging rising edge, without a separate node + topic round-trip.
 
     # Publishes GPS course-over-ground as a synthetic sensor_msgs/Imu on
     # /imu/cog_heading so ekf_map_node can fuse it as an absolute-yaw
@@ -844,7 +831,6 @@ def generate_launch_description() -> LaunchDescription:
             static_gps_link_alias,
             ekf_odom_node,
             fusion_graph_launch,
-            dock_yaw_to_set_pose,
             cog_to_imu,
             mag_yaw_publisher,
             scan_deskew,

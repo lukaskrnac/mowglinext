@@ -156,7 +156,7 @@ BT::NodeStatus CalibrateHeadingFromUndock::tick()
   {
     auto qos = rclcpp::QoS(1).reliable();
     set_pose_pub_ = ctx->node->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
-        "/ekf_map_node/set_pose", qos);
+        "/fusion_graph_node/set_pose", qos);
     set_pose_odom_pub_ =
         ctx->node->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("/set_pose",
                                                                                    qos);
@@ -236,7 +236,7 @@ BT::NodeStatus SeedYawFromMotion::onStart()
   {
     auto qos = rclcpp::QoS(1).reliable();
     set_pose_pub_ = ctx->node->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
-        "/ekf_map_node/set_pose", qos);
+        "/fusion_graph_node/set_pose", qos);
     set_pose_odom_pub_ =
         ctx->node->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("/set_pose",
                                                                                    qos);

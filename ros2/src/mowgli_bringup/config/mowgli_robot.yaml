@@ -115,22 +115,26 @@ mowgli:
     # mag setup.
     use_magnetometer: false
 
-    # use_scan_matching (default false; only effective when
-    # use_fusion_graph is true): per-tick ICP between the latest /scan
-    # and the previous graph-node scan. Adds a BetweenFactor with
-    # rmse-scaled covariance — bounded drift between consecutive
-    # nodes even without GPS. Required for "robot keeps mowing
-    # through GPS dropouts" scenarios.
-    use_scan_matching: false
+    # use_scan_matching: per-tick ICP between the latest /scan and the
+    # previous graph-node scan. Adds a BetweenFactor with rmse-scaled
+    # covariance — bounded drift between consecutive nodes even when
+    # GPS drops to RTK-Float. Required for "robot keeps mowing through
+    # multi-minute GPS dropouts" scenarios. No-op when the LiDAR
+    # driver is off (use_lidar=false): no /scan publisher, no
+    # subscription, no factors.
+    use_scan_matching: true
 
-    # use_loop_closure (default false; only effective when
-    # use_scan_matching is also true): on every new node, search
-    # earlier graph nodes within ~5 m / >30 s ago for an ICP match
-    # against the current scan. Accepted matches add a BetweenFactor
-    # that snaps the trajectory back to consistency with previously-
-    # seen places. Resets accumulated drift across multi-minute GPS-
-    # less stretches at the cost of one ICP per candidate per tick.
-    use_loop_closure: false
+    # use_loop_closure: on every new node, search earlier graph nodes
+    # within ~5 m / >30 s ago for an ICP match against the current
+    # scan. Accepted matches add a BetweenFactor that snaps the
+    # trajectory back to consistency with previously-seen places.
+    # Resets accumulated drift across multi-minute GPS-less stretches
+    # and at session start when re-entering a previously-mapped area.
+    # Cost: one ICP per candidate per tick (~5 ms each, capped to
+    # lc_max_candidates=3). No-op when use_scan_matching is also
+    # false or when use_lidar=false (the launch file force-OFFs it
+    # on first boot too — see navigation.launch.py).
+    use_loop_closure: true
 
     # -----------------------------------------------------------------
     # GPS / Positioning

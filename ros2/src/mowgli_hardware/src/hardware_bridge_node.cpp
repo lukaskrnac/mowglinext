@@ -1341,10 +1341,24 @@ private:
     // anyway, so commanding a sub-deadband forward velocity only
     // produced motor buzz and the IMU/wheel mismatch above. Sending 0
     // makes the IMU see nothing AND the wheels see nothing — the graph
-    // stays consistent. Nav2 closed-loop controllers (FTC, MPPI, BackUp)
-    // will issue above-deadband commands on their own once they detect
-    // lack of progress.
-    constexpr double kMinLinVel = 0.15;        // m/s — PWM 40 deadband + safety margin
+    // stays consistent. Nav2's closed-loop controllers (FTC, MPPI,
+    // BackUp) will issue above-deadband commands on their own once
+    // they detect lack of progress, provided their slow-speed tunables
+    // are set ≥ kMinLinVel (see nav2_params.yaml's FTC `speed_slow:
+    // 0.16` and RPP's `min_approach_linear_velocity: 0.16` for the
+    // canonical examples).
+    //
+    // wz is intentionally left passthrough: FTC's fine-heading
+    // corrections during PRE_ROTATE and headland turns command
+    // sub-deadband angular velocities to close small (~0.1 rad)
+    // yaw_goal_tolerance errors. Zeroing them would prevent goal
+    // convergence. The motor PWM 40 pivot deadband is closer to 0.6
+    // rad/s on this chassis and the resulting wheel/IMU mismatch in
+    // pure-rotation mode is small enough to be absorbed by the graph's
+    // gyro between-factor (since both legs of a pivot integrate the
+    // same gyro_z and only the wheel-derived ω is silenced, which the
+    // non-holo factor already handles).
+    constexpr double kMinLinVel = 0.15;          // m/s — PWM 40 forward deadband + margin
     constexpr double kMinCmdToConsider = 1.0e-3;  // ignore floating-point dust
     if (std::abs(vx) > kMinCmdToConsider && std::abs(vx) < kMinLinVel)
     {

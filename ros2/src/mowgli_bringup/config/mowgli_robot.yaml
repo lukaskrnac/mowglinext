@@ -192,7 +192,7 @@ mowgli:
     dock_pose_y: 0.0
     dock_pose_yaw: 4.17            # measured with phone compass (239°)
     undock_distance: 1.5           # reverse distance when undocking (m)
-    undock_speed: 0.15             # reverse speed (m/s)
+    undock_speed: 0.16             # reverse speed (m/s) — above kMinLinVel=0.15 host clamp
     dock_approach_distance: 1.0    # distance to staging pose in front of dock
     # Overshoot (m) applied to dock_pose in the body forward direction
     # when configuring opennav_docking's home_dock target. The robot

@@ -199,11 +199,9 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
       static_cast<uint64_t>(declare_parameter<int>("isam2_rebase_every_nodes", 2000));
   const bool autoload = declare_parameter<bool>("autoload_graph", true);
 
-  // Dock yaw read from mowgli_robot.yaml via the launch wrapper. Used
-  // as a yaw seed at cold boot when GPS+COG aren't available yet but
-  // a persisted graph exists — the robot is on the dock so this is
-  // a tight prior.
-  dock_pose_yaw_ = declare_parameter<double>("dock_pose_yaw", 0.0);
+  // (dock_pose_yaw_ is declared above as part of the dock-seed
+  // parameter block — formerly declared twice, kept the earlier
+  // declaration which also sets x/y/sigma siblings.)
 
   // RTK-Fixed override of the autoloaded pose: if the autoloaded graph
   // disagrees with the first incoming RTK-Fixed sample by more than this

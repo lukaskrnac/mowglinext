@@ -107,7 +107,6 @@ private:
   // re-anchor. Below this, the autoloaded pose is trusted and GPS just
   // contributes factors normally.
   double rtk_autoload_override_threshold_m_ = 0.3;
-  double dock_pose_yaw_ = 0.0;
 
   // Latched datum (read from parameters at startup).
   double datum_lat_ = 0.0;

@@ -135,6 +135,19 @@ private:
   double dr_yaw_ = 0.0;
   double wheel_vx_ = 0.0;  // latest forward velocity cached from /wheel_odom
 
+  // GPS antenna radial offset from base_link, hypot(lever_arm_x,
+  // lever_arm_y). Used by the RTK wrong-fix gate in OnGnss to
+  // predict how much antenna position can shift due to pure body
+  // rotation between two GPS samples, on top of any wheel travel.
+  // NOT used to correct mx/my — the graph's GnssLeverArmFactor
+  // already applies R(yaw)·lever_arm in its residual; the gate
+  // only consults this scalar to relax its threshold.
+  double lever_arm_radius_m_ = 0.0;
+  // |Δθ| (rad) accumulated from gyro_z since the last accepted GPS
+  // sample. Paired with wheel_dist_since_last_gps_m_; both are
+  // reset on every accepted (or wrong-fix-classified) sample.
+  double abs_dtheta_since_last_gps_rad_ = 0.0;
+
   // Latched seeds for initialization.
   std::optional<gtsam::Vector2> seed_xy_;  // from latest GPS
   std::optional<double> seed_yaw_;  // from latest COG/mag

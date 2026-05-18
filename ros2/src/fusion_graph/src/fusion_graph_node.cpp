@@ -60,6 +60,11 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
   gp.prior_sigma_theta = declare_parameter<double>("prior_sigma_theta", 0.05);
   gp.lever_arm_x = declare_parameter<double>("lever_arm_x", 0.0);
   gp.lever_arm_y = declare_parameter<double>("lever_arm_y", 0.0);
+  // Cache the radial lever-arm magnitude for the RTK wrong-fix gate.
+  // The graph itself consumes lever_arm_x/y via GnssLeverArmFactor;
+  // we only mirror the magnitude here for the gate-side threshold
+  // and never re-apply the offset to the GPS sample.
+  lever_arm_radius_m_ = std::hypot(gp.lever_arm_x, gp.lever_arm_y);
   gp.cov_update_every_n = declare_parameter<int>("cov_update_every_n", 10);
   gp.isam2_relinearize_skip = declare_parameter<int>("isam2_relinearize_skip", 5);
   gp.stationary_motion_thresh_m = declare_parameter<double>("stationary_motion_thresh_m", 0.02);
@@ -712,6 +717,12 @@ void FusionGraphNode::OnImu(sensor_msgs::msg::Imu::ConstSharedPtr msg)
       dr_yaw_ += gz * dt;
       dr_x_ += wheel_vx_ * std::cos(dr_yaw_) * dt;
       dr_y_ += wheel_vx_ * std::sin(dr_yaw_) * dt;
+      // Accumulate |Δθ| since the last accepted GPS for the wrong-fix
+      // gate. A stationary pivot sweeps the GPS antenna by lever_arm
+      // × Δθ in the map frame; without this term the gate sees a
+      // pure-sweep jump as if it were a phantom translation and
+      // rejects every legitimate fix.
+      abs_dtheta_since_last_gps_rad_ += std::abs(gz) * dt;
     }
   }
   last_imu_stamp_ = stamp;
@@ -757,25 +768,39 @@ void FusionGraphNode::OnGnss(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
   if (last_gps_map_xy_)
   {
     const double jump = std::hypot(mx - (*last_gps_map_xy_).x(), my - (*last_gps_map_xy_).y());
-    if (jump > rtk_wrongfix_max_jump_m_ && wheel_dist_since_last_gps_m_ < rtk_wrongfix_max_wheel_m_)
+    // Lever-arm sweep budget. A pure body rotation by |Δθ| shifts the
+    // antenna in the map frame by up to lever_arm_radius·|Δθ| with no
+    // chassis translation; without this slack the gate rejects every
+    // GPS sample taken while the controller is pivoting in place
+    // (PRE_ROTATE, headland turn), starving the graph of corrections
+    // exactly when σ_x has nothing else pinning it. NOT applied to
+    // mx/my themselves — the graph's GnssLeverArmFactor handles the
+    // offset; we only loosen the gate threshold.
+    const double expected_pivot_jump_m =
+        lever_arm_radius_m_ * abs_dtheta_since_last_gps_rad_;
+    const double jump_budget = rtk_wrongfix_max_jump_m_ + expected_pivot_jump_m;
+    if (jump > jump_budget && wheel_dist_since_last_gps_m_ < rtk_wrongfix_max_wheel_m_)
     {
       graph_->RecordGpsRejectWrongFix();
       RCLCPP_WARN_THROTTLE(get_logger(),
                            *get_clock(),
                            2000,
-                           "fusion_graph: RTK wrong-fix? jump=%.3f m, wheel=%.3f m — sample dropped",
+                           "fusion_graph: RTK wrong-fix? jump=%.3f m, wheel=%.3f m, sweep_budget=%.3f m — sample dropped",
                            jump,
-                           wheel_dist_since_last_gps_m_);
-      // Reset accumulator + cache so a repeated wrong-fix doesn't
+                           wheel_dist_since_last_gps_m_,
+                           expected_pivot_jump_m);
+      // Reset accumulators + cache so a repeated wrong-fix doesn't
       // permanently lock us out — once two consecutive samples agree,
       // last_gps_map_xy_ updates and we resume normal flow.
       last_gps_map_xy_ = gtsam::Vector2(mx, my);
       wheel_dist_since_last_gps_m_ = 0.0;
+      abs_dtheta_since_last_gps_rad_ = 0.0;
       return;
     }
   }
   last_gps_map_xy_ = gtsam::Vector2(mx, my);
   wheel_dist_since_last_gps_m_ = 0.0;
+  abs_dtheta_since_last_gps_rad_ = 0.0;
 
   // covariance[0] is variance of east; take sqrt for sigma. Use the
   // diagonal mean for a single sigma_xy (factor model is isotropic).

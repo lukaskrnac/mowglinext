@@ -51,28 +51,45 @@ bt_navigator_navigate_to_pose_rclcpp_node:
 controller_server:
   ros__parameters:
     use_sim_time: false
-    # 10 Hz: 0.3 m/s × 100 ms = 3 cm per tick. See nav2_params.yaml for
-    # the full rationale — needed to close the control loop faster than
-    # the 300-400 ms perception-to-action latency.
-    controller_frequency: 10.0
-    # Without LiDAR, costmaps tick slower (no obstacle observations driving
-    # updates) so default 1.0s timeout races with the 1-2 Hz costmap update
-    # cycle and surfaces as "Costmap timed out waiting for update" error 207.
+    # Match nav2_params.yaml. hardware_bridge_node subscribes to
+    # TwistStamped on ~/cmd_vel; with enable_stamped_cmd_vel:false the
+    # controller publishes plain Twist and no command reaches the
+    # firmware — robot looks "deaf" with no error.
+    enable_stamped_cmd_vel: true
+    # 20 Hz to match nav2_params.yaml. 0.3 m/s × 50 ms = 1.5 cm per
+    # tick; closes the control loop faster than the 300-400 ms
+    # perception-to-action latency.
+    controller_frequency: 20.0
+    # Match the LiDAR config's ARM TF jitter envelope.
+    transform_tolerance: 0.5
+    # Without LiDAR, costmaps tick slower (no obstacle observations
+    # driving updates) so default 1.0s timeout races with the 1-2 Hz
+    # costmap update cycle and surfaces as "Costmap timed out waiting
+    # for update" error 207.
     costmap_update_timeout: 5.0
-    # Motor static-friction deadband — see nav2_params.yaml. Anything
-    # below ~0.12 m/s buzzes without moving; zero sub-deadband commands
-    # so the motors don't sit in the buzz zone.
-    min_x_velocity_threshold: 0.08
-    min_y_velocity_threshold: 0.5
-    min_theta_velocity_threshold: 0.001
+    # Match nav2_params.yaml. These thresholds filter the controller's
+    # PERCEIVED velocity (odom feedback) for its own "am I moving?"
+    # state machine — they do NOT filter the cmd_vel output. Output
+    # clamping is handled host-side by hardware_bridge on_cmd_vel
+    # (sub-0.15 m/s vx → zero). Keeping all three at 0 means the
+    # controller reads true odom velocity for goal-checking and
+    # progress accounting; pretending the robot is stopped when it's
+    # actually drifting at 5 cm/s would skew both.
+    min_x_velocity_threshold: 0.0
+    min_y_velocity_threshold: 0.0
+    min_theta_velocity_threshold: 0.0
     failure_tolerance: 1.0
     progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["stopped_goal_checker", "coverage_goal_checker"]
     controller_plugins: ["FollowPath", "FollowCoveragePath"]
 
     progress_checker:
-      plugin: "nav2_controller::SimpleProgressChecker"
+      # PoseProgressChecker (not SimpleProgressChecker) so rotation
+      # also counts as progress — headland pivots no longer trip
+      # "no progress" recovery. See nav2_params.yaml.
+      plugin: "nav2_controller::PoseProgressChecker"
       required_movement_radius: 0.15
+      required_movement_angle: 0.5     # rad (~28°), gates corner pivots
       movement_time_allowance: 30.0
 
     stopped_goal_checker:
@@ -84,14 +101,19 @@ controller_server:
       yaw_goal_tolerance: 0.10
 
     coverage_goal_checker:
-      plugin: "nav2_controller::SimpleGoalChecker"
-      # See nav2_params.yaml for the full story — anything > tool_width
-      # (0.18 m) makes FTC declare 'goal reached' on the first tick of
-      # short cell-based strips, BT loops GetNextSegment forever, robot
-      # never moves. Field-broken 2026-05-08.
-      xy_goal_tolerance: 0.10
-      yaw_goal_tolerance: 6.28
-      stateful: true
+      # PathProgressGoalChecker (mowgli plugin) — fires when the robot
+      # has monotonically tracked >= progress_threshold of the path
+      # poses AND is within xy/yaw tolerance of the goal pose. With
+      # SimpleGoalChecker the F2C path's last pose can sit 25–50 cm
+      # from where FTC's PID converges (Dubins connector geometry)
+      # → FollowStrip never succeeds → BT loops. CLAUDE.md "Do NOT
+      # use SimpleGoalChecker / StoppedGoalChecker for the
+      # coverage_goal_checker slot" invariant.
+      plugin: "mowgli_nav2_plugins/PathProgressGoalChecker"
+      progress_threshold: 0.95
+      xy_goal_tolerance: 0.30
+      yaw_goal_tolerance: 0.30
+      plan_topic: "/controller_server/FollowCoveragePath/global_plan"
 
     # FollowPath (transit) — FTCController. Mirrors nav2_params.yaml so a
     # single controller (FTC) handles transit and coverage in both
@@ -123,7 +145,7 @@ controller_server:
       kd_ang: 0.0
       max_cmd_vel_speed: 0.30
       max_cmd_vel_ang: 0.8
-      max_goal_distance_error: 0.10
+      max_goal_distance_error: 0.30    # match nav2_params.yaml — F2C Dubins connectors can land 25-50 cm from FTC's converged distance
       max_goal_angle_error: 15.0
       goal_timeout: 10.0
       max_follow_distance: 2.0
@@ -156,7 +178,7 @@ controller_server:
       kd_ang: 0.0
       max_cmd_vel_speed: 0.30
       max_cmd_vel_ang: 0.8
-      max_goal_distance_error: 0.10
+      max_goal_distance_error: 0.30    # match nav2_params.yaml — F2C Dubins connectors can land 25-50 cm from FTC's converged distance
       max_goal_angle_error: 15.0
       goal_timeout: 10.0
       max_follow_distance: 2.0
@@ -211,8 +233,12 @@ smoother_server:
 behavior_server:
   ros__parameters:
     use_sim_time: false
-    costmap_topic: local_costmap/costmap_raw
-    footprint_topic: local_costmap/published_footprint
+    # Nav2 Kilted renamed costmap_topic/footprint_topic →
+    # local_costmap_topic/local_footprint_topic. Old names are silently
+    # ignored, behaviors fall back to defaults that don't match our
+    # local_costmap and BackUp/Spin never see the footprint.
+    local_costmap_topic: local_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
     cycle_frequency: 10.0
     behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait"]
     spin:
@@ -231,12 +257,14 @@ behavior_server:
     # 0.5s sim-ahead — 2.0s refused every undock by projecting BackUp
     # through phantom LETHAL cells 30-50 cm behind. See nav2_params.yaml.
     simulate_ahead_time: 0.5
-    max_rotational_vel: 3.0
+    enable_stamped_cmd_vel: true
+    # Match nav2_params.yaml. 3.0 was a holdover from before the host
+    # deadband clamp was introduced.
+    max_rotational_vel: 2.5
     # 0.85 rad/s ≈ wheel vel 0.14 m/s per wheel (PWM 42 > deadband).
     # 0.15 floor let Spin behavior dither at sub-deadband ω.
     min_rotational_vel: 0.85
     rotational_acc_lim: 5.0
-    enable_stamped_cmd_vel: true
 
 # ---------------------------------------------------------------------------
 # Waypoint follower
@@ -377,10 +405,15 @@ map_saver:
 docking_server:
   ros__parameters:
     use_sim_time: false
-    # 10 Hz — match nav2_params.yaml. Faster polling of isDocked()/
-    # isCharging() so the robot stops within ~100 ms of the charging
-    # signal; still low enough to not starve Nav2 on ARM.
-    controller_frequency: 10.0
+    # hardware_bridge_node subscribes to TwistStamped — without this
+    # the docking controller publishes plain Twist and the dock
+    # approach never reaches the firmware. Symptom: dock action
+    # accepted, robot doesn't move, "Timed out waiting for charge".
+    enable_stamped_cmd_vel: true
+    # 20 Hz to match nav2_params.yaml. Faster polling of isDocked()/
+    # isCharging() so the robot stops within ~50 ms of the charging
+    # signal; comfortable on ARM.
+    controller_frequency: 20.0
     initial_perception_timeout: 5.0
     # 10 s accommodates the ~2-3 s firmware ADC debounce on
     # STATUS_BIT_CHARGING before /battery_state reflects charging.
@@ -393,11 +426,15 @@ docking_server:
     fixed_frame: odom
     dock_backwards: false
     dock_prestaging_tolerance: 0.5
-    # Graceful-controller velocity envelope — see nav2_params.yaml for
-    # rationale. Defaults make the mower hit the dock at near-transit
-    # speed; halving v_linear_max + doubling slowdown_radius gives the
-    # 10 Hz loop time to catch the charging signal before overshoot.
-    controller.v_linear_min: 0.05
+    # Graceful-controller velocity envelope. v_linear_min was 0.05 here
+    # which sits under the 0.15 m/s host clamp (hardware_bridge
+    # on_cmd_vel) — the controller would command 0.05–0.13 m/s during
+    # the final approach and the clamp would zero every sample,
+    # leaving the robot parked at the staging pose. 0.13 matches
+    # nav2_params.yaml and stays above the clamp's strict-less-than
+    # boundary.
+    controller.use_collision_detection: false
+    controller.v_linear_min: 0.13
     controller.v_linear_max: 0.12
     controller.v_angular_max: 0.5
     controller.slowdown_radius: 0.5
@@ -409,6 +446,8 @@ docking_server:
       pose: [0.0, 0.0, 0.0]  # Overridden at launch from dock_pose_x/y/yaw params
     simple_charging_dock:
       plugin: "opennav_docking::SimpleChargingDock"
+      # Forward-direction docking — match nav2_params.yaml.
+      dock_direction: "forward"
       # 0.3 A to match the lidar config — see nav2_params.yaml for the
       # "barely seated" rationale.
       charging_threshold: 0.3

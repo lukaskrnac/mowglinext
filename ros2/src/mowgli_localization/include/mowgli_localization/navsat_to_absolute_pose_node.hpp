@@ -120,6 +120,23 @@ private:
   /// to RTK's 5 mm — realistic for the lever-arm uncertainty without
   /// destroying EKF anchoring.
   double lever_arm_yaw_sigma_{0.0524};  ///< 3° = 0.0524 rad
+
+  /// Defensive guard on /gps/pose_cov covariance. RTK Fixed nominally
+  /// reports σ ≈ 3-10 mm via NAV-COV; if the receiver's own reported
+  /// accuracy exceeds inflation_threshold (default 25 mm), we multiply
+  /// the published variance by inflation_factor² so the EKF down-weights
+  /// the sample instead of trusting a degraded "Fixed" fix. Beyond
+  /// reject_threshold (default 0.5 m) we skip publishing /gps/pose_cov
+  /// entirely — the EKF should not see the sample at all. The raw
+  /// /gps/absolute_pose still publishes for the GUI / BT consumers.
+  /// These guards exist because the F9P can keep reporting carr_soln=2
+  /// (Fixed) through environmental degradation (multipath, low elevation,
+  /// stale base) with the position drifting tens of cm even when the
+  /// receiver claims sub-cm accuracy is not the danger — but its own
+  /// reported NAV-COV growing past the threshold is the safe signal.
+  double pos_accuracy_inflation_threshold_m_{0.025};
+  double pos_accuracy_inflation_factor_{10.0};
+  double pos_accuracy_reject_threshold_m_{0.500};
 };
 
 }  // namespace mowgli_localization

@@ -677,17 +677,25 @@ void MapServerNode::on_set_docking_point(
   // /gps/absolute_pose). The operator should drive the robot forward
   // briefly to lock in COG yaw, then retry, or wait for mag/COG to
   // settle the EKF naturally.
+  //
+  // Read thresholds live each call so `ros2 param set` works without a
+  // node restart — the constructor-cached values were stuck at startup.
+  const double threshold_rad =
+      get_parameter("yaw_convergence_threshold_rad").as_double();
+  const double window_s = get_parameter("yaw_convergence_window_s").as_double();
+  const auto min_samples = static_cast<size_t>(
+      get_parameter("yaw_convergence_min_samples").as_int());
   {
     std::lock_guard<std::mutex> lk(recent_yaws_mutex_);
-    if (recent_yaws_.size() < yaw_convergence_min_samples_)
+    if (recent_yaws_.size() < min_samples)
     {
       res->success = false;
       RCLCPP_WARN(get_logger(),
                   "set_docking_point rejected: only %zu yaw samples in the last %.1f s "
                   "(need >= %zu). Wait for the EKF to receive more updates.",
                   recent_yaws_.size(),
-                  yaw_convergence_window_s_,
-                  yaw_convergence_min_samples_);
+                  window_s,
+                  min_samples);
       return;
     }
     double sum = 0.0;
@@ -701,7 +709,7 @@ void MapServerNode::on_set_docking_point(
     const double mean = sum / n;
     const double var = (sum_sq / n) - (mean * mean);
     const double std_dev = std::sqrt(std::max(var, 0.0));
-    if (std_dev > yaw_convergence_threshold_rad_)
+    if (std_dev > threshold_rad)
     {
       res->success = false;
       RCLCPP_WARN(get_logger(),
@@ -709,8 +717,8 @@ void MapServerNode::on_set_docking_point(
                   "(std %.3f° > threshold %.3f° over %.1f s, %zu samples). "
                   "Drive the robot 1 m forward to anchor heading from COG, then retry.",
                   std_dev * 180.0 / M_PI,
-                  yaw_convergence_threshold_rad_ * 180.0 / M_PI,
-                  yaw_convergence_window_s_,
+                  threshold_rad * 180.0 / M_PI,
+                  window_s,
                   recent_yaws_.size());
       return;
     }

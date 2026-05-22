@@ -596,14 +596,13 @@ void MapServerNode::on_odom(nav_msgs::msg::Odometry::ConstSharedPtr /*msg*/)
   }
 
   // Maintain a rolling window of recent yaws for the docking-set gate.
-  // Window is bounded by yaw_convergence_window_s_; samples beyond that
-  // age out at the front. The gate in on_set_docking_point reads this.
+  // Read the window length live each tick so `ros2 param set` works.
   {
     std::lock_guard<std::mutex> lk(recent_yaws_mutex_);
     const rclcpp::Time now_t = now();
     recent_yaws_.emplace_back(now_t, yaw);
-    const rclcpp::Duration window =
-        rclcpp::Duration::from_seconds(yaw_convergence_window_s_);
+    const rclcpp::Duration window = rclcpp::Duration::from_seconds(
+        get_parameter("yaw_convergence_window_s").as_double());
     while (!recent_yaws_.empty() && (now_t - recent_yaws_.front().first) > window)
     {
       recent_yaws_.pop_front();

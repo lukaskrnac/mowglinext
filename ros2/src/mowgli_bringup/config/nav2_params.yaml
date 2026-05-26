@@ -57,11 +57,12 @@ controller_server:
   ros__parameters:
     use_sim_time: false
     enable_stamped_cmd_vel: true
-    # 10 Hz min: 0.3 m/s × 100 ms = 3 cm of motion between decisions; matches
-    # the 5-10 Hz upstream costmap / GPS refresh. 20 Hz cuts the
-    # perception-to-action loop by half, useful for the FTC PID lateral
-    # corrections at strip endpoints.
-    controller_frequency: 20.0
+    # 10 Hz: 0.3 m/s × 100 ms = 3 cm of motion between decisions, matches
+    # the 5-10 Hz upstream costmap / GPS refresh. Dropped from 20 Hz
+    # because the ARM host was chronically missing the 20 Hz loop rate
+    # (10-25 Hz jittery), which hurts FTC tracking more than the lower
+    # nominal frequency does.
+    controller_frequency: 10.0
     # Top-level transform_tolerance is used by controller_server when
     # transforming the global plan into the costmap frame (separate from
     # each plugin's own transform_tolerance, which only covers the
@@ -197,7 +198,20 @@ controller_server:
       rotate_to_heading_angular_vel: 0.6   # ≥ kMinRotVel so the wheels engage
       max_angular_accel: 1.0
       simulate_ahead_time: 1.0
-      rotate_to_goal_heading: false        # let RPP handle final heading
+      # Terminal pivot. With this false, neither RotationShim (start-of-path
+      # only) nor RPP (mid-path, rotate_to_heading_min_angle: 0.785 rad =
+      # 45°) does anything when the navigation ends with a yaw error in the
+      # band [yaw_goal_tolerance, RPP-threshold] = [5.7°, 45°]. RPP just
+      # holds the carrot at the final pose and outputs near-zero v/ω —
+      # goal_checker keeps waiting for yaw alignment that never happens,
+      # robot is stuck. Especially visible at NavigateToPose-to-staging
+      # handoff in opennav_docking: the staging pose has a fixed heading
+      # along the dock axis, but if RPP arrived 10-30° off (common when
+      # approaching from the side), the docking action just times out.
+      # Setting this true makes RotationShim pivot at the END to match
+      # goal heading. Cost: one ~1 s in-place rotation per nav action,
+      # which the operator barely notices but the docking-server NEEDS.
+      rotate_to_goal_heading: true
       closed_loop: true                    # use wheel odom feedback for pivot completion
 
       # --- RegulatedPurePursuitController (primary) params ---

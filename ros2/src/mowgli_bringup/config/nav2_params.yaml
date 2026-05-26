@@ -782,6 +782,15 @@ docking_server:
       # Forward dock approach (matches the YardForce charger contact
       # geometry — robot drives nose-first into the dock).
       dock_direction: "forward"
+      # Pre-rotate to face the dock heading before driving in. Without
+      # this the graceful controller has to satisfy heading + position
+      # from any entry angle, and field-observed 2026-05-27 it stalled
+      # at sub-deadband ω (0.05 rad/s) for any approach angle > ~30°.
+      # The rotate phase uses controller.rotate_to_heading_angular_vel
+      # (1.0 rad/s) which is comfortably above the chassis pivot
+      # deadband, so the alignment completes in a couple seconds before
+      # the graceful translation phase begins.
+      rotate_to_dock: true
       # 0.3 A (was 0.1, default 0.5). 0.1 A flipped is_charging_ at the
       # first whisker of contact and DockRobot exited before the cradle
       # was fully seated — the robot ended up barely touching the

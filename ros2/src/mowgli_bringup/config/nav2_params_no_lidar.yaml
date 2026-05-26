@@ -56,10 +56,10 @@ controller_server:
     # controller publishes plain Twist and no command reaches the
     # firmware — robot looks "deaf" with no error.
     enable_stamped_cmd_vel: true
-    # 20 Hz to match nav2_params.yaml. 0.3 m/s × 50 ms = 1.5 cm per
-    # tick; closes the control loop faster than the 300-400 ms
-    # perception-to-action latency.
-    controller_frequency: 20.0
+    # 10 Hz to match nav2_params.yaml. ARM host was chronically missing
+    # 20 Hz (10-25 Hz jittery); stable 10 Hz beats jittery 20 Hz for FTC
+    # tracking.
+    controller_frequency: 10.0
     # Match the LiDAR config's ARM TF jitter envelope.
     transform_tolerance: 0.5
     # Without LiDAR, costmaps tick slower (no obstacle observations
@@ -448,8 +448,11 @@ docking_server:
     controller.use_collision_detection: false
     controller.v_linear_min: 0.16    # match nav2_params.yaml — ≥ host clamp 0.15
     controller.v_linear_max: 0.22    # match nav2_params.yaml — must be > min
-    controller.v_angular_max: 0.5
+    # See nav2_params.yaml for the chassis-pivot-deadband rationale.
+    controller.v_angular_max: 0.8
     controller.slowdown_radius: 0.5
+    controller.k_phi: 10.0
+    controller.k_delta: 5.0
     dock_plugins: ["simple_charging_dock"]
     docks: ["home_dock"]
     home_dock:
@@ -460,6 +463,14 @@ docking_server:
       plugin: "opennav_docking::SimpleChargingDock"
       # Forward-direction docking — match nav2_params.yaml.
       dock_direction: "forward"
+      # Pre-rotate to face dock_pose.yaw before driving in. Without this
+      # the graceful controller has to satisfy heading + position from
+      # arbitrary entry angles; in practice it stalled at sub-deadband ω
+      # for any approach angle > ~30°. The rotate phase uses
+      # controller.rotate_to_heading_angular_vel (1.0 rad/s) — above
+      # the chassis pivot deadband — so the alignment completes in
+      # seconds before the translation phase begins.
+      rotate_to_dock: true
       # 0.3 A to match the lidar config — see nav2_params.yaml for the
       # "barely seated" rationale.
       charging_threshold: 0.3

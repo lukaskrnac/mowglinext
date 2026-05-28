@@ -148,6 +148,8 @@ private:
     angular_rate_params_.max_cmd = declare_parameter<double>("angular_rate_max_cmd", 1.5);
     angular_rate_params_.integral_max =
         declare_parameter<double>("angular_rate_integral_max", 1.5);
+    angular_rate_params_.target_lp_tau =
+        declare_parameter<double>("angular_rate_target_lp_tau", 0.2);
 
     // Dock pose comes solely from mowgli_robot.yaml (declared as ROS
     // parameters above). Calibration and manual GUI adjustments persist

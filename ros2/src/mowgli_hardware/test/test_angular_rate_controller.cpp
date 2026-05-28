@@ -104,9 +104,11 @@ TEST(AngularRateController, ZeroTargetStopsAndResets)
   EXPECT_DOUBLE_EQ(mh::compute_angular_rate_cmd(5.0e-4, 0.0, 0.05, p, st), 0.0);
 }
 
-// A direction reversal must drop the opposite-spin integrator so it doesn't
-// fight the new command; the loop must then settle on the new (negative)
-// target.
+// A sustained direction reversal must drop the opposite-spin integrator and
+// settle on the new (negative) target. With the target low-pass the filtered
+// target crosses zero a few ticks after the raw command flips, so the reset
+// happens slightly later than the first reverse tick — but the steady state
+// must be correct.
 TEST(AngularRateController, SignFlipDropsStaleIntegral)
 {
   mh::AngularRateParams p;
@@ -118,15 +120,54 @@ TEST(AngularRateController, SignFlipDropsStaleIntegral)
     measured = sim_firmware_rate(mh::compute_angular_rate_cmd(0.3, measured, 0.05, p, st));
   }
   EXPECT_GT(st.integral, 0.0);
-  // First reverse tick must reset the integrator (no longer positive).
-  mh::compute_angular_rate_cmd(-0.3, measured, 0.05, p, st);
-  EXPECT_LE(st.integral, 0.0);
-  // And it settles on the negative target.
+  // Sustained reverse: the filtered target crosses zero within a few tau and
+  // the integrator must end up non-positive, then settle on the negative.
   for (int i = 0; i < 400; ++i)
   {
     measured = sim_firmware_rate(mh::compute_angular_rate_cmd(-0.3, measured, 0.05, p, st));
   }
+  EXPECT_LE(st.integral, 0.0);
   EXPECT_NEAR(measured, -0.3, 0.02);
+}
+
+// THE DOCKING FIX: a dithering target (small left-right alternating
+// corrections around a small net intent, like the graceful dock controller)
+// must NOT produce wild left-right output pulsing. The target low-pass
+// extracts the net intent so the emitted command is smooth and the measured
+// rate tracks the NET target — not the jitter. Without the filter the
+// deadband + sign-flip resets lose the net rotation and pulse the output.
+TEST(AngularRateController, DitherTargetIsSmoothed)
+{
+  mh::AngularRateParams p;  // tau=0.2 default
+  mh::AngularRateState st{};
+  double measured = 0.0;
+  double sum = 0.0, sumsq = 0.0, meas_sum = 0.0;
+  int n = 0;
+  // Net +0.10 rad/s with +/-0.15 sinusoidal jitter at 1.5 Hz.
+  for (int i = 0; i < 600; ++i)
+  {
+    const double t = i * 0.05;
+    const double target = 0.10 + 0.15 * std::sin(2.0 * M_PI * 1.5 * t);
+    const double out = mh::compute_angular_rate_cmd(target, measured, 0.05, p, st);
+    measured = sim_firmware_rate(out);
+    if (i >= 200)  // steady-state window
+    {
+      sum += out;
+      sumsq += out * out;
+      meas_sum += measured;
+      ++n;
+    }
+  }
+  const double mean = sum / n;
+  const double var = sumsq / n - mean * mean;
+  const double stddev = std::sqrt(std::max(var, 0.0));
+  const double meas_mean = meas_sum / n;
+  // Output pulsing must be modest (raw dither amplitude is 0.15; the filtered
+  // output stddev should be well under half that).
+  EXPECT_LT(stddev, 0.07) << "output still pulsing (stddev " << stddev << ")";
+  // And the mean measured rate must track the NET +0.10, not collapse to ~0
+  // as it does without the filter (deadband eats the unfiltered dither).
+  EXPECT_NEAR(meas_mean, 0.10, 0.03);
 }
 
 // Anti-windup: a permanently stalled chassis (sim returns 0 always) must not
@@ -144,14 +185,16 @@ TEST(AngularRateController, AntiWindupClampsStalledOutput)
   EXPECT_LE(std::abs(st.integral), p.integral_max + 1e-9);
 }
 
-// Passthrough sanity: with all gains neutralised (kff=1, kp=ki=0) the command
-// equals the target — confirms the feed-forward path is wired right.
+// Passthrough sanity: with all gains neutralised (kff=1, kp=ki=0) and the
+// target low-pass disabled (tau=0), the command equals the target — confirms
+// the feed-forward path is wired right.
 TEST(AngularRateController, FeedForwardOnlyEqualsTarget)
 {
   mh::AngularRateParams p;
   p.kp = 0.0;
   p.ki = 0.0;
   p.kff = 1.0;
+  p.target_lp_tau = 0.0;  // disable filter so a single call equals the target
   mh::AngularRateState st{};
   EXPECT_NEAR(mh::compute_angular_rate_cmd(0.25, 0.1, 0.05, p, st), 0.25, 1e-9);
 }

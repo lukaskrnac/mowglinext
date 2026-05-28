@@ -65,12 +65,24 @@ struct AngularRateParams
   double max_cmd = 1.5;      ///< output clamp (rad/s), also anti-windup ceiling.
   double integral_max = 1.5; ///< |integral term| clamp (rad/s) — anti-windup.
   double min_target = 1.0e-3;///< |target| below this → output 0, reset state.
+  // Low-pass time constant (s) on the TARGET before the PI. The dock
+  // graceful controller emits small left-right alternating heading
+  // corrections; feeding those raw makes the PI wind up to break the
+  // deadband, overshoot the tiny target, the graceful loop fights back,
+  // and the result is left-right pulsing that biases the heading
+  // (user-observed 2026-05-27, absent during mowing where RPP commands a
+  // smooth same-sign wz). Low-passing the target extracts the NET intent
+  // (the dither averages out) so the PI tracks a smooth command. For a
+  // sustained command the filter settles to it (no steady-state effect),
+  // so mowing is essentially unchanged. 0 disables the filter.
+  double target_lp_tau = 0.2;
 };
 
 struct AngularRateState
 {
-  double integral = 0.0;   ///< accumulated (error·dt), in rad/s after ki applied.
-  double last_target = 0.0;///< for sign-flip detection.
+  double integral = 0.0;        ///< accumulated (error·dt), rad/s after ki applied.
+  double last_target = 0.0;     ///< for sign-flip detection (uses filtered target).
+  double filtered_target = 0.0; ///< low-pass state for the target wz.
 };
 
 /// Closed-loop angular-rate command.
@@ -84,27 +96,44 @@ struct AngularRateState
 inline double compute_angular_rate_cmd(double target_wz, double measured_wz, double dt,
                                        const AngularRateParams& p, AngularRateState& st)
 {
-  // Near-zero target: stop cleanly and drop integrator phase so the next
-  // command starts fresh (no residual creep / wind-down spin).
+  // Guard dt against pauses / first call.
+  const double dt_eff = (dt > 0.0 && dt < 1.0) ? dt : 0.05;
+
+  // Hard zero on the RAW target = explicit stop: reset everything (including
+  // the filter) and return 0 immediately, so a "done" command stops the
+  // chassis promptly rather than coasting through the low-pass tail.
   if (std::abs(target_wz) <= p.min_target)
   {
     st.integral = 0.0;
     st.last_target = 0.0;
+    st.filtered_target = 0.0;
     return 0.0;
   }
 
-  // Direction change: a stale integrator from the opposite spin would fight
-  // the new command for several ticks. Drop it.
-  if (st.last_target != 0.0 && std::signbit(st.last_target) != std::signbit(target_wz))
+  // Low-pass the target to extract the net intent from dithering corrections
+  // (see AngularRateParams::target_lp_tau). tau<=0 disables (passthrough).
+  if (p.target_lp_tau > 0.0)
+  {
+    const double alpha = dt_eff / (p.target_lp_tau + dt_eff);
+    st.filtered_target += alpha * (target_wz - st.filtered_target);
+  }
+  else
+  {
+    st.filtered_target = target_wz;
+  }
+  const double tgt = st.filtered_target;
+
+  // Direction change on the FILTERED target: a stale integrator from the
+  // opposite spin would fight the new command. Drop it. Using the filtered
+  // target means micro-dither (which barely moves the filtered sign) no
+  // longer triggers a reset every tick.
+  if (st.last_target != 0.0 && std::signbit(st.last_target) != std::signbit(tgt))
   {
     st.integral = 0.0;
   }
-  st.last_target = target_wz;
+  st.last_target = tgt;
 
-  // Guard dt against pauses / first call.
-  const double dt_eff = (dt > 0.0 && dt < 1.0) ? dt : 0.05;
-
-  const double error = target_wz - measured_wz;
+  const double error = tgt - measured_wz;
 
   // Integrate the error (units rad/s · s = rad), scaled by ki to rad/s, and
   // clamp for anti-windup so a stalled chassis can't accumulate an unbounded
@@ -112,7 +141,7 @@ inline double compute_angular_rate_cmd(double target_wz, double measured_wz, dou
   st.integral += p.ki * error * dt_eff;
   st.integral = std::clamp(st.integral, -p.integral_max, p.integral_max);
 
-  double out = p.kff * target_wz + p.kp * error + st.integral;
+  double out = p.kff * tgt + p.kp * error + st.integral;
   out = std::clamp(out, -p.max_cmd, p.max_cmd);
   return out;
 }

@@ -238,9 +238,20 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
       rclcpp::SensorDataQoS(),
       [this](geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg)
       {
+        const double x = msg->pose.pose.position.x;
+        const double y = msg->pose.pose.position.y;
+        const rclcpp::Time t = now();
         std::lock_guard<std::mutex> lk(last_gps_pose_cov_mutex_);
         last_gps_pose_cov_ = std::move(msg);
-        last_gps_pose_cov_time_ = now();
+        last_gps_pose_cov_time_ = t;
+        // Maintain a rolling window for on_set_docking_point's averaged
+        // dock-pose capture (see recent_gps_xy_ in the header).
+        recent_gps_xy_.emplace_back(t, x, y);
+        while (!recent_gps_xy_.empty() &&
+               (t - std::get<0>(recent_gps_xy_.front())).seconds() > dock_set_gps_avg_window_s_)
+        {
+          recent_gps_xy_.pop_front();
+        }
       });
 
   // ── Services ─────────────────────────────────────────────────────────────

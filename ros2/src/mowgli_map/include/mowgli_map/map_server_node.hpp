@@ -23,6 +23,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -714,6 +715,21 @@ private:
   geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr last_gps_pose_cov_;
   rclcpp::Time last_gps_pose_cov_time_{0, 0, RCL_ROS_TIME};
   mutable std::mutex last_gps_pose_cov_mutex_;
+
+  /// Rolling window of recent /gps/pose_cov (x, y) map-frame positions, used
+  /// by on_set_docking_point to AVERAGE the docked position. The dock pose
+  /// MUST be captured from the independent GPS-vs-datum projection, NOT the
+  /// fused /odometry/filtered_map: when the robot is charging, fusion_graph
+  /// gauge-resets the fused pose onto the *existing* dock_pose, so capturing
+  /// the fused pose just re-stores the old (possibly wrong) value — a
+  /// calibration that can never correct itself. /gps/pose_cov is the raw
+  /// lever-arm-corrected GPS position and is free of that circularity.
+  /// Averaging over a few seconds beats the ~1-3 cm single-sample RTK jitter
+  /// (the systematic dock_pose error we are fixing was ~5 cm, so an unaveraged
+  /// sample would trade one error for another).
+  std::deque<std::tuple<rclcpp::Time, double, double>> recent_gps_xy_;
+  double dock_set_gps_avg_window_s_{3.0};
+  size_t dock_set_gps_avg_min_samples_{10};
 
   /// Thresholds for the on_set_docking_point gates beyond yaw convergence.
   double dock_set_gps_accuracy_max_m_{0.04};   ///< 4 cm

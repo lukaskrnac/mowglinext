@@ -108,6 +108,13 @@ public:
     // once antenna rotational speed exceeds chassis forward speed.
     cog_sweep_dominance_ratio_ =
         declare_parameter<double>("cog_sweep_dominance_ratio", 1.0);
+    // Rotation gate for the stationary latched-yaw republish. Much lower
+    // than min_omega_for_anchor_rps: this path only runs when the robot is
+    // meant to be stationary, so any meaningful rotation (the dock's slow
+    // 0.1-0.3 rad/s alignment pivots included) means the latched heading is
+    // going stale and must not be republished. 0.05 rad/s ≈ 3°/s.
+    latch_republish_max_omega_ =
+        declare_parameter<double>("latch_republish_max_omega_rps", 0.05);
     // Number of consecutive non-rotating GPS samples required before we
     // start accumulating a new baseline after a pivot ends. 2 samples
     // at 5 Hz GPS ≈ 400 ms of confirmed straight motion before COG
@@ -509,18 +516,25 @@ private:
     // motion segment — once the robot pivots, that anchor becomes
     // stale at ω rad/s. Republishing it as a tight-covariance EKF
     // measurement would pin the EKF's yaw against the gyro
-    // integration that's correctly tracking the rotation. Threshold
-    // 0.05 rad/s ≈ 3°/s is well above wheel-encoder noise but well
-    // below any deliberate pivot. Watch BOTH /wheel_odom and /imu —
-    // during tight FTC arcs the diff-drive wheel_odom.angular.z
-    // momentarily reports near zero (one wheel near-still) while the
-    // IMU correctly reports the body's rotation rate. Without the
-    // IMU gate, the seed slips through, dumps a +90° (stale)
+    // integration that's correctly tracking the rotation. Watch BOTH
+    // /wheel_odom and /imu — during tight FTC arcs the diff-drive
+    // wheel_odom.angular.z momentarily reports near zero (one wheel
+    // near-still) while the IMU correctly reports the body's rotation
+    // rate. Without the IMU gate, the seed slips through, dumps a stale
     // measurement into the EKF with min_yaw_var_ covariance, and
     // snaps map→odom by tens of degrees — see the 153° jump at
     // session 2026-05-11-cog-gate-boundary-debounce, t≈78.28.
-    if (std::abs(wheel_omega_) >= min_omega_for_anchor_ ||
-        std::abs(gyro_z_) >= min_omega_for_anchor_)
+    //
+    // 2026-05-27: this gate used min_omega_for_anchor_ (0.5 rad/s),
+    // contradicting the "0.05 rad/s ≈ 3°/s" the comment always
+    // claimed. The 10× too-high threshold let the dock graceful
+    // controller's slow alignment pivots (0.1-0.3 rad/s) republish the
+    // stale latched heading at 2 Hz, pinning the fused yaw against the
+    // gyro and driving the dock approach the wrong way. This path is
+    // the stationary-republish: ANY real rotation means the latch is
+    // going stale, so gate at a low rate (latch_republish_max_omega).
+    if (std::abs(wheel_omega_) >= latch_republish_max_omega_ ||
+        std::abs(gyro_z_) >= latch_republish_max_omega_)
     {
       return;
     }
@@ -823,6 +837,7 @@ private:
   double min_abs_wheel_{};
   double min_omega_for_anchor_{};
   double cog_sweep_dominance_ratio_{1.0};
+  double latch_republish_max_omega_{0.05};
   double max_pos_accuracy_{};
   double min_dt_{}, max_dt_{};
   double max_yaw_var_{}, min_yaw_var_{};

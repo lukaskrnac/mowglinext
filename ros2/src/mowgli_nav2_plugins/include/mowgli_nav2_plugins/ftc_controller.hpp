@@ -188,6 +188,14 @@ private:
   bool is_avoiding_{false};
   double target_lateral_deviation_{0.0};
   double lateral_deviation_{0.0};
+  /// Sign (+1 = left, -1 = right) of the side chosen when AVOIDANCE was
+  /// entered. Held for the whole avoidance episode so the min-deviation
+  /// floor can restore the correct side even on a tick where a transient
+  /// clear_at_zero zeroed target_lateral_deviation_ while is_avoiding_ is
+  /// still true — without it, the floor's `(dev_init >= 0) ? +1 : -1` rule
+  /// would flip a right-side skirt to the left (toward the blocked side)
+  /// and could steer the chassis into the obstacle it was skirting.
+  double avoid_sign_{1.0};
 
   // Wait-before-abort window for the two "no path" cases inside
   // updateLateralDeviation: (a) both sides blocked at the obstacle pose,

@@ -1320,6 +1320,10 @@ void FTCController::updateLateralDeviation(double dt)
         }
       }
       is_avoiding_ = true;
+      // Latch the chosen side for the whole episode. target is guaranteed
+      // nonzero here (the both-sides-blocked path above either waits and
+      // returns or throws, so we never reach this with target == 0).
+      avoid_sign_ = (target_lateral_deviation_ >= 0.0) ? 1.0 : -1.0;
       obstacle_wait_start_.reset();
       obstacle_waiting_ = false;
       RCLCPP_INFO(logger_,
@@ -1342,8 +1346,14 @@ void FTCController::updateLateralDeviation(double dt)
     if (config_.min_lateral_deviation > 0.0 &&
         std::abs(dev_init) < config_.min_lateral_deviation)
     {
-      const double sign = (dev_init >= 0.0) ? 1.0 : -1.0;
-      dev_init = sign * config_.min_lateral_deviation;
+      // Use the LATCHED avoidance side, not the sign of dev_init: a transient
+      // clear_at_zero tick can leave dev_init == 0 mid-episode, and deriving
+      // the sign from it would flip the skirt onto the blocked side. Clamp
+      // the floor to max so a min > max misconfig can't make grow start past
+      // the cap (which would abort the strip on every obstacle).
+      const double floor_mag =
+          std::min(config_.min_lateral_deviation, config_.max_lateral_deviation);
+      dev_init = avoid_sign_ * floor_mag;
     }
 
     // Grow the deviation until the offset path is clear (keeps current side).

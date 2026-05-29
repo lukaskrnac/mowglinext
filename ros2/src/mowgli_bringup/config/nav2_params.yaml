@@ -339,16 +339,23 @@ controller_server:
       deviation_step: 0.05
       deviation_blend_rate: 0.5
       # Minimum committed offset once AVOIDANCE engages. growDeviation only
-      # checks the path CENTERLINE per pose, so a one-step (0.05 m) offset
-      # can "clear" the line while the 0.40 m-wide chassis still overlaps the
-      # obstacle. 0.30 m ≈ half_width (0.20) + margin guarantees the body
-      # skirts it. Paired with the clear-at-zero AVOIDANCE-exit gate (see
-      # updateLateralDeviation): the controller now HOLDS this offset until
-      # the robot has physically driven past the obstacle, instead of
-      # flapping in/out of AVOIDANCE at a sub-deadband ±0.05 m dither (the
-      # "stops and wiggles left-right in front of a stone" failure, observed
-      # 2026-05-28 LiDAR mow as repeated entering/complete pairs at one idx).
-      min_lateral_deviation: 0.30
+      # checks the path CENTERLINE per pose, so in principle a one-step
+      # (0.05 m) offset can "clear" the line while the 0.40 m chassis still
+      # overlaps the obstacle, which argued for a half_width-ish floor.
+      # BUT field test 2026-05-29 showed 0.30 here is a net regression:
+      # growDeviationUntilClear requires ALL 30 lookahead poses (1.5 m) to
+      # clear at a SINGLE offset, so flooring the search start to 0.30 m on
+      # a strip running near an area boundary pushes a downstream pose into
+      # the boundary, no offset ≤ max clears the whole window, and EVERY
+      # strip aborts at idx=0 → area gave up at 0.3 % (vs 39 % with no
+      # floor). The clear_at_zero AVOIDANCE-exit gate (see
+      # updateLateralDeviation) is what actually fixed the sub-deadband
+      # left-right flap; the body-clearance floor was over-engineering that
+      # over the full lookahead does more harm than good. Disabled (0.0)
+      # until a footprint-aware (not full-lookahead-offset) clearance check
+      # replaces it. Runtime-tunable via the param if a specific site needs
+      # a small floor.
+      min_lateral_deviation: 0.0
 
 # ---------------------------------------------------------------------------
 # Planner server

@@ -170,6 +170,16 @@ public:
     return apply_promoted_obstacle(area_index, polygon);
   }
 
+  /// Test-only: mark an area's one-shot headland pass as already
+  /// emitted so find_next_segment skips straight to the boustrophedon
+  /// row planner. Production emits the perimeter headland on the FIRST
+  /// call per area; unit tests that assert in-row / obstacle /
+  /// coverage-complete behaviour must drain that one-shot first.
+  void mark_headland_emitted_for_test(size_t area_index)
+  {
+    headland_emitted_areas_.insert(area_index);
+  }
+
   /// Test-only: directly invoke the add_area service handler.
   void add_area_for_test(const mowgli_interfaces::srv::AddMowingArea::Request::SharedPtr req,
                          mowgli_interfaces::srv::AddMowingArea::Response::SharedPtr res);

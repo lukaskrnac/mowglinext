@@ -916,6 +916,10 @@ protected:
     opts.append_parameter_override("area_is_navigation", nav_flags);
 
     node_ = std::make_shared<mowgli_map::MapServerNode>(opts);
+    // Drain the one-shot perimeter headland so the first select() call
+    // exercises the boustrophedon / obstacle / coverage-complete logic
+    // these tests assert on (production emits the headland first).
+    node_->mark_headland_emitted_for_test(0);
   }
   void TearDown() override
   {
@@ -1120,6 +1124,10 @@ protected:
     opts.append_parameter_override("area_is_navigation", nav_flags);
 
     node_ = std::make_shared<mowgli_map::MapServerNode>(opts);
+    // Drain the one-shot perimeter headland so the first select() call
+    // exercises the boustrophedon / obstacle / coverage-complete logic
+    // these tests assert on (production emits the headland first).
+    node_->mark_headland_emitted_for_test(0);
   }
   void TearDown() override
   {

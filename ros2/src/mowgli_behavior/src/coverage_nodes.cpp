@@ -598,7 +598,21 @@ BT::NodeStatus GetNextUnmowedArea::processResponse()
     // mid-mow: the cached strip_path is gone but mow_progress has
     // captured everything we mowed before the excursion, so the
     // re-plan covers only the remaining swaths.
+    // Count only CONSECUTIVE no-progress dispatches toward the give-up
+    // budget. If this area's coverage advanced beyond the best we've seen,
+    // the previous pass mowed something despite any FollowStrip stutter
+    // (e.g. a hard-to-skirt obstacle at a strip end) — reset the counter so
+    // a steadily-progressing area is never abandoned mid-climb.
     auto& n = ctx->area_attempt_count[current_area_idx_];
+    auto last_it = ctx->area_last_coverage.find(current_area_idx_);
+    const bool made_progress =
+        (last_it == ctx->area_last_coverage.end()) ||
+        (response->coverage_percent > last_it->second + BTContext::kAreaProgressEpsilonPct);
+    if (made_progress)
+    {
+      ctx->area_last_coverage[current_area_idx_] = response->coverage_percent;
+      n = 0;
+    }
     n++;
     if (n >= BTContext::kMaxAreaAttempts)
     {

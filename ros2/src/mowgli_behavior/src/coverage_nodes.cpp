@@ -263,6 +263,15 @@ BT::NodeStatus TransitToStrip::onStart()
 {
   auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
 
+  // Nothing to transit to if there is no coverage path (e.g. the area is
+  // already fully mowed → PlanCoverageArea returned an empty path with a
+  // stale transit goal). Skip cleanly; FollowStrip will handle the empty
+  // path via its own AreaUnreachable fallthrough.
+  if (ctx->current_strip_path.poses.empty())
+  {
+    return BT::NodeStatus::SUCCESS;
+  }
+
   RCLCPP_INFO(ctx->node->get_logger(),
               "TransitToStrip: goal frame='%s' pos=(%.2f, %.2f)",
               ctx->current_transit_goal.header.frame_id.c_str(),
@@ -1165,6 +1174,14 @@ BT::NodeStatus PlanCoverageArea::onRunning()
       {
         return BT::NodeStatus::FAILURE;
       }
+      // Expose the coverage path's first pose as the transit goal so an
+      // obstacle-aware TransitToStrip (Nav2 global planner) can route the
+      // robot AROUND obstacles to the start of the remaining region before
+      // FollowStrip mows it. On a re-plan pass the remaining region can sit
+      // behind a large obstacle the FTC follower cannot reach in a straight
+      // carrot line; Smac + the global obstacle_layer drives around it.
+      ctx->current_transit_goal = accumulated_path_.poses.front();
+      ctx->current_transit_goal.header = accumulated_path_.header;
       return BT::NodeStatus::SUCCESS;
     }
 

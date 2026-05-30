@@ -475,6 +475,34 @@
                           area_index="{current_area_index}"
                           operation_width_m="0.20"
                           headland_width_m="0.30"/>
+                      <!-- Obstacle-aware transit to the coverage path start.
+                           On a re-plan pass (AreaLoop re-enters an area that
+                           still has un-mowed cells), the remaining region can
+                           lie BEHIND a large obstacle the FTC follower cannot
+                           reach in a straight carrot line — it would just
+                           abort against the obstacle and the region behind it
+                           would never be mowed (field: "toute une partie du
+                           jardin pas faite"). TransitToStrip routes the robot
+                           AROUND the obstacle via the Nav2 global planner
+                           (Smac + the enabled global obstacle_layer), then
+                           FollowStrip mows from there. Soft: if the start is
+                           genuinely unreachable (walled off), fall through and
+                           let FollowStrip try from the closest pose; the
+                           no-progress guard in GetNextUnmowedArea then retires
+                           the area after a pass with no coverage gain (so a
+                           truly unreachable region doesn't loop forever, and a
+                           DYNAMIC obstacle that later clears is picked up on a
+                           subsequent pass). -->
+                      <Fallback name="TransitToCoverageStart">
+                        <Sequence name="TransitAroundObstacles">
+                          <PublishHighLevelStatus state="2" state_name="TRANSIT"/>
+                          <!-- Blade off while circumnavigating; FollowStrip
+                               re-enables it when mowing resumes. -->
+                          <SetMowerEnabled enabled="false"/>
+                          <TransitToStrip/>
+                        </Sequence>
+                        <AlwaysSuccess/>
+                      </Fallback>
                       <RetryUntilSuccessful num_attempts="5" name="FollowStripRetry">
                         <Fallback name="MowOrRecover">
                         <Sequence name="MowPath">

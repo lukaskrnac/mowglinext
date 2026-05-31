@@ -241,8 +241,11 @@ export function LiveMowgliWidget({compact, moving, activeAreaIndex}: LiveMowgliW
                                             ? 'mnLawnPulse 1.8s ease-out infinite'
                                             : 'mnLawnBreath 3.6s ease-in-out infinite',
                                     }}/>
-                            {/* heading wedge */}
-                            <g transform={`rotate(${-(robotYaw * 180) / Math.PI - 90})`}>
+                            {/* heading wedge -- ENU yaw, canvas flips Y so
+                                up == north. rotate(90 - yawDeg) maps
+                                heading=0 (east) -> +90 -> right and
+                                heading=90 (north) -> 0 -> up. */}
+                            <g transform={`rotate(${90 - (robotYaw * 180) / Math.PI})`}>
                                 <path d="M 0 -18 L -4.5 -6 L 4.5 -6 Z"
                                       fill={colors.accent} opacity={0.85}/>
                             </g>

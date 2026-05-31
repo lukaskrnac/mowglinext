@@ -105,8 +105,11 @@ export function LiveMapMini({
         <g transform={`translate(${toX(robot.x)} ${toY(robot.y)})`}>
           {/* outer glow */}
           <circle r={14} fill="rgba(124,255,178,0.55)" filter="url(#robotGlow)"/>
-          {/* heading wedge */}
-          <g transform={`rotate(${-robot.heading - 90})`}>
+          {/* heading wedge -- ENU yaw (0=+X east, 90=+Y north). Arrow base
+              points up in SVG; canvas flips Y so up == north. Mapping is
+              rotate(90 - heading): heading 0 (east) -> +90 -> right;
+              heading 90 (north) -> 0 -> up. */}
+          <g transform={`rotate(${90 - robot.heading})`}>
             <path d="M 0 -16 L -4 -4 L 4 -4 Z" fill="var(--lime)" opacity={0.9}/>
           </g>
           {/* core */}

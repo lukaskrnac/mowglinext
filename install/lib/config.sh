@@ -49,7 +49,6 @@ recompute_image_defaults() {
   LIDAR_RPLIDAR_IMAGE_DEFAULT="${prefix}/lidar-rplidar:${IMAGE_TAG}"
   LIDAR_STL27L_IMAGE_DEFAULT="${prefix}/lidar-stl27l:${IMAGE_TAG}"
   MAVROS_IMAGE_DEFAULT="${prefix}/mavros:${IMAGE_TAG}"
-  NMEA_IMAGE_DEFAULT="${prefix}/nmea:${IMAGE_TAG}"
   GUI_IMAGE_DEFAULT="${prefix}/mowglinext-gui:${IMAGE_TAG}"
 }
 

@@ -8,7 +8,7 @@ Dockerized ROS2 drivers for each supported sensor. Each subdirectory contains a 
 |--------|------|-----------|------------|----------|
 | u-blox ZED-F9P | RTK GPS | [`gps/`](gps/) | `/gps/fix` (NavSatFix) + `/gps/status` (GnssStatus via shared adapter) | USB-CDC |
 | Unicore UM98x | RTK GPS | [`unicore/`](unicore/) | `/gps/fix` (NavSatFix) | UART/USB |
-| Generic NMEA-0183 | GPS (any vendor) | [`nmea/`](nmea/) | `/gps/fix` (NavSatFix), `/gps/vel` (TwistStamped) | UART/USB |
+| Generic NMEA-0183 | GPS (any vendor, legacy fallback) | [`gps/`](gps/) | `/gps/fix` (NavSatFix) + `/gps/status` (GnssStatus via shared adapter) | UART/USB |
 | LDRobot LD19 | 2D LiDAR | [`lidar/`](lidar/) | `/scan` (LaserScan) | UART 230400 |
 
 ### GPS backend selection

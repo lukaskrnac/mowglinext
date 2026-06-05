@@ -231,8 +231,10 @@ void NavSatToAbsolutePoseNode::on_navsat_fix(sensor_msgs::msg::NavSatFix::ConstS
     }
     if (diagnostics_snapshot.has_value())
     {
-      EnrichGnssRuntimeStateFromDiagnostics(
-          gnss_state, gnss_backend_, *diagnostics_snapshot, gnss_diagnostics_timeout_sec_);
+      EnrichGnssRuntimeStateFromDiagnostics(gnss_state,
+                                            gnss_backend_,
+                                            *diagnostics_snapshot,
+                                            gnss_diagnostics_timeout_sec_);
     }
     gnss_status_pub_->publish(ToGnssStatusMessage(gnss_state));
   }

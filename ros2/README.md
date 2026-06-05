@@ -385,7 +385,8 @@ source /opt/ros/kilted/setup.bash
 cd /path/to/mowgli-ros2
 
 rosdep update --rosdistro kilted
-rosdep install --from-paths src --ignore-src --rosdistro kilted -y
+rosdep install --from-paths src --ignore-src --rosdistro kilted \
+  --skip-keys universal_gnss_ros2 -y
 
 colcon build \
   --cmake-args -DCMAKE_BUILD_TYPE=Release \
@@ -394,6 +395,10 @@ colcon build \
 
 source install/setup.bash
 ```
+
+`universal_gnss_ros2` is built from a separate source checkout in the linked
+workspace, not installed via apt. If you have that external package linked into
+your local workspace scan path already, you can omit the `--skip-keys` entry.
 
 ### Running Tests
 

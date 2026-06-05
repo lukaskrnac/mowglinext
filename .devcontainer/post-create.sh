@@ -55,11 +55,29 @@ fi
 # Resolve rosdep dependencies
 # ---------------------------------------------------------------------------
 echo "Resolving rosdep dependencies..."
-rosdep install \
-    --from-paths "${BUILD_PATHS[@]}" \
-    --ignore-src \
-    --rosdistro kilted \
-    -y || true
+ROSDEP_SKIP_KEYS=()
+
+# universal_gnss_ros2 is an external workspace package when the GNSS repo is
+# mounted into the devcontainer. If that mount is absent, keep rosdep from
+# trying to resolve it as a system package.
+if [ ! -f "/ros2_ws/src/universal_gnss_ros2/package.xml" ]; then
+    ROSDEP_SKIP_KEYS+=(universal_gnss_ros2)
+fi
+
+rosdep_args=(
+    install
+    --from-paths "${BUILD_PATHS[@]}"
+    --ignore-src
+    --rosdistro kilted
+    -y
+)
+
+if [ "${#ROSDEP_SKIP_KEYS[@]}" -gt 0 ]; then
+    echo "Skipping rosdep keys not linked into this workspace: ${ROSDEP_SKIP_KEYS[*]}"
+    rosdep_args+=(--skip-keys "${ROSDEP_SKIP_KEYS[*]}")
+fi
+
+rosdep "${rosdep_args[@]}" || true
 
 # ---------------------------------------------------------------------------
 # Optional focused development build.

@@ -276,6 +276,7 @@ RUN rosdep update --rosdistro kilted \
       --from-paths src \
       --ignore-src \
       --rosdistro kilted \
+      --skip-keys "universal_gnss_ros2" \
       -y \
  || true
 

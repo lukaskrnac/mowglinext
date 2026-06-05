@@ -28,16 +28,31 @@
 
   // Forward ports for visualization and debugging
   "forwardPorts": [
-    4006,   // GUI (Go backend + React frontend)
-    8765,   // Foxglove Bridge WebSocket
-    6080,   // noVNC (if Gazebo GUI needed)
-    9090    // rosbridge WebSocket (legacy GUI path)
+    4006,
+    // GUI (Go backend + React frontend)
+    8765,
+    // Foxglove Bridge WebSocket
+    6080,
+    // noVNC (if Gazebo GUI needed)
+    9090 // rosbridge WebSocket (legacy GUI path)
   ],
   "portsAttributes": {
-    "4006": { "label": "Mowgli GUI", "onAutoForward": "notify" },
-    "8765": { "label": "Foxglove Studio", "onAutoForward": "notify" },
-    "6080": { "label": "noVNC Gazebo GUI", "onAutoForward": "ignore" },
-    "9090": { "label": "rosbridge (legacy)", "onAutoForward": "ignore" }
+    "4006": {
+      "label": "Mowgli GUI",
+      "onAutoForward": "notify"
+    },
+    "8765": {
+      "label": "Foxglove Studio",
+      "onAutoForward": "notify"
+    },
+    "6080": {
+      "label": "noVNC Gazebo GUI",
+      "onAutoForward": "ignore"
+    },
+    "9090": {
+      "label": "rosbridge (legacy)",
+      "onAutoForward": "ignore"
+    }
   },
 
   // Claude Code CLI
@@ -92,7 +107,9 @@
         ],
         "[python]": {
           "editor.defaultFormatter": "charliermarsh.ruff",
-          "editor.codeActionsOnSave": { "source.organizeImports": "explicit" }
+          "editor.codeActionsOnSave": {
+            "source.organizeImports": "explicit"
+          }
         },
         "go.toolsManagement.autoUpdate": true,
         "go.useLanguageServer": true

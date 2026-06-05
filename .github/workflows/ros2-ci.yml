@@ -243,10 +243,22 @@ jobs:
           # $GITHUB_WORKSPACE, not inside the devcontainer/runtime image where
           # /ros2_ws exists. colcon build runs from the ros2/ subdirectory and
           # writes its overlay to ros2/install.
-          ros2 pkg list | grep -x universal_gnss_ros2
-          ros2 pkg prefix universal_gnss_ros2
+          echo "=== AMENT PREFIX ==="
+          echo "$AMENT_PREFIX_PATH"
+
+          echo "=== COLCON PREFIX ==="
+          echo "$COLCON_PREFIX_PATH"
+
+          echo "=== Packages containing GNSS ==="
+          ros2 pkg list | sort | grep -Ei 'gnss|gps|universal' || true
+
+          echo "=== Package prefixes ==="
+          ros2 pkg prefix universal_gnss_ros2 || true
+          ros2 pkg prefix mowgli_bringup || true
+
+          echo "=== Launch test ==="
           ros2 launch mowgli_bringup universal_gnss.launch.py --show-args \
-            > /tmp/universal_gnss_show_args.txt
+            | tee /tmp/universal_gnss_show_args.txt
 
       - name: Upload test results
         if: always()

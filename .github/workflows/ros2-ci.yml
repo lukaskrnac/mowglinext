@@ -49,6 +49,14 @@ jobs:
           # already checks out submodules; this CI didn't — so tests never ran.)
           submodules: recursive
 
+      - name: Preinstall ROS apt source package
+        working-directory: .
+        run: |
+          # setup-ros currently synthesizes the GitHub release asset filename
+          # for ros2-apt-source. Preinstall the package from the release
+          # metadata instead so CI follows the published asset URL directly.
+          bash .github/scripts/install-ros-apt-source.sh ros2-apt-source
+
       - name: Setup ROS2 ${{ matrix.ros_distro }}
         uses: ros-tooling/setup-ros@v0.7
         with:

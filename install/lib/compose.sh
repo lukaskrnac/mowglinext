@@ -78,7 +78,7 @@ build_compose_stack() {
       ;;
   esac
 
-  if [[ "$gnss_stack" == "legacy" && "$gnss_backend" != "disabled" ]]; then
+  if [[ "$gnss_stack" != "disabled" && "$gnss_backend" != "disabled" ]]; then
     gnss_service="$(compose_gnss_service_name "$gnss_backend" 2>/dev/null || true)"
     case "$gnss_service" in
       gps)
@@ -92,8 +92,9 @@ build_compose_stack() {
         return 1
         ;;
     esac
-  elif [[ "$gnss_stack" == "universal" ]]; then
-    info "Universal GNSS selected: GNSS runs inside mowgli-ros2 via mowgli_bringup."
+    if [[ "$gnss_stack" == "universal" ]]; then
+      info "Universal GNSS selected: GNSS runs in the mowgli-gps sidecar."
+    fi
   fi
 
   COMPOSE_FILES+=("$COMPOSE_SRC_DIR/docker-compose.watchtower.yml")

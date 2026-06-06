@@ -4,6 +4,8 @@
 import importlib.util
 from pathlib import Path
 
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+
 
 def _load_module(filename: str, module_name: str):
     here = Path(__file__).resolve().parent
@@ -16,89 +18,30 @@ def _load_module(filename: str, module_name: str):
     return module
 
 
-def test_universal_wrapper_uses_gps_status_topic_in_universal_mode(monkeypatch) -> None:
-    launch_module = _load_module("universal_gnss.launch.py", "universal_gnss_launch")
-    monkeypatch.setenv("GNSS_STATUS_SOURCE", "universal")
-    assert launch_module._default_status_topic() == "/gps/status"
+def test_full_system_show_args_no_longer_exposes_internal_universal_toggle() -> None:
+    launch_module = _load_module("full_system.launch.py", "full_system_launch_args")
+    launch_description = launch_module.generate_launch_description()
+
+    declared_args = [
+        entity.name
+        for entity in launch_description.entities
+        if isinstance(entity, DeclareLaunchArgument)
+    ]
+
+    assert "use_universal_gnss" not in declared_args
 
 
-def test_universal_wrapper_keeps_gps_status_topic_when_legacy_env_lingers(monkeypatch) -> None:
-    launch_module = _load_module("universal_gnss.launch.py", "universal_gnss_launch_status")
-    monkeypatch.setenv("GNSS_STATUS_SOURCE", "mowgli_local")
-    assert launch_module._default_status_topic() == "/gps/status"
+def test_full_system_no_longer_includes_internal_universal_launch() -> None:
+    launch_module = _load_module("full_system.launch.py", "full_system_launch_includes")
+    launch_description = launch_module.generate_launch_description()
 
+    included_locations = [
+        entity.launch_description_source.location
+        for entity in launch_description.entities
+        if isinstance(entity, IncludeLaunchDescription)
+    ]
 
-def test_universal_wrapper_prefers_new_env_contract(monkeypatch) -> None:
-    launch_module = _load_module("universal_gnss.launch.py", "universal_gnss_launch_env")
-    monkeypatch.setenv("GNSS_RECEIVER_FAMILY", "unicore")
-    monkeypatch.setenv("GNSS_SERIAL_DEVICE", "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0")
-    monkeypatch.setenv("GNSS_SERIAL_BAUD", "921600")
-    monkeypatch.setenv("GNSS_TRANSPORT", "serial")
-    monkeypatch.setenv("GNSS_NTRIP_ENABLED", "true")
-    monkeypatch.setenv("GNSS_NTRIP_HOST", "rtk.local")
-    monkeypatch.setenv("GNSS_NTRIP_PORT", "2102")
-    monkeypatch.setenv("GNSS_NTRIP_MOUNTPOINT", "FIELD1")
-    monkeypatch.setenv("GNSS_NTRIP_USERNAME", "operator")
-    monkeypatch.setenv("GNSS_NTRIP_PASSWORD", "secret")
-
-    robot_params = {
-        "gps_protocol": "UBX",
-        "gps_port": "/dev/gps",
-        "gps_baudrate": 460800,
-        "ntrip_enabled": False,
-        "ntrip_host": "yaml-host",
-        "ntrip_port": 2101,
-        "ntrip_mountpoint": "YAML",
-        "ntrip_user": "yaml-user",
-        "ntrip_password": "yaml-password",
-    }
-
-    assert launch_module._default_receiver_family(robot_params) == "unicore"
-    assert (
-        launch_module._default_serial_device(robot_params)
-        == "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
-    )
-    assert launch_module._default_serial_baud(robot_params) == "921600"
-    assert launch_module._default_transport() == "serial"
-    assert launch_module._default_ntrip_enabled(robot_params) == "true"
-    assert launch_module._default_ntrip_host(robot_params) == "rtk.local"
-    assert launch_module._default_ntrip_port(robot_params) == "2102"
-    assert launch_module._default_ntrip_mountpoint(robot_params) == "FIELD1"
-    assert launch_module._default_ntrip_username(robot_params) == "operator"
-    assert launch_module._default_ntrip_password(robot_params) == "secret"
-
-
-def test_universal_wrapper_uses_yaml_gnss_keys_when_env_is_missing(monkeypatch) -> None:
-    launch_module = _load_module("universal_gnss.launch.py", "universal_gnss_launch_yaml")
-    monkeypatch.delenv("GNSS_RECEIVER_FAMILY", raising=False)
-    monkeypatch.delenv("GNSS_SERIAL_DEVICE", raising=False)
-    monkeypatch.delenv("GNSS_SERIAL_BAUD", raising=False)
-
-    robot_params = {
-        "gnss_receiver_family": "nmea",
-        "gnss_serial_device": "/dev/serial/by-id/usb-gnss",
-        "gnss_serial_baud": 115200,
-        "gps_port": "/dev/gps",
-        "gps_baudrate": 921600,
-    }
-
-    assert launch_module._default_receiver_family(robot_params) == "nmea"
-    assert launch_module._default_serial_device(robot_params) == "/dev/serial/by-id/usb-gnss"
-    assert launch_module._default_serial_baud(robot_params) == "115200"
-
-
-def test_universal_wrapper_prefers_gps_by_id_for_usb_fallback(monkeypatch) -> None:
-    launch_module = _load_module("universal_gnss.launch.py", "universal_gnss_launch_usb_fallback")
-    monkeypatch.delenv("GNSS_SERIAL_DEVICE", raising=False)
-    monkeypatch.setenv("GPS_CONNECTION", "usb")
-    monkeypatch.setenv("GPS_BY_ID", "/dev/serial/by-id/usb-u-blox_GNSS_receiver-if00")
-    monkeypatch.setenv("GPS_PORT", "/dev/gps")
-
-    robot_params = {
-        "gps_port": "/dev/gps",
-    }
-
-    assert launch_module._default_serial_device(robot_params) == "/dev/serial/by-id/usb-u-blox_GNSS_receiver-if00"
+    assert all(not location.endswith("universal_gnss.launch.py") for location in included_locations)
 
 
 def test_full_system_disables_local_status_when_universal_selected() -> None:

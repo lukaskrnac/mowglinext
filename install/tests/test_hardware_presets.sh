@@ -52,18 +52,18 @@ assert_eq "mowgli backend: GNSS_STATUS_SOURCE=universal" "universal" "$(env_valu
 assert_eq "mowgli backend: MAVROS_ENABLED=false"   "false"  "$(env_value "$mowgli_repo" MAVROS_ENABLED)"
 
 mowgli_fragments=$(selected_fragments_in_current_run)
-for required in docker-compose.base.yml docker-compose.gui.yml docker-compose.lidar-ldlidar.yml; do
+for required in docker-compose.base.yml docker-compose.gui.yml docker-compose.gps.yml docker-compose.lidar-ldlidar.yml; do
   case "$mowgli_fragments" in
     *"$required"*) pass "mowgli backend: fragment $required present" ;;
     *)             fail "mowgli backend: fragment $required present" ;;
   esac
 done
 case "$mowgli_fragments" in
-  *docker-compose.gps.yml*|*docker-compose.unicore.yaml*|*docker-compose.mavros.yml*)
-    fail "mowgli backend: NO legacy or mavros GNSS fragment by default" "unexpected GNSS fragment selected"
+  *docker-compose.unicore.yaml*|*docker-compose.mavros.yml*)
+    fail "mowgli backend: NO legacy unicore or mavros GNSS fragment by default" "unexpected GNSS fragment selected"
     ;;
   *)
-    pass "mowgli backend: NO legacy or mavros GNSS fragment by default"
+    pass "mowgli backend: NO legacy unicore or mavros GNSS fragment by default"
     ;;
 esac
 

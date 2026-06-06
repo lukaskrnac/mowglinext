@@ -75,6 +75,14 @@ sync_gnss_env_contract_values() {
   GNSS_TRANSPORT="$(gnss_transport_from_state)"
   GNSS_SERIAL_DEVICE="$(gnss_serial_device_from_state)"
   GNSS_SERIAL_BAUD="$(gnss_serial_baud_from_state)"
+  case "$GNSS_STACK" in
+    universal)
+      GPS_RUNTIME_MODE="universal"
+      ;;
+    *)
+      GPS_RUNTIME_MODE="compat"
+      ;;
+  esac
   sync_legacy_gps_compat_from_gnss
 
   : "${GNSS_NTRIP_ENABLED:=${CONFIG_NTRIP_ENABLED:-false}}"
@@ -142,6 +150,7 @@ setup_env() {
   : "${GNSS_NTRIP_MOUNTPOINT:=}"
   : "${GNSS_NTRIP_USERNAME:=}"
   : "${GNSS_NTRIP_PASSWORD:=}"
+  : "${GPS_RUNTIME_MODE:=}"
 
   : "${GPS_DEBUG_ENABLED:=false}"
   : "${GPS_DEBUG_PORT:=/dev/gps_debug}"
@@ -270,6 +279,7 @@ setup_env() {
   upsert_env_key "$env_file" "GNSS_STATUS_SOURCE" "$GNSS_STATUS_SOURCE"
   write_gnss_env_contract_keys "$env_file"
   upsert_env_key "$env_file" "GPS_CONNECTION" "$GPS_CONNECTION"
+  upsert_env_key "$env_file" "GPS_RUNTIME_MODE" "$GPS_RUNTIME_MODE"
   upsert_env_key "$env_file" "GPS_PROTOCOL" "$GPS_PROTOCOL"
   upsert_env_key "$env_file" "GPS_PORT" "$GPS_PORT"
   upsert_env_key "$env_file" "GPS_BY_ID" "$GPS_BY_ID"

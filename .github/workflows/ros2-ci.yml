@@ -227,7 +227,7 @@ jobs:
             --event-handlers console_cohesion+
           colcon test-result --verbose
 
-      - name: Validate Universal GNSS package wiring
+      - name: Validate external GNSS launch contract
         working-directory: .
         run: |
           set -eo pipefail
@@ -253,12 +253,12 @@ jobs:
           ros2 pkg list | sort | grep -Ei 'gnss|gps|universal' || true
 
           echo "=== Package prefixes ==="
-          ros2 pkg prefix universal_gnss_ros2 || true
           ros2 pkg prefix mowgli_bringup || true
 
           echo "=== Launch test ==="
-          ros2 launch mowgli_bringup universal_gnss.launch.py --show-args \
-            | tee /tmp/universal_gnss_show_args.txt
+          ros2 launch mowgli_bringup full_system.launch.py --show-args \
+            | tee /tmp/full_system_show_args.txt
+          ! grep -q "use_universal_gnss" /tmp/full_system_show_args.txt
 
       - name: Upload test results
         if: always()

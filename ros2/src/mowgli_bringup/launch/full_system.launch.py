@@ -22,15 +22,14 @@ Complete Mowgli robot mower system launch.
 Brings up all subsystems:
   1. mowgli.launch.py        — hardware bridge, RSP, twist_mux
   2. navigation.launch.py    — robot_localization (dual EKF), Nav2
-  3. Universal GNSS (optional) — universal_gnss_ros2 receiver + NTRIP wrapper
-  4. Behavior tree node        — mowgli_behavior
-  5. Map server                — mowgli_map
-  6. Wheel odometry            — mowgli_localization
-  7. NavSat converter          — mowgli_localization (/gps/absolute_pose, optional /gps/status, /gps/pose_cov)
-  8. Localization monitor      — mowgli_localization
-  9. Diagnostics               — mowgli_monitoring
-  10. MQTT bridge (optional)   — mowgli_monitoring
-  11. foxglove_bridge          — WebSocket bridge for GUI and Foxglove Studio
+  3. Behavior tree node      — mowgli_behavior
+  4. Map server              — mowgli_map
+  5. Wheel odometry          — mowgli_localization
+  6. NavSat converter        — mowgli_localization (/gps/absolute_pose, optional /gps/status, /gps/pose_cov)
+  7. Localization monitor    — mowgli_localization
+  8. Diagnostics             — mowgli_monitoring
+  9. MQTT bridge (optional)  — mowgli_monitoring
+  10. foxglove_bridge        — WebSocket bridge for GUI and Foxglove Studio
 """
 
 import os
@@ -88,14 +87,6 @@ def generate_launch_description() -> LaunchDescription:
     elif _env_lidar in ("true", "1", "yes"):
         _early_use_lidar = "true"
 
-    _early_gnss_stack = os.environ.get("GNSS_STACK", "universal").strip().lower()
-    _early_hardware_backend = os.environ.get("HARDWARE_BACKEND", "mowgli").strip().lower()
-    _early_use_universal_gnss = (
-        "true"
-        if _early_hardware_backend != "mavros" and _early_gnss_stack != "disabled"
-        else "false"
-    )
-
     # ------------------------------------------------------------------
     # Declared arguments
     # ------------------------------------------------------------------
@@ -141,12 +132,6 @@ def generate_launch_description() -> LaunchDescription:
         description="Enable persistent obstacle tracking from /scan into the mow_progress map. Promotes static clusters to OBSTACLE_PERMANENT after 60 s, triggers replanning around them. Set to false if the tracker is misbehaving on grass-heavy terrain.",
     )
 
-    use_universal_gnss_arg = DeclareLaunchArgument(
-        "use_universal_gnss",
-        default_value=_early_use_universal_gnss,
-        description="Launch the Universal GNSS receiver and NTRIP wrapper from mowgli_bringup. Defaults on for direct-GNSS Mowgli deployments.",
-    )
-
     # use_fusion_graph and use_magnetometer are NOT declared here —
     # navigation.launch.py reads them from mowgli_robot.yaml directly
     # so the operator flips them via the runtime config (and a
@@ -164,7 +149,6 @@ def generate_launch_description() -> LaunchDescription:
     enable_foxglove = LaunchConfiguration("enable_foxglove")
     foxglove_port = LaunchConfiguration("foxglove_port")
     use_lidar = LaunchConfiguration("use_lidar")
-    use_universal_gnss = LaunchConfiguration("use_universal_gnss")
 
     # ------------------------------------------------------------------
     # Config paths
@@ -213,22 +197,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
-    # 3. Universal GNSS wrapper — optional migration path from the
-    # legacy vendor-specific sensor services to the shared
-    # universal_gnss_ros2 receiver + NTRIP nodes.
-    # ------------------------------------------------------------------
-    universal_gnss_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(bringup_dir, "launch", "universal_gnss.launch.py")
-        ),
-        condition=IfCondition(use_universal_gnss),
-        launch_arguments={
-            "use_sim_time": use_sim_time,
-        }.items(),
-    )
-
-    # ------------------------------------------------------------------
-    # 4. Behavior tree node
+    # 3. Behavior tree node
     # ------------------------------------------------------------------
     behavior_tree_node = Node(
         package="mowgli_behavior",
@@ -257,7 +226,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
-    # 5. Map server
+    # 4. Map server
     # ------------------------------------------------------------------
     map_server_node = Node(
         package="mowgli_map",
@@ -297,11 +266,11 @@ def generate_launch_description() -> LaunchDescription:
     # publisher for /wheel_odom. Keep the source in the package for now
     # (disabled) and rely on hardware_bridge alone.
     # ------------------------------------------------------------------
-    # 7a. NavSat adapter for legacy AbsolutePose + optional typed GNSS status
+    # 6a. NavSat adapter for legacy AbsolutePose + optional typed GNSS status
     # navsat_transform_node takes /gps/fix directly for the EKF pipeline;
     # this node keeps /gps/absolute_pose for legacy consumers and emits
-    # /gps/pose_cov for ekf_map_node fusion. /gps/status can now be
-    # disabled here when Universal GNSS owns the typed status path.
+    # /gps/pose_cov for ekf_map_node fusion. /gps/status stays disabled
+    # here because the external GNSS sidecar owns the typed status path.
     # ------------------------------------------------------------------
     datum_lat = float(robot_params.get("datum_lat", 0.0))
     datum_lon = float(robot_params.get("datum_lon", 0.0))
@@ -325,7 +294,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
-    # 8. Localization monitor
+    # 7. Localization monitor
     # ------------------------------------------------------------------
     localization_monitor_node = Node(
         package="mowgli_localization",
@@ -338,7 +307,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
-    # 8b. IMU yaw calibration node (on-demand)
+    # 7b. IMU yaw calibration node (on-demand)
     # Exposes /calibrate_imu_yaw_node/calibrate — idle until called.
     # ------------------------------------------------------------------
     calibrate_imu_yaw_node = Node(
@@ -352,7 +321,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
-    # 9. Diagnostics
+    # 8. Diagnostics
     # ------------------------------------------------------------------
     diagnostics_node = Node(
         package="mowgli_monitoring",
@@ -366,7 +335,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
-    # 10. MQTT bridge (optional)
+    # 9. MQTT bridge (optional)
     # ------------------------------------------------------------------
     mqtt_bridge_node = Node(
         condition=IfCondition(enable_mqtt),
@@ -381,7 +350,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
-    # 11. Foxglove Bridge — WebSocket bridge for GUI and Foxglove Studio
+    # 10. Foxglove Bridge — WebSocket bridge for GUI and Foxglove Studio
     # ------------------------------------------------------------------
     # No topic/service whitelists — all topics are available for Foxglove
     # Studio debugging. The GUI backend throttles subscriptions on its side.
@@ -463,11 +432,9 @@ def generate_launch_description() -> LaunchDescription:
             foxglove_port_arg,
             use_lidar_arg,
             use_obstacle_tracker_arg,
-            use_universal_gnss_arg,
             # Subsystem includes
             mowgli_launch,
             navigation_launch,
-            universal_gnss_launch,
             # Individual nodes
             behavior_tree_node,
             map_server_node,

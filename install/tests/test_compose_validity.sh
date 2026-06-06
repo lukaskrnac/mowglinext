@@ -64,7 +64,7 @@ section "Required services present (default mowgli + ldlidar preset)"
 
 CONTAINERS=$(grep -E '^\s+container_name:' "$COMPOSE_FILE" | awk '{print $2}' | sort)
 
-for required in mowgli-ros2 mowgli-gui mowgli-lidar mowgli-mqtt mowgli-watchtower; do
+for required in mowgli-ros2 mowgli-gps mowgli-gui mowgli-lidar mowgli-mqtt mowgli-watchtower; do
   if printf '%s\n' "$CONTAINERS" | grep -qx "$required"; then
     pass "service: $required"
   else
@@ -72,9 +72,9 @@ for required in mowgli-ros2 mowgli-gui mowgli-lidar mowgli-mqtt mowgli-watchtowe
   fi
 done
 
-# Negative: with HARDWARE_BACKEND=mowgli + GNSS_STACK=universal, mavros,
-# ntrip, and the legacy direct GNSS container must NOT be present.
-for forbidden in mowgli-gps mowgli-mavros mowgli-ntrip; do
+# Negative: with HARDWARE_BACKEND=mowgli + GNSS_STACK=universal, mavros and
+# the MAVROS-only NTRIP sidecar must NOT be present.
+for forbidden in mowgli-mavros mowgli-ntrip; do
   if printf '%s\n' "$CONTAINERS" | grep -qx "$forbidden"; then
     fail "service NOT present: $forbidden" "should not be in mowgli backend compose"
   else
@@ -82,22 +82,21 @@ for forbidden in mowgli-gps mowgli-mavros mowgli-ntrip; do
   fi
 done
 
-section "Universal GNSS compose excludes legacy GNSS runtime paths"
+section "Universal GNSS compose uses the canonical mowgli-gps sidecar"
 
-for forbidden in \
-  "sensors/gps" \
-  "sensors/unicore" \
-  "docker-compose.gps.yml" \
-  "docker-compose.unicore.yaml" \
-  "gnss_unicore" \
-  "gps_health_aggregator.py" \
-  "rtcm_serial_bridge.py" \
-  "nmea_navsat_driver" \
-  "ublox_dgnss_node"; do
-  if grep -q "$forbidden" "$COMPOSE_FILE"; then
-    fail "legacy GNSS runtime absent: $forbidden" "found in generated universal compose"
+for required in "GPS_RUNTIME_MODE:" "GNSS_RECEIVER_FAMILY:" "GNSS_SERIAL_DEVICE:"; do
+  if grep -q "$required" "$COMPOSE_FILE"; then
+    pass "compose contains sidecar env: $required"
   else
-    pass "legacy GNSS runtime absent: $forbidden"
+    fail "compose contains sidecar env: $required" "missing from generated compose"
+  fi
+done
+
+for forbidden in "gnss_unicore:" "UNICORE_IMAGE"; do
+  if grep -q "$forbidden" "$COMPOSE_FILE"; then
+    fail "legacy standalone GNSS absent: $forbidden" "found in generated universal compose"
+  else
+    pass "legacy standalone GNSS absent: $forbidden"
   fi
 done
 
@@ -121,6 +120,13 @@ if real_docker_compose_available; then
       "$(printf '%s' "$EXPANDED" | grep -E 'image:.*\${' | head -1)"
   else
     pass "no unresolved \${VAR} in image:"
+  fi
+
+  if printf '%s' "$EXPANDED" | grep -qE 'GPS_RUNTIME_MODE: universal$'; then
+    pass "Universal GNSS sidecar expands to GPS_RUNTIME_MODE=universal"
+  else
+    fail "Universal GNSS sidecar expands to GPS_RUNTIME_MODE=universal" \
+      "$(printf '%s' "$EXPANDED" | grep -n 'GPS_RUNTIME_MODE:' | head -1)"
   fi
 
   # Privileged volumes contain /dev mount — required for sensor passthrough.

@@ -136,7 +136,7 @@ compose_restart_services_for_backend() {
 
     gnss_backend="$(effective_gnss_backend 2>/dev/null || true)"
     gnss_stack="$(effective_gnss_stack 2>/dev/null || true)"
-    if [[ "$gnss_stack" == "legacy" ]] && is_supported_gnss_backend "$gnss_backend"; then
+    if [[ "$gnss_stack" != "disabled" ]] && is_supported_gnss_backend "$gnss_backend"; then
       gnss_service="$(compose_gnss_service_name "$gnss_backend" 2>/dev/null || true)"
       [ -n "$gnss_service" ] && services+=("$gnss_service")
     fi
@@ -586,6 +586,15 @@ sync_legacy_gps_compat_from_gnss() {
 
 compose_gnss_service_name() {
   local backend="${1:-$(effective_gnss_backend)}"
+  local stack
+
+  stack="$(effective_gnss_stack 2>/dev/null || true)"
+  if [[ "$stack" == "universal" ]]; then
+    # PR 2 runtime flip: GNSS_STACK=universal now means the existing gps
+    # sidecar owns Universal GNSS, regardless of receiver family.
+    printf 'gps\n'
+    return 0
+  fi
 
   case "$backend" in
     gps|ublox)

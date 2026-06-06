@@ -400,8 +400,13 @@ source install/setup.bash
 ```
 
 `universal_gnss_ros2` is vendored via the
-`ros2/src/external/universal-gnss` git submodule, not installed via apt. If
-you are actively developing that upstream repo separately, set
+`ros2/src/external/universal-gnss` git submodule, not installed via apt. The
+main `mowgli-ros2` runtime no longer launches Universal GNSS directly; the
+`mowgli-gps` sidecar owns that runtime path. The vendored package remains in
+this workspace during the migration so ROS2 CI and local development can stay
+in sync with the sidecar code until the final cleanup PR removes it.
+
+If you are actively developing that upstream repo separately, set
 `UNIVERSAL_GNSS_PATH=/path/to/universal-gnss` and the workspace sync helpers
 will prefer that checkout over the vendored submodule.
 

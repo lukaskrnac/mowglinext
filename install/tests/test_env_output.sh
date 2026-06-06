@@ -57,6 +57,7 @@ REQUIRED_KEYS=(
   GNSS_NTRIP_USERNAME
   GNSS_NTRIP_PASSWORD
   GPS_CONNECTION
+  GPS_RUNTIME_MODE
   GPS_PROTOCOL
   GPS_PORT
   GPS_BAUD
@@ -109,6 +110,7 @@ ENV_CONTENT="$(cat "$ENV_FILE")"
 assert_contains "GPS_PROTOCOL=UBX (preset)" "GPS_PROTOCOL=UBX" "$ENV_CONTENT"
 assert_contains "GPS_BAUD=921600 (runtime target)" "GPS_BAUD=921600" "$ENV_CONTENT"
 assert_contains "GPS_CONNECTION=uart (preset)" "GPS_CONNECTION=uart" "$ENV_CONTENT"
+assert_contains "GPS_RUNTIME_MODE=universal (derived)" "GPS_RUNTIME_MODE=universal" "$ENV_CONTENT"
 assert_contains "GNSS_STACK=universal (default)" "GNSS_STACK=universal" "$ENV_CONTENT"
 assert_contains "GNSS_RECEIVER_FAMILY=auto (default)" "GNSS_RECEIVER_FAMILY=auto" "$ENV_CONTENT"
 assert_contains "GNSS_TRANSPORT=serial (default)" "GNSS_TRANSPORT=serial" "$ENV_CONTENT"

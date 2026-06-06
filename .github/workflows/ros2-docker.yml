@@ -90,9 +90,10 @@ jobs:
           image="${{ env.IMAGE_NAME }}${{ matrix.suffix }}@${{ steps.build.outputs.digest }}"
           docker run --rm "$image" bash -lc '
             set -euo pipefail
-            ros2 pkg list | grep -x universal_gnss_ros2
-            ros2 launch mowgli_bringup universal_gnss.launch.py --show-args \
-              > /tmp/universal_gnss_show_args.txt
+            ros2 pkg prefix mowgli_bringup
+            ros2 launch mowgli_bringup full_system.launch.py --show-args \
+              > /tmp/full_system_show_args.txt
+            ! grep -q use_universal_gnss /tmp/full_system_show_args.txt
           '
 
       - name: Export digest

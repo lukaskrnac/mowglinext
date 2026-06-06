@@ -150,14 +150,14 @@ Receiver
 ### Workspace Build
 
 - `universal_gnss_ros2` is now intended to build from the MowgliNext workspace using the standard `ros2/scripts/build.sh`, `ros2/scripts/test.sh`, `ros2/Makefile`, and `.devcontainer/post-create.sh` entrypoints.
-- `mowgli_bringup/launch/universal_gnss.launch.py` now wraps `universal_gnss_ros2` receiver/NTRIP nodes with defaults sourced from the existing GNSS env contract plus `mowgli_robot.yaml`.
-- `full_system.launch.py` now has a `use_universal_gnss` launch arg and includes the wrapper by default for direct GNSS deployments; only MAVROS / disabled GNSS paths skip it.
+- Runtime ownership has moved to the `mowgli-gps` sidecar: `GNSS_STACK=universal` now means the sidecar launches `universal_gnss_ros2` receiver/NTRIP nodes plus the public-topic bridge, while `mowgli-ros2` consumes only `/gps/fix`, `/gps/status`, `/diagnostics`, and `/rtcm`.
+- `full_system.launch.py` no longer includes an internal Universal GNSS launch path or a `use_universal_gnss` argument.
 - `ros2/scripts/build.sh` now defaults `PACKAGES` builds to `--packages-up-to`, so launch packages like `mowgli_bringup` pull in their required workspace deps during milestone validation. Exact legacy behavior remains available with `PACKAGES_MODE=select`.
 - The milestone validation command `PACKAGES="mowgli_interfaces mowgli_localization universal_gnss_ros2 mowgli_bringup" ros2/scripts/build.sh` now succeeds in this devcontainer after aligning `Fields2Cover` discovery between `mowgli_coverage` and the dev image.
 - Regression coverage now verifies:
   - legacy mode still advertises and publishes the Mowgli-local `/gps/status`
-  - universal mode keeps `/gps/absolute_pose` and `/gps/pose_cov` alive while suppressing the local `/gps/status` publisher and `/diagnostics` parser subscription
-  - bringup launch helpers keep the Universal GNSS `/gps/status` remap and local-parser switch aligned
+  - universal sidecar mode keeps `/gps/absolute_pose` and `/gps/pose_cov` alive while suppressing the local `/gps/status` publisher and `/diagnostics` parser subscription
+  - bringup launch helpers no longer own the Universal GNSS runtime path
 
 ### Hardware Validation
 
@@ -166,8 +166,10 @@ ArduPilot USB device was removed from the setup.
 
 Sanitized commands used:
 
-- `ros2 launch mowgli_bringup universal_gnss.launch.py receiver_family:=ublox serial_device:=/dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_GNSS_receiver-if00 serial_baud:=921600 ntrip_enabled:=true caster_host:=<host> caster_port:=2101 mountpoint:=<mountpoint> username:=<username> password:=<redacted> status_topic:=/gps/status fix_topic:=/gps/fix diagnostics_topic:=/diagnostics rtcm_topic:=/rtcm`
-- `ros2 launch mowgli_bringup universal_gnss.launch.py receiver_family:=unicore serial_device:=/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 serial_baud:=921600 ntrip_enabled:=true caster_host:=<host> caster_port:=2101 mountpoint:=<mountpoint> username:=<username> password:=<redacted> status_topic:=/gps/status fix_topic:=/gps/fix diagnostics_topic:=/diagnostics rtcm_topic:=/rtcm`
+- `docker logs mowgli-gps --tail=100`
+- `ros2 topic info /gps/status -v`
+- `ros2 topic echo /gps/fix --once`
+- `ros2 topic echo /gps/status --once`
 - `bash install/tests/test_compose_validity.sh`
 
 Observed device reality in the validation container:

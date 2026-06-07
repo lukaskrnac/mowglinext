@@ -35,6 +35,8 @@ Reason:
 - keeping the boundary on Mowgli or standard ROS messages is the cleanest way to satisfy "consume topics only"
 
 Inside the sidecar, Universal GNSS can still use its native message types and bridge them to the public contract.
+Keep those native topics on an internal namespace such as `/gps_internal/universal/status` and
+`/gps_internal/universal/rtcm` so `mowgli-ros2` and Foxglove do not depend on `universal_gnss_ros2` schemas.
 
 ## Current State
 

@@ -369,6 +369,8 @@ start_universal_runtime() {
     exit 1
   fi
 
+  local internal_status_topic="/gps_internal/universal/status"
+  local internal_rtcm_topic="/gps_internal/universal/rtcm"
   local receiver_family
   local transport
   local serial_device
@@ -394,19 +396,19 @@ start_universal_runtime() {
     -p "serial_baud:=${serial_baud}" \
     -p "publish_rate_hz:=5.0" \
     -p "frame_id:=${frame_id}" \
-    -r status:=/universal_gnss/status \
+    -r status:=${internal_status_topic} \
     -r diagnostics:=/diagnostics \
     -r fix:=/gps/fix \
-    -r rtcm:=/universal_gnss/rtcm &
+    -r rtcm:=${internal_rtcm_topic} &
   GPS_PID=$!
 
   python3 /universal_gnss_topic_bridge.py --ros-args \
     -p "backend:=universal" \
     -p "receiver_family:=${receiver_family}" \
     -p "frame_id:=${frame_id}" \
-    -p "input_status_topic:=/universal_gnss/status" \
+    -p "input_status_topic:=${internal_status_topic}" \
     -p "output_status_topic:=/gps/status" \
-    -p "input_rtcm_topic:=/universal_gnss/rtcm" \
+    -p "input_rtcm_topic:=${internal_rtcm_topic}" \
     -p "output_rtcm_topic:=/rtcm" &
   UNIVERSAL_BRIDGE_PID=$!
 
@@ -422,9 +424,9 @@ start_universal_runtime() {
       -p "gga_enabled:=${ntrip_gga_enabled}" \
       -p "gga_interval_s:=${ntrip_gga_interval_s}" \
       -p "tls_enabled:=false" \
-      -r status:=/universal_gnss/status \
+      -r status:=${internal_status_topic} \
       -r diagnostics:=/diagnostics \
-      -r rtcm:=/universal_gnss/rtcm &
+      -r rtcm:=${internal_rtcm_topic} &
     NTRIP_PID=$!
   fi
 }

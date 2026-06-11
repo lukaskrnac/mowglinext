@@ -119,6 +119,7 @@ COPY ros2/src/external/universal-gnss/gnss_protocols /ws/src/gnss_protocols
 COPY ros2/src/external/universal-gnss/gnss_transport /ws/src/gnss_transport
 COPY ros2/src/external/universal-gnss/gnss_driver /ws/src/gnss_driver
 COPY ros2/src/external/universal-gnss/gnss_ntrip /ws/src/gnss_ntrip
+COPY ros2/src/external/universal-gnss/gnss_tools /ws/src/gnss_tools
 
 WORKDIR /ws
 RUN . /opt/ros/kilted/setup.sh \

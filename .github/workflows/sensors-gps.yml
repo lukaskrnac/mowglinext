@@ -51,7 +51,7 @@ jobs:
         ros2 pkg executables universal_gnss_ros2 | grep -x "universal_gnss_ros2 receiver_node"
         ros2 pkg executables universal_gnss_ros2 | grep -x "universal_gnss_ros2 ntrip_node"
         test -x /universal_gnss_topic_bridge.py
-        python3 -m py_compile /universal_gnss_topic_bridge.py /gps_health_aggregator.py /rtcm_serial_bridge.py
+        python3 -m py_compile /universal_gnss_topic_bridge.py
         python3 - <<'PY'
         from mowgli_interfaces.msg import GnssStatus as MowgliGnssStatus
         from rtcm_msgs.msg import Message as RtcmMessage

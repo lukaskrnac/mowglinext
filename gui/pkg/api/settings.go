@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 	"sort"
 	"sync"
 	"syscall"
@@ -320,6 +321,34 @@ func stringValue(value any, defaultValue string) string {
 	return text
 }
 
+func boolStringValue(value any, defaultValue bool) string {
+	if value == nil {
+		if defaultValue {
+			return "true"
+		}
+		return "false"
+	}
+	switch v := value.(type) {
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	default:
+		text := strings.ToLower(stringValue(value, ""))
+		switch text {
+		case "1", "true", "yes", "on":
+			return "true"
+		case "0", "false", "no", "off":
+			return "false"
+		}
+	}
+	if defaultValue {
+		return "true"
+	}
+	return "false"
+}
+
 func normalizeGnssReceiverFamily(value any) string {
 	switch strings.ToLower(stringValue(value, "auto")) {
 	case "", "auto":
@@ -365,26 +394,10 @@ func gnssCompatFromFlat(flat map[string]any) map[string]string {
 		serialBaud = stringValue(flat["gps_baudrate"], "921600")
 	}
 
-	connection := gnssConnectionFromDevice(serialDevice)
-	gpsProtocol := "UBX"
-	gnssBackend := "gps"
-	if receiverFamily == "nmea" {
-		gpsProtocol = "NMEA"
-	}
-	if receiverFamily == "unicore" {
-		gnssBackend = "unicore"
-	}
-
-	gpsPort := serialDevice
-	gpsByID := ""
-	gpsUartDevice := ""
-	ubloxSerial := ""
-	if connection == "usb" {
-		gpsByID = serialDevice
-		ubloxSerial = serialDevice
-	} else {
-		gpsPort = "/dev/gps"
-		gpsUartDevice = serialDevice
+	ntripMountpoint := stringValue(flat["ntrip_mountpoint"], "NEAR")
+	ntripGGAEnabled := "false"
+	if strings.HasPrefix(strings.ToLower(ntripMountpoint), "near") {
+		ntripGGAEnabled = "true"
 	}
 
 	return map[string]string{
@@ -394,14 +407,15 @@ func gnssCompatFromFlat(flat map[string]any) map[string]string {
 		"GNSS_TRANSPORT":       "serial",
 		"GNSS_SERIAL_DEVICE":   serialDevice,
 		"GNSS_SERIAL_BAUD":     serialBaud,
-		"GNSS_BACKEND":         gnssBackend,
-		"GPS_CONNECTION":       connection,
-		"GPS_PROTOCOL":         gpsProtocol,
-		"GPS_PORT":             gpsPort,
-		"GPS_BY_ID":            gpsByID,
-		"GPS_UART_DEVICE":      gpsUartDevice,
-		"GPS_BAUD":             serialBaud,
-		"UBLOX_DEVICE_SERIAL_STRING": ubloxSerial,
+		"GNSS_BACKEND":         "universal",
+		"GNSS_NTRIP_ENABLED":   boolStringValue(flat["ntrip_enabled"], true),
+		"GNSS_NTRIP_HOST":      stringValue(flat["ntrip_host"], "crtk.net"),
+		"GNSS_NTRIP_PORT":      stringValue(flat["ntrip_port"], "2101"),
+		"GNSS_NTRIP_MOUNTPOINT": ntripMountpoint,
+		"GNSS_NTRIP_USERNAME":   stringValue(flat["ntrip_user"], "centipede"),
+		"GNSS_NTRIP_PASSWORD":   stringValue(flat["ntrip_password"], "centipede"),
+		"GNSS_NTRIP_GGA_ENABLED": ntripGGAEnabled,
+		"GNSS_NTRIP_GGA_INTERVAL_S": stringValue(flat["gnss_ntrip_gga_interval_s"], "10"),
 	}
 }
 
@@ -417,10 +431,64 @@ func applyUniversalGnssCompatibility(flat map[string]any) map[string]string {
 		flat["gnss_serial_baud"] = compat["GNSS_SERIAL_BAUD"]
 		flat["gps_baudrate"] = compat["GNSS_SERIAL_BAUD"]
 	}
-	flat["gps_protocol"] = compat["GPS_PROTOCOL"]
-	flat["gps_port"] = compat["GPS_PORT"]
+	if receiverFamily := compat["GNSS_RECEIVER_FAMILY"]; receiverFamily == "nmea" {
+		flat["gps_protocol"] = "NMEA"
+	} else {
+		flat["gps_protocol"] = "UBX"
+	}
+	if gnssConnectionFromDevice(compat["GNSS_SERIAL_DEVICE"]) == "usb" {
+		flat["gps_port"] = compat["GNSS_SERIAL_DEVICE"]
+	} else {
+		flat["gps_port"] = "/dev/gps"
+	}
 
 	return compat
+}
+
+var legacyGnssEnvKeys = []string{
+	"GPS_CONNECTION",
+	"GPS_RUNTIME_MODE",
+	"GPS_PROTOCOL",
+	"GPS_PORT",
+	"GPS_BY_ID",
+	"GPS_UART_DEVICE",
+	"GPS_BAUD",
+	"GPS_DEBUG_ENABLED",
+	"GPS_DEBUG_PORT",
+	"GPS_DEBUG_UART_DEVICE",
+	"GPS_DEBUG_BAUD",
+	"UBLOX_DEVICE_FAMILY",
+	"UBLOX_DEVICE_SERIAL_STRING",
+	"UNICORE_COM_PORT",
+	"UNICORE_PROFILE",
+	"UNICORE_OUTPUT_FORMAT",
+	"UNICORE_TARGET_BAUD",
+	"UNICORE_SIGNALGROUP_OVERRIDE",
+	"UNICORE_MAIN_LOG_PERIOD",
+	"UNICORE_BESTNAV_LOG_PERIOD",
+	"UNICORE_DIAGNOSTIC_LOG_PERIOD",
+	"UNICORE_SATELLITE_LOG_PERIOD",
+	"UNICORE_RF_LOG_PERIOD",
+	"UNICORE_RAW_LOG_PERIOD",
+	"UNICORE_ENABLE_SATELLITES",
+	"UNICORE_ENABLE_RF",
+	"UNICORE_ENABLE_JAMMING",
+	"UNICORE_ENABLE_HARDWARE",
+	"UNICORE_ENABLE_GGAH",
+	"UNICORE_ENABLE_RAW_OBSERVATIONS",
+	"UNICORE_ENABLE_UNICORE_BINARY",
+	"UNICORE_USE_BINARY_NAV",
+	"UNICORE_USE_BINARY_SATELLITE_DIAG",
+	"UNICORE_USE_BINARY_RTCM_DIAG",
+	"UNICORE_USE_BINARY_RTK_DIAG",
+	"UNICORE_USE_BINARY_RF_DIAG",
+	"UNICORE_USE_BINARY_HW_DIAG",
+	"UNICORE_USE_BINARY_JAMMING_DIAG",
+	"UNICORE_ENABLE_RAW_OBSERVATION_DIAG",
+	"UNICORE_USE_BINARY_RAW_OBSERVATIONS",
+	"UNICORE_ROS_PACKAGE",
+	"UNICORE_ROS_EXECUTABLE",
+	"UNICORE_IMAGE",
 }
 
 func writeRuntimeEnvFile(path string, updates map[string]string) error {
@@ -449,6 +517,10 @@ func writeRuntimeEnvFile(path string, updates map[string]string) error {
 			continue
 		}
 		key := strings.TrimSpace(line[:eq])
+		if slices.Contains(legacyGnssEnvKeys, key) {
+			lines[idx] = ""
+			continue
+		}
 		value, ok := updates[key]
 		if !ok {
 			continue
@@ -468,7 +540,15 @@ func writeRuntimeEnvFile(path string, updates map[string]string) error {
 		lines = append(lines, fmt.Sprintf("%s=%s", key, updates[key]))
 	}
 
-	out := strings.TrimRight(strings.Join(lines, "\n"), "\n") + "\n"
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+
+	out := strings.TrimRight(strings.Join(filtered, "\n"), "\n") + "\n"
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}

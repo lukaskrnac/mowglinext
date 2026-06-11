@@ -80,7 +80,10 @@ maybe_upgrade_unicore_baud() {
   local mode="${3:-auto}"
   local com_port
 
-  [ "${GNSS_BACKEND:-}" = "unicore" ] || return 0
+  case "${GNSS_RECEIVER_FAMILY:-${GNSS_BACKEND:-}}" in
+    unicore) ;;
+    *) return 0 ;;
+  esac
   [ -n "$port" ] || return 0
   [ -n "$current_baud" ] || return 0
   [ "$current_baud" != "$UNICORE_TARGET_BAUD" ] || return 0

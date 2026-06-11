@@ -44,7 +44,6 @@ recompute_image_defaults() {
 
   MOWGLI_ROS2_IMAGE_DEFAULT="${prefix}/mowgli-ros2:${IMAGE_TAG}"
   GPS_IMAGE_DEFAULT="${prefix}/gps:${IMAGE_TAG}"
-  UNICORE_IMAGE_DEFAULT="${prefix}/unicore:${IMAGE_TAG}"
   LIDAR_LDLIDAR_IMAGE_DEFAULT="${prefix}/lidar-ldlidar:${IMAGE_TAG}"
   LIDAR_RPLIDAR_IMAGE_DEFAULT="${prefix}/lidar-rplidar:${IMAGE_TAG}"
   LIDAR_STL27L_IMAGE_DEFAULT="${prefix}/lidar-stl27l:${IMAGE_TAG}"
@@ -443,20 +442,31 @@ warn_legacy_nmea_backend_once() {
     return 0
   fi
 
-  warn "Legacy GNSS_BACKEND=nmea detected — normalizing to GNSS_BACKEND=gps with GPS_PROTOCOL=NMEA."
+  warn "Legacy GNSS_BACKEND=nmea detected — normalizing to Universal GNSS with GNSS_RECEIVER_FAMILY=nmea."
   LEGACY_GNSS_NMEA_WARNING_SHOWN=true
 }
 
 normalize_gnss_backend() {
   local backend="${1:-}"
 
-  if [[ "$backend" == "nmea" ]]; then
-    warn_legacy_nmea_backend_once
-    printf 'gps\n'
-    return 0
-  fi
-
-  printf '%s\n' "$backend"
+  case "${backend,,}" in
+    ""|universal|gps|ublox|unicore)
+      printf 'universal\n'
+      ;;
+    nmea)
+      warn_legacy_nmea_backend_once
+      printf 'universal\n'
+      ;;
+    legacy)
+      printf 'universal\n'
+      ;;
+    disabled)
+      printf 'disabled\n'
+      ;;
+    *)
+      printf '%s\n' "${backend,,}"
+      ;;
+  esac
 }
 
 normalize_gnss_status_source() {
@@ -470,7 +480,7 @@ normalize_gnss_status_source() {
       printf 'external\n'
       ;;
     legacy|mowgli_local|local|"")
-      printf 'legacy\n'
+      printf 'universal\n'
       ;;
     *)
       printf '%s\n' "${status_source,,}"
@@ -501,10 +511,10 @@ normalize_gnss_stack() {
     "")
       printf '%s\n' "$(default_gnss_stack)"
       ;;
-    fallback)
-      printf 'legacy\n'
+    fallback|legacy)
+      printf 'universal\n'
       ;;
-    universal|legacy|disabled)
+    universal|disabled)
       printf '%s\n' "${stack,,}"
       ;;
     *)
@@ -591,7 +601,7 @@ gnss_connection_from_serial_device() {
 }
 
 list_supported_gnss_backends() {
-  local backends="gps ublox unicore"
+  local backends="universal"
   if [[ "${HARDWARE_BACKEND:-mowgli}" == "mavros" ]]; then
     printf '%s disabled\n' "$backends"
   else
@@ -602,8 +612,8 @@ list_supported_gnss_backends() {
 is_supported_gnss_backend() {
   local backend="${1:-}"
 
-  case "$backend" in
-    gps|ublox|unicore)
+  case "${backend,,}" in
+    universal|gps|ublox|unicore|nmea)
       return 0
       ;;
     disabled)
@@ -617,35 +627,37 @@ is_supported_gnss_backend() {
 }
 
 effective_gnss_backend() {
-  local backend="${1:-${GNSS_BACKEND:-gps}}"
+  local backend="${1:-${GNSS_BACKEND:-universal}}"
+  local stack
 
   backend="$(normalize_gnss_backend "$backend")"
+  stack="$(effective_gnss_stack 2>/dev/null || true)"
 
-  if [[ "${HARDWARE_BACKEND:-mowgli}" == "mavros" ]]; then
+  if [[ "${HARDWARE_BACKEND:-mowgli}" == "mavros" || "$backend" == "disabled" || "$stack" == "disabled" ]]; then
     printf 'disabled\n'
     return 0
   fi
 
-  printf '%s\n' "$backend"
-  is_supported_gnss_backend "$backend"
+  printf 'universal\n'
+  return 0
 }
 
 effective_gnss_stack() {
   local stack="${1:-${GNSS_STACK:-}}"
-  local backend
   local status_source
+  local raw_backend
 
-  backend="$(effective_gnss_backend 2>/dev/null || true)"
+  raw_backend="$(normalize_gnss_backend "${GNSS_BACKEND:-}")"
 
-  if [[ "${HARDWARE_BACKEND:-mowgli}" == "mavros" || "$backend" == "disabled" ]]; then
+  if [[ "${HARDWARE_BACKEND:-mowgli}" == "mavros" || "$raw_backend" == "disabled" ]]; then
     printf 'disabled\n'
     return 0
   fi
 
   if [[ -z "$stack" ]]; then
     status_source="$(normalize_gnss_status_source "${GNSS_STATUS_SOURCE:-$(default_gnss_status_source)}")"
-    if [[ "$status_source" == "legacy" ]]; then
-      stack="legacy"
+    if [[ "$status_source" == "external" ]]; then
+      stack="disabled"
     else
       stack="universal"
     fi
@@ -655,7 +667,7 @@ effective_gnss_stack() {
   printf '%s\n' "$stack"
 
   case "$stack" in
-    universal|legacy|disabled)
+    universal|disabled)
       return 0
       ;;
     *)
@@ -674,7 +686,7 @@ gnss_receiver_family_from_state() {
     return 0
   fi
 
-  backend="$(effective_gnss_backend 2>/dev/null || true)"
+  backend="${GNSS_BACKEND,,}"
   protocol="${GPS_PROTOCOL:-UBX}"
 
   case "$backend" in
@@ -745,7 +757,6 @@ sync_legacy_gps_compat_from_gnss() {
   GNSS_SERIAL_DEVICE="$serial_device"
   GNSS_SERIAL_BAUD="$serial_baud"
   GNSS_TRANSPORT="${GNSS_TRANSPORT:-serial}"
-  GNSS_BACKEND="$(gnss_receiver_family_to_compat_backend "$receiver_family")"
   GPS_CONNECTION="$connection"
   GPS_PROTOCOL="$(gnss_receiver_family_to_gps_protocol "$receiver_family")"
   GPS_BAUD="$serial_baud"
@@ -765,26 +776,10 @@ sync_legacy_gps_compat_from_gnss() {
 
 compose_gnss_service_name() {
   local backend="${1:-$(effective_gnss_backend)}"
-  local stack
-
-  stack="$(effective_gnss_stack 2>/dev/null || true)"
-  if [[ "$stack" == "universal" ]]; then
-    # PR 2 runtime flip: GNSS_STACK=universal now means the existing gps
-    # sidecar owns Universal GNSS, regardless of receiver family.
-    printf 'gps\n'
-    return 0
-  fi
 
   case "$backend" in
-    gps|ublox)
-      # ublox merged into the sensors/gps container 2026-05-12. The legacy
-      # libusb-based "gnss_ublox" service was removed because the serial
-      # transport (sensors/gps + start_gps.sh) is the canonical path since
-      # the 2026-04-26 libusb→serial fix (project_gps_serial_transport_fix.md).
+    universal)
       printf 'gps\n'
-      ;;
-    unicore)
-      printf 'gnss_unicore\n'
       ;;
     disabled)
       return 0
@@ -847,28 +842,23 @@ parse_args() {
           auto)
             GNSS_STACK="universal"
             GNSS_STATUS_SOURCE="universal"
-            GNSS_BACKEND="gps"
+            GNSS_BACKEND="universal"
             GNSS_RECEIVER_FAMILY="auto"
             ;;
           gps)
             GNSS_STACK="${GNSS_STACK:-universal}"
             GNSS_STATUS_SOURCE="${GNSS_STATUS_SOURCE:-universal}"
-            GNSS_BACKEND="gps"
+            GNSS_BACKEND="universal"
             GNSS_RECEIVER_FAMILY="auto"
             ;;
           ublox|unicore)
             GNSS_STACK="${GNSS_STACK:-universal}"
             GNSS_STATUS_SOURCE="${GNSS_STATUS_SOURCE:-universal}"
             GNSS_RECEIVER_FAMILY="$gnss_spec"
-            GNSS_BACKEND="$(gnss_receiver_family_to_compat_backend "$gnss_spec")"
-            ;;
-          legacy)
-            GNSS_STACK="legacy"
-            GNSS_STATUS_SOURCE="mowgli_local"
-            GNSS_BACKEND="${GNSS_BACKEND:-gps}"
+            GNSS_BACKEND="universal"
             ;;
           *)
-            error "Unknown GNSS backend: $gnss_spec (expected auto|gps|ublox|unicore|legacy)"
+            error "Unknown GNSS backend: $gnss_spec (expected auto|gps|ublox|unicore)"
             exit 1
             ;;
         esac
@@ -917,7 +907,7 @@ parse_args() {
         case "$receiver_family_spec" in
           auto|ublox|unicore|nmea)
             GNSS_RECEIVER_FAMILY="$receiver_family_spec"
-            GNSS_BACKEND="$(gnss_receiver_family_to_compat_backend "$receiver_family_spec")"
+            GNSS_BACKEND="universal"
             ;;
           *)
             error "Unknown GNSS receiver family: ${1#*=} (expected auto|ublox|unicore|nmea)"
@@ -1173,7 +1163,7 @@ interactive_config() {
   echo ""
   echo -e "${CYAN}NTRIP RTK${NC} — correction stream for centimetre-level GPS accuracy"
   echo -e "${DIM}Free in France: crtk.net (user: centipede / pass: centipede)${NC}"
-  echo -e "${DIM}Default mountpoint NEAR picks the closest base via NMEA GGA (use NEAR4 on legacy receivers).${NC}"
+  echo -e "${DIM}Default mountpoint NEAR picks the closest base via NMEA GGA.${NC}"
   echo -e "${DIM}Find your nearest base station at https://centipede.fr${NC}"
 
   local prev_ntrip="${PREV_NTRIP_ENABLED:-false}"
@@ -1376,7 +1366,7 @@ EOF
     sync_gnss_env_contract_values
     touch "$env_file"
     upsert_env_key "$env_file" "GNSS_STATUS_SOURCE" "$GNSS_STATUS_SOURCE"
-    upsert_env_key "$env_file" "GNSS_BACKEND" "${GNSS_BACKEND:-gps}"
+    upsert_env_key "$env_file" "GNSS_BACKEND" "$(effective_gnss_backend 2>/dev/null || printf 'universal\n')"
     write_gnss_env_contract_keys "$env_file"
   fi
 }
@@ -1397,24 +1387,13 @@ auto_detect_position() {
 
   local gnss_backend
   local gnss_stack
-  local gps_container
   local restart_services=()
 
   gnss_backend="$(effective_gnss_backend 2>/dev/null || true)"
   gnss_stack="$(effective_gnss_stack 2>/dev/null || true)"
-  if [[ "$gnss_stack" == "legacy" ]]; then
-    gps_container="$(compose_gnss_container_name "$gnss_backend" 2>/dev/null || true)"
-  fi
 
   if ! docker_cmd inspect -f '{{.State.Status}}' mowgli-ros2 2>/dev/null | grep -q running; then
     warn "mowgli-ros2 container not running — cannot auto-detect"
-    add_issue "Set datum_lat and datum_lon manually in config/mowgli/mowgli_robot.yaml"
-    return
-  fi
-
-  if [[ "$gnss_stack" == "legacy" ]] \
-    && { [ -z "$gps_container" ] || ! docker_cmd inspect -f '{{.State.Status}}' "$gps_container" 2>/dev/null | grep -q running; }; then
-    warn "GPS container not running — cannot auto-detect"
     add_issue "Set datum_lat and datum_lon manually in config/mowgli/mowgli_robot.yaml"
     return
   fi

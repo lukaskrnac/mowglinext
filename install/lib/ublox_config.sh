@@ -5,11 +5,14 @@ UBLOX_CFG_PORT_ID="${UBLOX_CFG_PORT_ID:-1}"
 UBLOX_HELPER="${UBLOX_HELPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ublox_config_helper.py}"
 
 ublox_backend_selected() {
-  case "${GNSS_BACKEND:-}" in
-    ublox)
-      return 0
+  case "${GNSS_RECEIVER_FAMILY:-auto}" in
+    nmea|unicore)
+      return 1
       ;;
-    gps)
+  esac
+
+  case "${GNSS_BACKEND:-}" in
+    ublox|gps|universal|"")
       [ "${GPS_PROTOCOL:-UBX}" = "UBX" ]
       return $?
       ;;

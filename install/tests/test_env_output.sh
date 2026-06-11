@@ -51,24 +51,15 @@ REQUIRED_KEYS=(
   GNSS_TRANSPORT
   GNSS_SERIAL_DEVICE
   GNSS_SERIAL_BAUD
+  GNSS_FRAME_ID
   GNSS_NTRIP_ENABLED
   GNSS_NTRIP_HOST
   GNSS_NTRIP_PORT
   GNSS_NTRIP_MOUNTPOINT
   GNSS_NTRIP_USERNAME
   GNSS_NTRIP_PASSWORD
-  GPS_CONNECTION
-  GPS_RUNTIME_MODE
-  GPS_PROTOCOL
-  GPS_PORT
-  GPS_BAUD
-  GPS_UART_DEVICE
-  UNICORE_COM_PORT
-  UBLOX_DEVICE_FAMILY
-  UBLOX_DEVICE_SERIAL_STRING
-  GPS_DEBUG_ENABLED
-  GPS_DEBUG_PORT
-  GPS_DEBUG_BAUD
+  GNSS_NTRIP_GGA_ENABLED
+  GNSS_NTRIP_GGA_INTERVAL_S
   LIDAR_ENABLED
   LIDAR_TYPE
   LIDAR_MODEL
@@ -108,23 +99,28 @@ done
 section ".env values match the requested preset"
 
 ENV_CONTENT="$(cat "$ENV_FILE")"
-assert_contains "GPS_PROTOCOL=UBX (preset)" "GPS_PROTOCOL=UBX" "$ENV_CONTENT"
 assert_contains "IMAGE_TAG=main (default)" "IMAGE_TAG=main" "$ENV_CONTENT"
-assert_contains "GPS_BAUD=921600 (runtime target)" "GPS_BAUD=921600" "$ENV_CONTENT"
-assert_contains "GPS_CONNECTION=uart (preset)" "GPS_CONNECTION=uart" "$ENV_CONTENT"
-assert_contains "GPS_RUNTIME_MODE=universal (derived)" "GPS_RUNTIME_MODE=universal" "$ENV_CONTENT"
 assert_contains "GNSS_STACK=universal (default)" "GNSS_STACK=universal" "$ENV_CONTENT"
 assert_contains "GNSS_RECEIVER_FAMILY=auto (default)" "GNSS_RECEIVER_FAMILY=auto" "$ENV_CONTENT"
 assert_contains "GNSS_TRANSPORT=serial (default)" "GNSS_TRANSPORT=serial" "$ENV_CONTENT"
 assert_contains "GNSS_SERIAL_DEVICE=/dev/ttyAMA4 (derived)" "GNSS_SERIAL_DEVICE=/dev/ttyAMA4" "$ENV_CONTENT"
 assert_contains "GNSS_SERIAL_BAUD=921600 (derived)" "GNSS_SERIAL_BAUD=921600" "$ENV_CONTENT"
+assert_contains "GNSS_FRAME_ID=gps_link (default)" "GNSS_FRAME_ID=gps_link" "$ENV_CONTENT"
+assert_contains "GNSS_NTRIP_ENABLED=true (rover default)" "GNSS_NTRIP_ENABLED=true" "$ENV_CONTENT"
+assert_contains "GNSS_NTRIP_HOST=crtk.net (default)" "GNSS_NTRIP_HOST=crtk.net" "$ENV_CONTENT"
+assert_contains "GNSS_NTRIP_GGA_ENABLED=true (NEAR mountpoint)" "GNSS_NTRIP_GGA_ENABLED=true" "$ENV_CONTENT"
 assert_contains "LIDAR_TYPE=ldlidar (preset)" "LIDAR_TYPE=ldlidar" "$ENV_CONTENT"
 assert_contains "LIDAR_BAUD=230400 (preset)" "LIDAR_BAUD=230400" "$ENV_CONTENT"
 assert_contains "HARDWARE_BACKEND=mowgli (default)" "HARDWARE_BACKEND=mowgli" "$ENV_CONTENT"
-assert_contains "GNSS_BACKEND=gps (default)" "GNSS_BACKEND=gps" "$ENV_CONTENT"
+assert_contains "GNSS_BACKEND=universal (public runtime)" "GNSS_BACKEND=universal" "$ENV_CONTENT"
 assert_contains "GNSS_STATUS_SOURCE=universal (default)" "GNSS_STATUS_SOURCE=universal" "$ENV_CONTENT"
 assert_contains "TFLUNA_FRONT_ENABLED=false (default)" "TFLUNA_FRONT_ENABLED=false" "$ENV_CONTENT"
 assert_contains "TFLUNA_EDGE_ENABLED=false (default)" "TFLUNA_EDGE_ENABLED=false" "$ENV_CONTENT"
+assert_not_contains "legacy GPS_PROTOCOL omitted" "GPS_PROTOCOL=" "$ENV_CONTENT"
+assert_not_contains "legacy GPS_RUNTIME_MODE omitted" "GPS_RUNTIME_MODE=" "$ENV_CONTENT"
+assert_not_contains "legacy GPS_PORT omitted" "GPS_PORT=" "$ENV_CONTENT"
+assert_not_contains "legacy UBLOX serial omitted" "UBLOX_DEVICE_SERIAL_STRING=" "$ENV_CONTENT"
+assert_not_contains "legacy UNICORE runtime omitted" "UNICORE_ROS_EXECUTABLE=" "$ENV_CONTENT"
 
 section "Universal USB presets keep GNSS_SERIAL_DEVICE on a by-id path"
 
@@ -137,8 +133,8 @@ if ! harness_run; then
   fail "harness_run for USB GNSS preset" "non-zero exit"
 else
   usb_env="$(cat "$repo_usb/docker/.env")"
-  assert_contains "USB preset writes GPS_BY_ID" "GPS_BY_ID=/dev/serial/by-id/ublox-test-serial" "$usb_env"
   assert_contains "USB preset writes GNSS_SERIAL_DEVICE by-id" "GNSS_SERIAL_DEVICE=/dev/serial/by-id/ublox-test-serial" "$usb_env"
+  assert_not_contains "USB preset does not leak GPS_BY_ID" "GPS_BY_ID=" "$usb_env"
 fi
 
 section "Custom feature image tags persist into docker/.env"

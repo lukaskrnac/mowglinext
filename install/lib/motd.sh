@@ -85,6 +85,7 @@ GPS_DEBUG_PORT=\$(get_env_value GPS_DEBUG_PORT)
 GPS_DEBUG_BAUD=\$(get_env_value GPS_DEBUG_BAUD)
 LIDAR_PORT=\$(get_env_value LIDAR_PORT)
 LIDAR_BAUD=\$(get_env_value LIDAR_BAUD)
+GNSS_NTRIP_ENABLED=\$(get_env_value GNSS_NTRIP_ENABLED)
 
 # Docker/container info
 if command -v docker >/dev/null 2>&1; then
@@ -111,10 +112,7 @@ echo -e "\${BOLD}Mowgli config\${NC}"
 echo "  ROS_DOMAIN : \${ROS_DOMAIN_ID:-${motd_not_set}}"
 echo "  MOWER_IP   : \${MOWER_IP:-${motd_not_set}}"
 echo "  GNSS       : \${GNSS_SERIAL_DEVICE:-${motd_not_set}} @ \${GNSS_SERIAL_BAUD:-?} (\${GNSS_RECEIVER_FAMILY:-auto})"
-echo "  GPS compat : \${GPS_PORT:-${motd_not_set}} @ \${GPS_BAUD:-?} (\${GPS_PROTOCOL:-?})"
-if [ "\${GPS_DEBUG_ENABLED:-false}" = "true" ]; then
-  echo "  GPS debug  : \${GPS_DEBUG_PORT:-${motd_not_set}} @ \${GPS_DEBUG_BAUD:-?}"
-fi
+echo "  NTRIP      : \${GNSS_NTRIP_ENABLED:-false}"
 echo "  LiDAR      : \${LIDAR_PORT:-${motd_not_set}} @ \${LIDAR_BAUD:-?}"
 echo ""
 

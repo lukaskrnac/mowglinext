@@ -70,10 +70,10 @@ build_compose_stack() {
   fi
 
   case "$gnss_stack" in
-    universal|legacy|disabled)
+    universal|disabled)
       ;;
     *)
-      error "Unknown GNSS_STACK: ${GNSS_STACK:-unset} (expected: universal|legacy|disabled)"
+      error "Unknown GNSS_STACK: ${GNSS_STACK:-unset} (expected: universal|disabled)"
       return 1
       ;;
   esac
@@ -83,9 +83,6 @@ build_compose_stack() {
     case "$gnss_service" in
       gps)
         COMPOSE_FILES+=("$COMPOSE_SRC_DIR/docker-compose.gps.yml")
-        ;;
-      gnss_unicore)
-        COMPOSE_FILES+=("$COMPOSE_SRC_DIR/docker-compose.unicore.yaml")
         ;;
       *)
         error "No compose fragment mapped for GNSS backend: ${gnss_backend}"

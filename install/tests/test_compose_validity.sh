@@ -84,7 +84,7 @@ done
 
 section "Universal GNSS compose uses the canonical mowgli-gps sidecar"
 
-for required in "GPS_RUNTIME_MODE:" "GNSS_RECEIVER_FAMILY:" "GNSS_SERIAL_DEVICE:"; do
+for required in "GNSS_STACK:" "GNSS_RECEIVER_FAMILY:" "GNSS_SERIAL_DEVICE:" "GNSS_FRAME_ID:" "GNSS_NTRIP_GGA_ENABLED:"; do
   if grep -q "$required" "$COMPOSE_FILE"; then
     pass "compose contains sidecar env: $required"
   else
@@ -92,7 +92,7 @@ for required in "GPS_RUNTIME_MODE:" "GNSS_RECEIVER_FAMILY:" "GNSS_SERIAL_DEVICE:
   fi
 done
 
-for forbidden in "gnss_unicore:" "UNICORE_IMAGE"; do
+for forbidden in "gnss_unicore:" "UNICORE_IMAGE" "GPS_RUNTIME_MODE:" "GPS_PROTOCOL:" "GPS_PORT:" "GPS_BAUD:"; do
   if grep -q "$forbidden" "$COMPOSE_FILE"; then
     fail "legacy standalone GNSS absent: $forbidden" "found in generated universal compose"
   else
@@ -122,11 +122,11 @@ if real_docker_compose_available; then
     pass "no unresolved \${VAR} in image:"
   fi
 
-  if printf '%s' "$EXPANDED" | grep -qE 'GPS_RUNTIME_MODE: universal$'; then
-    pass "Universal GNSS sidecar expands to GPS_RUNTIME_MODE=universal"
+  if printf '%s' "$EXPANDED" | grep -qE 'GNSS_STACK: universal$'; then
+    pass "Universal GNSS sidecar expands to GNSS_STACK=universal"
   else
-    fail "Universal GNSS sidecar expands to GPS_RUNTIME_MODE=universal" \
-      "$(printf '%s' "$EXPANDED" | grep -n 'GPS_RUNTIME_MODE:' | head -1)"
+    fail "Universal GNSS sidecar expands to GNSS_STACK=universal" \
+      "$(printf '%s' "$EXPANDED" | grep -n 'GNSS_STACK:' | head -1)"
   fi
 
   # Privileged volumes contain /dev mount — required for sensor passthrough.

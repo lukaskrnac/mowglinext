@@ -92,14 +92,14 @@ mowgli:
         datum_alt: 0
         datum_lat: 0
         datum_lon: 0
-        # NTRIP — RTK correction stream. Filled in by the installer
-        # interactive prompt. Leave blank to disable.
-        ntrip_enabled: false
-        ntrip_host: ""
-        ntrip_mountpoint: ""
-        ntrip_password: ""
+        # NTRIP — RTK correction stream. Rover defaults use the public
+        # Centipede/CRTK network and stay enabled unless explicitly disabled.
+        ntrip_enabled: true
+        ntrip_host: "crtk.net"
+        ntrip_mountpoint: "NEAR"
+        ntrip_password: "centipede"
         ntrip_port: 2101
-        ntrip_user: ""
+        ntrip_user: "centipede"
 
         # ── Docking ─────────────────────────────────────────────────
         # dock_pose is captured by the GUI's IMU yaw calibration

@@ -66,112 +66,63 @@ preset_key_loaded() {
 configure_gps() {
   step "Universal GNSS configuration"
 
-  GPS_UART_RULE=""
-  GPS_DEBUG_UART_RULE=""
-  GPS_DEBUG_ENABLED="false"
-  GPS_DEBUG_UART_DEVICE=""
-  : "${GPS_DEBUG_PORT:=/dev/gps_debug}"
-  : "${GPS_DEBUG_BAUD:=115200}"
+  : "${GNSS_BACKEND:=universal}"
   : "${GNSS_STATUS_SOURCE:=universal}"
   : "${GNSS_STACK:=universal}"
   : "${GNSS_TRANSPORT:=serial}"
   : "${GNSS_RECEIVER_FAMILY:=auto}"
+  : "${GNSS_SERIAL_DEVICE:=}"
   : "${GNSS_SERIAL_BAUD:=}"
-  : "${GPS_CONNECTION:=}"
-  : "${GPS_BAUD:=}"
-  : "${GPS_BY_ID:=}"
-  : "${GPS_UART_DEVICE:=/dev/ttyAMA4}"
-  : "${GPS_PORT:=/dev/gps}"
-  : "${UBLOX_DEVICE_SERIAL_STRING:=}"
 
   local serial_preconfigured=false
   local baud_preconfigured=false
   local probe_mode="ask"
   local receiver_family
-  local compat_backend
-  local compat_protocol
+  local probe_backend
+  local probe_protocol
   local connection
   local probe_port=""
   local default_baud="921600"
 
-  if [[ "${GNSS_BACKEND:-}" == "nmea" ]]; then
-    warn_legacy_nmea_backend_once
-    GNSS_BACKEND="gps"
-    GNSS_RECEIVER_FAMILY="nmea"
-    GPS_PROTOCOL="NMEA"
-  elif [[ "${GNSS_BACKEND:-}" == "ublox" ]] && [[ -z "${GNSS_RECEIVER_FAMILY:-}" || "${GNSS_RECEIVER_FAMILY:-}" == "auto" ]]; then
-    GNSS_RECEIVER_FAMILY="ublox"
-  elif [[ "${GNSS_BACKEND:-}" == "unicore" ]] && [[ -z "${GNSS_RECEIVER_FAMILY:-}" || "${GNSS_RECEIVER_FAMILY:-}" == "auto" ]]; then
-    GNSS_RECEIVER_FAMILY="unicore"
-  elif [[ "${GPS_PROTOCOL:-UBX}" == "NMEA" ]] && [[ -z "${GNSS_RECEIVER_FAMILY:-}" || "${GNSS_RECEIVER_FAMILY:-}" == "auto" ]]; then
-    GNSS_RECEIVER_FAMILY="nmea"
-  fi
+  case "${GNSS_BACKEND:-}" in
+    ublox|unicore|nmea)
+      if [[ -z "${GNSS_RECEIVER_FAMILY:-}" || "${GNSS_RECEIVER_FAMILY:-}" == "auto" ]]; then
+        GNSS_RECEIVER_FAMILY="${GNSS_BACKEND}"
+      fi
+      ;;
+  esac
 
-  if [[ "$(effective_gnss_backend "${GNSS_BACKEND:-gps}")" == "disabled" ]]; then
+  if [[ "$(effective_gnss_backend "${GNSS_BACKEND:-universal}")" == "disabled" ]]; then
     info "Direct GNSS configuration disabled for HARDWARE_BACKEND=${HARDWARE_BACKEND:-mowgli}"
     return 0
   fi
 
   if [[ "${PRESET_LOADED:-false}" == "true" ]]; then
     if [ "${STATE_ACTIVE_PRESET_COUNT:-0}" -gt 0 ]; then
-      if preset_key_loaded GNSS_SERIAL_DEVICE \
-        || preset_key_loaded GPS_BY_ID \
-        || preset_key_loaded GPS_UART_DEVICE \
-        || preset_key_loaded GPS_PORT; then
+      if preset_key_loaded GNSS_SERIAL_DEVICE; then
         serial_preconfigured=true
       fi
-      if preset_key_loaded GNSS_SERIAL_BAUD || preset_key_loaded GPS_BAUD; then
+      if preset_key_loaded GNSS_SERIAL_BAUD; then
         baud_preconfigured=true
       fi
     else
-      if [[ -n "${GNSS_SERIAL_DEVICE:-}" || -n "${GPS_BY_ID:-}" ]]; then
-        serial_preconfigured=true
-      elif [[ "${GPS_CONNECTION:-}" == "uart" && -n "${GPS_UART_DEVICE:-}" ]]; then
-        serial_preconfigured=true
-      elif [[ "${GPS_CONNECTION:-}" == "usb" && ( -n "${GPS_BY_ID:-}" || "${GPS_PORT:-}" == /dev/serial/by-id/* ) ]]; then
+      if [[ -n "${GNSS_SERIAL_DEVICE:-}" ]]; then
         serial_preconfigured=true
       fi
-      if [[ -n "${GNSS_SERIAL_BAUD:-}" || -n "${GPS_BAUD:-}" ]]; then
+      if [[ -n "${GNSS_SERIAL_BAUD:-}" ]]; then
         baud_preconfigured=true
       fi
     fi
   fi
 
+  GNSS_BACKEND="universal"
   GNSS_STACK="universal"
   GNSS_STATUS_SOURCE="universal"
   GNSS_TRANSPORT="serial"
   receiver_family="$(normalize_gnss_receiver_family "${GNSS_RECEIVER_FAMILY:-auto}")"
   GNSS_RECEIVER_FAMILY="$receiver_family"
-  compat_backend="$(gnss_receiver_family_to_compat_backend "$receiver_family")"
-  compat_protocol="$(gnss_receiver_family_to_gps_protocol "$receiver_family")"
-
-  if [[ -z "${GNSS_SERIAL_DEVICE:-}" ]]; then
-    case "${GPS_CONNECTION:-$(gnss_connection_from_serial_device)}" in
-      usb)
-        if [[ -n "${GPS_BY_ID:-}" ]]; then
-          GNSS_SERIAL_DEVICE="$GPS_BY_ID"
-        elif [[ "${GPS_PORT:-}" == /dev/serial/by-id/* ]]; then
-          GNSS_SERIAL_DEVICE="$GPS_PORT"
-        elif [[ "${UBLOX_DEVICE_SERIAL_STRING:-}" == /dev/serial/by-id/* ]]; then
-          GNSS_SERIAL_DEVICE="$UBLOX_DEVICE_SERIAL_STRING"
-        fi
-        ;;
-      uart)
-        if [[ -n "${GPS_UART_DEVICE:-}" && "${GPS_UART_DEVICE:-}" != "/dev/gps" ]]; then
-          GNSS_SERIAL_DEVICE="$GPS_UART_DEVICE"
-        elif [[ -n "${GPS_PORT:-}" && "${GPS_PORT:-}" != "/dev/gps" ]]; then
-          GNSS_SERIAL_DEVICE="$GPS_PORT"
-        fi
-        ;;
-    esac
-  fi
-
-  if [[ -z "${GNSS_SERIAL_BAUD:-}" && -n "${GPS_BAUD:-}" ]]; then
-    GNSS_SERIAL_BAUD="$GPS_BAUD"
-  fi
 
   connection="$(gnss_connection_from_serial_device "${GNSS_SERIAL_DEVICE:-}")"
-
   if [[ "$serial_preconfigured" != "true" || -z "${GNSS_SERIAL_DEVICE:-}" ]]; then
     local connection_default="2"
     [[ "$connection" == "usb" ]] && connection_default="1"
@@ -184,12 +135,12 @@ configure_gps() {
     case "$REPLY" in
       1)
         connection="usb"
-        pick_serial_by_id "${GNSS_SERIAL_DEVICE:-${GPS_BY_ID:-}}" || return 1
+        pick_serial_by_id "${GNSS_SERIAL_DEVICE:-}" || return 1
         GNSS_SERIAL_DEVICE="$REPLY"
         ;;
       2)
         connection="uart"
-        pick_uart_port "${GNSS_SERIAL_DEVICE:-${GPS_UART_DEVICE:-/dev/ttyAMA4}}"
+        pick_uart_port "${GNSS_SERIAL_DEVICE:-/dev/ttyAMA4}"
         GNSS_SERIAL_DEVICE="$REPLY"
         ;;
       *)
@@ -202,12 +153,18 @@ configure_gps() {
     probe_mode="auto"
   fi
 
-  default_baud="${GNSS_SERIAL_BAUD:-${GPS_BAUD:-921600}}"
+  default_baud="${GNSS_SERIAL_BAUD:-921600}"
   probe_port="${GNSS_SERIAL_DEVICE:-}"
+  case "$receiver_family" in
+    ublox)   probe_backend="ublox" ;;
+    unicore) probe_backend="unicore" ;;
+    *)       probe_backend="gps" ;;
+  esac
+  probe_protocol="$(gnss_receiver_family_to_gps_protocol "$receiver_family")"
+
   if [[ "$baud_preconfigured" != "true" && -n "$probe_port" ]]; then
-    GNSS_BACKEND="$compat_backend"
-    GPS_PROTOCOL="$compat_protocol"
-    prompt_or_probe_baud "$probe_port" "$compat_backend" "$compat_protocol" "$default_baud" "$probe_mode"
+    GPS_PROTOCOL="$probe_protocol"
+    prompt_or_probe_baud "$probe_port" "$probe_backend" "$probe_protocol" "$default_baud" "$probe_mode"
     GNSS_SERIAL_BAUD="$REPLY"
     GPS_BAUD="$GNSS_SERIAL_BAUD"
     maybe_upgrade_unicore_baud "$probe_port" "$GNSS_SERIAL_BAUD" "$probe_mode"
@@ -217,20 +174,8 @@ configure_gps() {
     GNSS_SERIAL_BAUD="$default_baud"
   fi
 
-  sync_legacy_gps_compat_from_gnss
-
-  if [ "$GPS_CONNECTION" = "uart" ] && [ -n "${GPS_UART_DEVICE:-}" ]; then
-    local gps_kernel
-    gps_kernel="$(basename "$GPS_UART_DEVICE")"
-    GPS_UART_RULE="KERNEL==\"${gps_kernel}\", SYMLINK+=\"gps\", MODE=\"0666\""
-  fi
-
   echo ""
   info "Universal GNSS : receiver_family=$GNSS_RECEIVER_FAMILY transport=$GNSS_TRANSPORT device=$GNSS_SERIAL_DEVICE baud=$GNSS_SERIAL_BAUD"
-  info "Compatibility  : GNSS_BACKEND=$GNSS_BACKEND GPS_CONNECTION=$GPS_CONNECTION GPS_PROTOCOL=$GPS_PROTOCOL GPS_PORT=$GPS_PORT"
-  if [ -n "${GPS_BY_ID:-}" ]; then
-    info "USB by-id path  : $GPS_BY_ID"
-  fi
   return 0
 }
 

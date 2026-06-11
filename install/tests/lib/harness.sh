@@ -43,7 +43,7 @@ harness_init() {
         IMAGE_TAG \
         LIDAR_ENABLED LIDAR_TYPE LIDAR_MODEL LIDAR_CONNECTION \
         LIDAR_PORT LIDAR_UART_DEVICE LIDAR_BAUD LIDAR_IMAGE \
-        MOWGLI_ROS2_IMAGE GPS_IMAGE UNICORE_IMAGE MAVROS_IMAGE GUI_IMAGE \
+        MOWGLI_ROS2_IMAGE GPS_IMAGE MAVROS_IMAGE GUI_IMAGE \
         TFLUNA_FRONT_ENABLED TFLUNA_FRONT_PORT TFLUNA_FRONT_UART_DEVICE \
         TFLUNA_FRONT_BAUD TFLUNA_EDGE_ENABLED TFLUNA_EDGE_PORT \
         TFLUNA_EDGE_UART_DEVICE TFLUNA_EDGE_BAUD \
@@ -132,7 +132,7 @@ harness_init() {
   # Defaults that interactive_config would otherwise prompt for.
   CONFIG_DATUM_LAT="0.0"
   CONFIG_DATUM_LON="0.0"
-  CONFIG_NTRIP_ENABLED="false"
+  CONFIG_NTRIP_ENABLED="true"
   CONFIG_NTRIP_HOST="crtk.net"
   CONFIG_NTRIP_PORT="2101"
   CONFIG_NTRIP_USER="centipede"
@@ -149,7 +149,7 @@ harness_init() {
 
   # Defaults for backend selection — overridden by harness_set_preset().
   HARDWARE_BACKEND="${HARDWARE_BACKEND:-mowgli}"
-  GNSS_BACKEND="${GNSS_BACKEND:-gps}"
+  GNSS_BACKEND="${GNSS_BACKEND:-universal}"
   GNSS_STATUS_SOURCE="${GNSS_STATUS_SOURCE:-universal}"
   GNSS_STACK="${GNSS_STACK:-universal}"
   GNSS_RECEIVER_FAMILY="${GNSS_RECEIVER_FAMILY:-auto}"
@@ -193,21 +193,21 @@ harness_set_preset() {
       gnss)
         case "$val" in
           legacy)
-            GNSS_STACK="legacy"
-            GNSS_STATUS_SOURCE="mowgli_local"
-            GNSS_BACKEND="${GNSS_BACKEND:-gps}"
+            GNSS_STACK="universal"
+            GNSS_STATUS_SOURCE="universal"
+            GNSS_BACKEND="universal"
             GNSS_RECEIVER_FAMILY="${GNSS_RECEIVER_FAMILY:-auto}"
             ;;
           gps|auto)
             GNSS_STACK="universal"
             GNSS_STATUS_SOURCE="universal"
-            GNSS_BACKEND="gps"
+            GNSS_BACKEND="universal"
             GNSS_RECEIVER_FAMILY="auto"
             ;;
           ublox)
             GNSS_STACK="universal"
             GNSS_STATUS_SOURCE="universal"
-            GNSS_BACKEND="ublox"
+            GNSS_BACKEND="universal"
             GNSS_RECEIVER_FAMILY="ublox"
             GPS_CONNECTION="usb"
             GPS_PROTOCOL="UBX"
@@ -219,7 +219,7 @@ harness_set_preset() {
           unicore)
             GNSS_STACK="universal"
             GNSS_STATUS_SOURCE="universal"
-            GNSS_BACKEND="unicore"
+            GNSS_BACKEND="universal"
             GNSS_RECEIVER_FAMILY="unicore"
             ;;
           *)

@@ -86,26 +86,29 @@ type rawOdometry struct {
 }
 
 type rawUniversalGnssStatus struct {
-	Stamp                rawStamp `json:"stamp"`
-	FixValid             bool     `json:"fix_valid"`
-	FixType              uint8    `json:"fix_type"`
-	RtkMode              uint8    `json:"rtk_mode"`
-	CapabilityFlags      uint32   `json:"capability_flags"`
-	ValueFlags           uint32   `json:"value_flags"`
-	HorizontalAccuracyM  float32  `json:"horizontal_accuracy_m"`
-	VerticalAccuracyM    float32  `json:"vertical_accuracy_m"`
-	Hdop                 float32  `json:"hdop"`
-	Vdop                 float32  `json:"vdop"`
-	SatellitesUsed       uint16   `json:"satellites_used"`
-	SatellitesVisible    uint16   `json:"satellites_visible"`
-	SatellitesTracked    uint16   `json:"satellites_tracked"`
-	MeanCn0DbHz          float32  `json:"mean_cn0_db_hz"`
-	MaxCn0DbHz           float32  `json:"max_cn0_db_hz"`
-	CorrectionAgeS       float32  `json:"correction_age_s"`
-	HeadingDeg           float32  `json:"heading_deg"`
-	DualAntennaHeading   bool     `json:"dual_antenna_heading"`
-	InterferenceDetected bool     `json:"interference_detected"`
-	JammingDetected      bool     `json:"jamming_detected"`
+	Stamp                   rawStamp `json:"stamp"`
+	FixValid                bool     `json:"fix_valid"`
+	FixType                 uint8    `json:"fix_type"`
+	RtkMode                 uint8    `json:"rtk_mode"`
+	CapabilityFlags         uint32   `json:"capability_flags"`
+	ValueFlags              uint32   `json:"value_flags"`
+	HorizontalAccuracyM     float32  `json:"horizontal_accuracy_m"`
+	VerticalAccuracyM       float32  `json:"vertical_accuracy_m"`
+	Hdop                    float32  `json:"hdop"`
+	Vdop                    float32  `json:"vdop"`
+	SatellitesUsed          uint16   `json:"satellites_used"`
+	SatellitesVisible       uint16   `json:"satellites_visible"`
+	SatellitesTracked       uint16   `json:"satellites_tracked"`
+	MeanCn0DbHz             float32  `json:"mean_cn0_db_hz"`
+	MaxCn0DbHz              float32  `json:"max_cn0_db_hz"`
+	CorrectionAgeS          float32  `json:"correction_age_s"`
+	HeadingDeg              float32  `json:"heading_deg"`
+	HeadingAccuracyDeg      float32  `json:"heading_accuracy_deg"`
+	DifferentialCorrections bool     `json:"differential_corrections"`
+	CorrectionsActive       bool     `json:"corrections_active"`
+	DualAntennaHeading      bool     `json:"dual_antenna_heading"`
+	InterferenceDetected    bool     `json:"interference_detected"`
+	JammingDetected         bool     `json:"jamming_detected"`
 }
 
 const (
@@ -162,29 +165,30 @@ const (
 	universalCapDualAntennaHeading = 4096
 	universalCapInterferenceState  = 8192
 	universalCapJammingState       = 16384
+	universalCapHeadingAccuracy    = 32768
+	universalCapDiffCorrections    = 65536
+	universalCapCorrectionsActive  = 131072
 )
 
 // ---------------------------------------------------------------------------
 // NavSatStatus → AbsolutePose Flags mapping (bitmask:
 //   FLAG_GPS_RTK=1, FLAG_GPS_RTK_FIXED=2, FLAG_GPS_RTK_FLOAT=4)
 //
-//	status == 2 (STATUS_GBAS_FIX)  → Flags = 3  (RTK | FIXED)
-//	status == 1 (STATUS_SBAS_FIX)  → Flags = 5  (RTK | FLOAT)
-//	status == 0 (STATUS_FIX)       → Flags = 1  (plain RTK/basic fix bit)
+//	status == 2 (STATUS_GBAS_FIX)  → Flags = 1  (generic GPS fix)
+//	status == 1 (STATUS_SBAS_FIX)  → Flags = 1  (generic GPS fix)
+//	status == 0 (STATUS_FIX)       → Flags = 1  (generic GPS fix)
 //	status == -1 (STATUS_NO_FIX)   → Flags = 0
 // ---------------------------------------------------------------------------
 
 func navSatStatusToFlags(status int8) uint16 {
 	switch status {
-	case 2:
-		return 3
-	case 1:
-		return 5
-	case 0:
-		return 1 // plain fix — only the FLAG_GPS_RTK base bit, NOT FIXED
+	case 0, 1, 2:
+		return 1
 	default:
 		return 0
 	}
+
+	return 0
 }
 
 // ---------------------------------------------------------------------------
@@ -271,12 +275,7 @@ func adaptGnssStatus(raw []byte) ([]byte, error) {
 	}
 
 	if _, ok := envelope["header"]; ok {
-		var status map[string]interface{}
-		if err := json.Unmarshal(raw, &status); err != nil {
-			return nil, err
-		}
-		normalizePublicGnssStatus(status, envelope)
-		return json.Marshal(status)
+		return raw, nil
 	}
 	if _, ok := envelope["stamp"]; !ok {
 		return raw, nil
@@ -295,60 +294,34 @@ func adaptGnssStatus(raw []byte) ([]byte, error) {
 				Nanosec: status.Stamp.Nanosec,
 			},
 		},
-		Backend:              "universal",
-		FixType:              fixType,
-		FixValid:             status.FixValid,
-		DeadReckoning:        fixType == mowgliFixTypeDeadReckoning,
-		RtkMode:              mapUniversalGnssRtkMode(status.RtkMode),
-		QualityPercent:       qualityPercentForFixType(fixType),
-		CapabilityFlags:      mapUniversalGnssCapabilityFlags(status.CapabilityFlags),
-		ValueFlags:           mapUniversalGnssCapabilityFlags(status.ValueFlags),
-		Hdop:                 status.Hdop,
-		Vdop:                 status.Vdop,
-		HorizontalAccuracyM:  status.HorizontalAccuracyM,
-		VerticalAccuracyM:    status.VerticalAccuracyM,
-		HeadingDeg:           status.HeadingDeg,
-		SatellitesUsed:       status.SatellitesUsed,
-		SatellitesVisible:    status.SatellitesVisible,
-		SatellitesTracked:    status.SatellitesTracked,
-		CorrectionAgeS:       status.CorrectionAgeS,
-		MeanCn0DbHz:          status.MeanCn0DbHz,
-		MaxCn0DbHz:           status.MaxCn0DbHz,
-		DualAntennaHeading:   status.DualAntennaHeading,
-		InterferenceDetected: status.InterferenceDetected,
-		JammingDetected:      status.JammingDetected,
+		Backend:                 "universal",
+		FixType:                 fixType,
+		FixValid:                status.FixValid,
+		DeadReckoning:           fixType == mowgliFixTypeDeadReckoning,
+		RtkMode:                 mapUniversalGnssRtkMode(status.RtkMode),
+		QualityPercent:          qualityPercentForFixType(fixType),
+		CapabilityFlags:         mapUniversalGnssCapabilityFlags(status.CapabilityFlags),
+		ValueFlags:              mapUniversalGnssCapabilityFlags(status.ValueFlags),
+		Hdop:                    status.Hdop,
+		Vdop:                    status.Vdop,
+		HorizontalAccuracyM:     status.HorizontalAccuracyM,
+		VerticalAccuracyM:       status.VerticalAccuracyM,
+		HeadingDeg:              status.HeadingDeg,
+		HeadingAccuracyDeg:      status.HeadingAccuracyDeg,
+		DifferentialCorrections: status.DifferentialCorrections,
+		CorrectionsActive:       status.CorrectionsActive,
+		SatellitesUsed:          status.SatellitesUsed,
+		SatellitesVisible:       status.SatellitesVisible,
+		SatellitesTracked:       status.SatellitesTracked,
+		CorrectionAgeS:          status.CorrectionAgeS,
+		MeanCn0DbHz:             status.MeanCn0DbHz,
+		MaxCn0DbHz:              status.MaxCn0DbHz,
+		DualAntennaHeading:      status.DualAntennaHeading,
+		InterferenceDetected:    status.InterferenceDetected,
+		JammingDetected:         status.JammingDetected,
 	}
 
 	return json.Marshal(adapted)
-}
-
-func normalizePublicGnssStatus(status map[string]interface{}, envelope map[string]json.RawMessage) {
-	if status == nil {
-		return
-	}
-
-	capabilityFlags := uint32(0)
-	if raw, ok := status["capability_flags"].(float64); ok && raw >= 0 {
-		capabilityFlags = uint32(raw)
-	}
-	valueFlags := uint32(0)
-	if raw, ok := status["value_flags"].(float64); ok && raw >= 0 {
-		valueFlags = uint32(raw)
-	}
-
-	// /gps/status is the public contract. When these booleans are present in the
-	// sample, false is a real value and must not be downgraded to "unavailable"
-	// just because an upstream adapter forgot to advertise the capability bits.
-	if _, ok := envelope["differential_corrections"]; ok {
-		capabilityFlags |= mowgliCapDiffCorrections
-		valueFlags |= mowgliCapDiffCorrections
-	}
-	if _, ok := envelope["corrections_active"]; ok {
-		capabilityFlags |= mowgliCapCorrectionsActive
-		valueFlags |= mowgliCapCorrectionsActive
-	}
-	status["capability_flags"] = capabilityFlags
-	status["value_flags"] = valueFlags
 }
 
 func mapUniversalGnssFixType(fixType uint8) uint8 {
@@ -435,6 +408,15 @@ func mapUniversalGnssCapabilityFlags(flags uint32) uint32 {
 	}
 	if flags&universalCapHeading != 0 {
 		mapped |= mowgliCapHeading
+	}
+	if flags&universalCapHeadingAccuracy != 0 {
+		mapped |= mowgliCapHeadingAccuracy
+	}
+	if flags&universalCapDiffCorrections != 0 {
+		mapped |= mowgliCapDiffCorrections
+	}
+	if flags&universalCapCorrectionsActive != 0 {
+		mapped |= mowgliCapCorrectionsActive
 	}
 	if flags&universalCapDualAntennaHeading != 0 {
 		mapped |= mowgliCapDualAntennaStatus

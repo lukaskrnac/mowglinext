@@ -117,9 +117,7 @@ function parseDiagnosticInt(value: string | undefined): number | undefined {
 function navSatFixStatusToGnssFixType(fixStatus: number | undefined): number | undefined {
     switch (fixStatus) {
         case 2:
-            return GnssStatusConstants.FIX_TYPE_RTK_FIXED;
         case 1:
-            return GnssStatusConstants.FIX_TYPE_RTK_FLOAT;
         case 0:
             return GnssStatusConstants.FIX_TYPE_GPS_FIX;
         default:
@@ -142,22 +140,11 @@ export function deriveGnssStatusFromDiagnostics(
     const fixType = navSatFixStatusToGnssFixType(parseDiagnosticInt(gpsValues.fix_status));
     const fixValid = parseDiagnosticBool(summaryValues.fix_valid) ??
         (fixType !== undefined ? fixType !== GnssStatusConstants.FIX_TYPE_NO_FIX : undefined);
-    const correctionAvailable = parseDiagnosticBool(summaryValues.correction_available);
-
-    let capabilityFlags = 0;
-    let valueFlags = 0;
-    if (correctionAvailable !== undefined) {
-        capabilityFlags |= GnssStatusConstants.CAP_DIFFERENTIAL_CORRECTIONS;
-        valueFlags |= GnssStatusConstants.CAP_DIFFERENTIAL_CORRECTIONS;
-    }
 
     return {
         backend: summary ? "universal" : undefined,
         fix_type: fixType ?? GnssStatusConstants.FIX_TYPE_NO_FIX,
         fix_valid: fixValid ?? false,
-        differential_corrections: correctionAvailable,
-        capability_flags: capabilityFlags,
-        value_flags: valueFlags,
     };
 }
 

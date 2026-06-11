@@ -41,6 +41,9 @@ UNIVERSAL_TO_PUBLIC_CAPABILITY = {
     UniversalGnssStatus.CAP_MAX_CN0: PublicGnssStatus.CAP_MAX_CN0,
     UniversalGnssStatus.CAP_CORRECTION_AGE: PublicGnssStatus.CAP_CORRECTION_AGE,
     UniversalGnssStatus.CAP_HEADING: PublicGnssStatus.CAP_HEADING,
+    UniversalGnssStatus.CAP_HEADING_ACCURACY: PublicGnssStatus.CAP_HEADING_ACCURACY,
+    UniversalGnssStatus.CAP_DIFFERENTIAL_CORRECTIONS: PublicGnssStatus.CAP_DIFFERENTIAL_CORRECTIONS,
+    UniversalGnssStatus.CAP_CORRECTIONS_ACTIVE: PublicGnssStatus.CAP_CORRECTIONS_ACTIVE,
     UniversalGnssStatus.CAP_DUAL_ANTENNA_HEADING: PublicGnssStatus.CAP_DUAL_ANTENNA_STATUS,
     UniversalGnssStatus.CAP_INTERFERENCE_STATE: PublicGnssStatus.CAP_INTERFERENCE_STATUS,
     UniversalGnssStatus.CAP_JAMMING_STATE: PublicGnssStatus.CAP_JAMMING_STATUS,
@@ -164,6 +167,9 @@ class UniversalGnssTopicBridge(Node):
         public_msg.horizontal_accuracy_m = msg.horizontal_accuracy_m
         public_msg.vertical_accuracy_m = msg.vertical_accuracy_m
         public_msg.heading_deg = msg.heading_deg
+        public_msg.heading_accuracy_deg = msg.heading_accuracy_deg
+        public_msg.differential_corrections = msg.differential_corrections
+        public_msg.corrections_active = msg.corrections_active
         public_msg.satellites_used = msg.satellites_used
         public_msg.satellites_visible = msg.satellites_visible
         public_msg.satellites_tracked = msg.satellites_tracked

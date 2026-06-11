@@ -92,9 +92,38 @@ describe('deriveGpsStatus', () => {
             backend: 'universal',
             fix_type: GnssStatusConstants.FIX_TYPE_GPS_FIX,
             fix_valid: true,
-            differential_corrections: true,
-            capability_flags: GnssStatusConstants.CAP_DIFFERENTIAL_CORRECTIONS,
-            value_flags: GnssStatusConstants.CAP_DIFFERENTIAL_CORRECTIONS,
+        });
+    });
+
+    it('keeps SBAS and GBAS fallback fixes as generic GPS fixes instead of guessing RTK', () => {
+        expect(deriveGnssStatusFromDiagnostics({
+            status: [
+                {
+                    name: 'GPS',
+                    values: [
+                        {key: 'fix_status', value: '1'},
+                    ],
+                },
+            ],
+        })).toEqual({
+            backend: undefined,
+            fix_type: GnssStatusConstants.FIX_TYPE_GPS_FIX,
+            fix_valid: true,
+        });
+
+        expect(deriveGnssStatusFromDiagnostics({
+            status: [
+                {
+                    name: 'GPS',
+                    values: [
+                        {key: 'fix_status', value: '2'},
+                    ],
+                },
+            ],
+        })).toEqual({
+            backend: undefined,
+            fix_type: GnssStatusConstants.FIX_TYPE_GPS_FIX,
+            fix_valid: true,
         });
     });
 

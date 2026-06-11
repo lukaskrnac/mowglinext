@@ -9,6 +9,17 @@ export interface GpsStatus {
     percent: number;
 }
 
+export interface DiagnosticStatusLike {
+    name?: string;
+    hardware_id?: string;
+    message?: string;
+    values?: { key?: string; value?: string }[];
+}
+
+export interface DiagnosticArrayLike {
+    status?: DiagnosticStatusLike[];
+}
+
 function fromFixType(fixType: number | undefined | null): GpsStatus | null {
     switch (fixType) {
         case GnssStatusConstants.FIX_TYPE_RTK_FIXED:
@@ -33,6 +44,95 @@ export function deriveGpsStatus(gnssStatus: GnssStatus | undefined | null): GpsS
         return fromTypedStatus;
     }
     return {fixType: "NO_FIX", label: "No GPS", percent: 0};
+}
+
+export function hasTypedGnssStatusSample(gnssStatus: GnssStatus | undefined | null): boolean {
+    return gnssStatus?.fix_type !== undefined ||
+        gnssStatus?.fix_valid !== undefined ||
+        (gnssStatus?.backend?.trim().length ?? 0) > 0 ||
+        (gnssStatus?.receiver_vendor?.trim().length ?? 0) > 0 ||
+        (gnssStatus?.receiver_model?.trim().length ?? 0) > 0;
+}
+
+function diagnosticsValueMap(entry: DiagnosticStatusLike | undefined): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const item of entry?.values ?? []) {
+        const key = item.key?.trim();
+        if (!key) {
+            continue;
+        }
+        out[key] = item.value?.trim() ?? "";
+    }
+    return out;
+}
+
+function parseDiagnosticBool(value: string | undefined): boolean | undefined {
+    if (!value) {
+        return undefined;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") {
+        return true;
+    }
+    if (normalized === "false") {
+        return false;
+    }
+    return undefined;
+}
+
+function parseDiagnosticInt(value: string | undefined): number | undefined {
+    if (!value) {
+        return undefined;
+    }
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function navSatFixStatusToGnssFixType(fixStatus: number | undefined): number | undefined {
+    switch (fixStatus) {
+        case 2:
+            return GnssStatusConstants.FIX_TYPE_RTK_FIXED;
+        case 1:
+            return GnssStatusConstants.FIX_TYPE_RTK_FLOAT;
+        case 0:
+            return GnssStatusConstants.FIX_TYPE_GPS_FIX;
+        default:
+            return undefined;
+    }
+}
+
+export function deriveGnssStatusFromDiagnostics(
+    diagnostics: DiagnosticArrayLike | undefined | null,
+): GnssStatus | undefined {
+    const entries = diagnostics?.status ?? [];
+    const summary = entries.find((entry) => entry.name === "universal_gnss/summary");
+    const gps = entries.find((entry) => entry.name === "GPS");
+    if (!summary && !gps) {
+        return undefined;
+    }
+
+    const summaryValues = diagnosticsValueMap(summary);
+    const gpsValues = diagnosticsValueMap(gps);
+    const fixType = navSatFixStatusToGnssFixType(parseDiagnosticInt(gpsValues.fix_status));
+    const fixValid = parseDiagnosticBool(summaryValues.fix_valid) ??
+        (fixType !== undefined ? fixType !== GnssStatusConstants.FIX_TYPE_NO_FIX : undefined);
+    const correctionAvailable = parseDiagnosticBool(summaryValues.correction_available);
+
+    let capabilityFlags = 0;
+    let valueFlags = 0;
+    if (correctionAvailable !== undefined) {
+        capabilityFlags |= GnssStatusConstants.CAP_DIFFERENTIAL_CORRECTIONS;
+        valueFlags |= GnssStatusConstants.CAP_DIFFERENTIAL_CORRECTIONS;
+    }
+
+    return {
+        backend: summary ? "universal" : undefined,
+        fix_type: fixType ?? GnssStatusConstants.FIX_TYPE_NO_FIX,
+        fix_valid: fixValid ?? false,
+        differential_corrections: correctionAvailable,
+        capability_flags: capabilityFlags,
+        value_flags: valueFlags,
+    };
 }
 
 export function hasGnssCapability(gnssStatus: GnssStatus | undefined | null, flag: number): boolean {

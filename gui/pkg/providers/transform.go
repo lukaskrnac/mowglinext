@@ -198,7 +198,10 @@ func adaptGPS(raw []byte) ([]byte, error) {
 
 	// Derive position accuracy from the first diagonal element of the 3×3
 	// position covariance matrix (row-major).
-	accuracy := float32(math.Sqrt(fix.PositionCovariance[0]))
+	accuracy := float32(0)
+	if cov := fix.PositionCovariance[0]; cov > 0 && !math.IsNaN(cov) && !math.IsInf(cov, 0) {
+		accuracy = float32(math.Sqrt(cov))
+	}
 
 	pose := mowgli.AbsolutePose{
 		Flags:            navSatStatusToFlags(fix.Status.Status),

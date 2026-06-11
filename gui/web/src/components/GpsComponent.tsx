@@ -20,7 +20,7 @@ export function GpsComponent() {
         gnssStatus,
         GnssStatusConstants.CAP_HORIZONTAL_ACCURACY,
         gnssStatus.horizontal_accuracy_m,
-    );
+    ) ?? gps.position_accuracy;
     const satellitesUsed = readGnssNumber(
         gnssStatus,
         GnssStatusConstants.CAP_SATELLITES_USED,
@@ -41,13 +41,12 @@ export function GpsComponent() {
 
     return <>
         <Row gutter={[16, 16]}>
-            <Col lg={8} xs={24}><Statistic precision={2} title="Position X (m)"
+            <Col lg={8} xs={24}><Statistic precision={7} title="Latitude"
                                         value={gps.pose?.pose?.position?.x}/></Col>
-            <Col lg={8} xs={24}><Statistic precision={2} title="Position Y (m)"
+            <Col lg={8} xs={24}><Statistic precision={7} title="Longitude"
                                         value={gps.pose?.pose?.position?.y}/></Col>
-            <Col lg={8} xs={24}><Statistic precision={2} title="Altitude" value={gps.pose?.pose?.position?.z}/></Col>
-            <Col lg={8} xs={24}><Statistic precision={2} title="Orientation"
-                                        value={gps.pose?.pose?.orientation?.z}/></Col>
+            <Col lg={8} xs={24}><Statistic precision={2} title="Altitude (m)" value={gps.pose?.pose?.position?.z}/></Col>
+            <Col lg={8} xs={24}><Statistic title="Backend" value={gnssStatus.backend ?? "unknown"}/></Col>
             <Col lg={8} xs={24}><Statistic title="Receiver" value={receiverLabel}/></Col>
             <Col lg={8} xs={24}><Statistic precision={3} title="Accuracy (m)" value={accuracyM}/></Col>
             <Col lg={8} xs={24}><Statistic precision={0} title="Satellites used" value={satellitesUsed}/></Col>

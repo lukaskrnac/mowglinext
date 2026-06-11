@@ -9,6 +9,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAdaptGPSMapsNavSatFixToAbsolutePose(t *testing.T) {
+	raw := []byte(`{
+		"header":{"stamp":{"sec":7,"nanosec":8},"frame_id":"gps_link"},
+		"status":{"status":0,"service":0},
+		"latitude":43.9542,
+		"longitude":2.2022,
+		"altitude":170.06,
+		"position_covariance":[7.5625,0,0,0,7.5625,0,0,0,9.0],
+		"position_covariance_type":1
+	}`)
+
+	adapted, err := adaptGPS(raw)
+	require.NoError(t, err)
+
+	var pose mowgli.AbsolutePose
+	require.NoError(t, json.Unmarshal(adapted, &pose))
+	assert.Equal(t, uint16(1), pose.Flags)
+	assert.Equal(t, float32(2.75), pose.PositionAccuracy)
+	assert.Equal(t, 43.9542, pose.Pose.Pose.Position.X)
+	assert.Equal(t, 2.2022, pose.Pose.Pose.Position.Y)
+	assert.Equal(t, 170.06, pose.Pose.Pose.Position.Z)
+}
+
 func TestAdaptGnssStatusPassesThroughLegacyPayload(t *testing.T) {
 	raw := []byte(`{
 		"header":{"stamp":{"sec":1,"nanosec":2},"frame_id":"gps_link"},

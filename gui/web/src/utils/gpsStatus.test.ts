@@ -2,7 +2,9 @@ import {describe, expect, it} from 'vitest';
 import {GnssStatusConstants, type GnssStatus} from '../types/ros.ts';
 import {
     deriveGpsStatus,
+    deriveGnssStatusFromDiagnostics,
     gnssReceiverLabel,
+    hasTypedGnssStatusSample,
     hasGnssCapability,
     hasGnssValue,
     readGnssBooleanState,
@@ -33,6 +35,39 @@ describe('deriveGpsStatus', () => {
             fixType: 'NO_FIX',
             label: 'No GPS',
             percent: 0,
+        });
+    });
+
+    it('detects when a typed GNSS sample is actually populated', () => {
+        expect(hasTypedGnssStatusSample({})).toBe(false);
+        expect(hasTypedGnssStatusSample({backend: 'universal'})).toBe(true);
+        expect(hasTypedGnssStatusSample({fix_type: GnssStatusConstants.FIX_TYPE_GPS_FIX})).toBe(true);
+    });
+
+    it('derives a limited fallback GNSS status from diagnostics only when typed status is absent', () => {
+        expect(deriveGnssStatusFromDiagnostics({
+            status: [
+                {
+                    name: 'universal_gnss/summary',
+                    values: [
+                        {key: 'fix_valid', value: 'true'},
+                        {key: 'correction_available', value: 'true'},
+                    ],
+                },
+                {
+                    name: 'GPS',
+                    values: [
+                        {key: 'fix_status', value: '0'},
+                    ],
+                },
+            ],
+        })).toEqual({
+            backend: 'universal',
+            fix_type: GnssStatusConstants.FIX_TYPE_GPS_FIX,
+            fix_valid: true,
+            differential_corrections: true,
+            capability_flags: GnssStatusConstants.CAP_DIFFERENTIAL_CORRECTIONS,
+            value_flags: GnssStatusConstants.CAP_DIFFERENTIAL_CORRECTIONS,
         });
     });
 

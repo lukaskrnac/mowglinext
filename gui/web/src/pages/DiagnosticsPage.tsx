@@ -161,7 +161,7 @@ export const DiagnosticsPage = () => {
         gnssStatus,
         GnssStatusConstants.CAP_HORIZONTAL_ACCURACY,
         gnssStatus.horizontal_accuracy_m,
-    );
+    ) ?? gps.position_accuracy;
     const gpsFixValid = gnssStatus.fix_valid ?? false;
     const gpsOk = gpsFixValid && gpsAccuracy !== undefined && gpsAccuracy <= 0.1;
     const gpsWarn = gpsFixValid && (gpsAccuracy === undefined || gpsAccuracy > 0.1);
@@ -508,17 +508,17 @@ export const DiagnosticsPage = () => {
                         </Col>
                         <Col span={12}>
                             <Statistic
-                                title="X (m)"
+                                title="Latitude"
                                 value={gps.pose?.pose?.position?.x}
-                                precision={3}
+                                precision={7}
                                
                             />
                         </Col>
                         <Col span={12}>
                             <Statistic
-                                title="Y (m)"
+                                title="Longitude"
                                 value={gps.pose?.pose?.position?.y}
-                                precision={3}
+                                precision={7}
                                
                             />
                         </Col>

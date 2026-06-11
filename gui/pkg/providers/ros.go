@@ -28,7 +28,7 @@ type topicDef struct {
 var topicMap = map[string]topicDef{
 	"status":          {"/hardware_bridge/status", "mowgli_interfaces/msg/Status"},
 	"highLevelStatus": {"/behavior_tree_node/high_level_status", "mowgli_interfaces/msg/HighLevelStatus"},
-	"gps":             {"/gps/absolute_pose", "mowgli_interfaces/msg/AbsolutePose"},
+	"gps":             {"/gps/fix", "sensor_msgs/msg/NavSatFix"},
 	"gnssStatus":      {"/gps/status", "mowgli_interfaces/msg/GnssStatus"},
 	// The robot's global pose comes from fusion_graph_node, the sole
 	// map-frame localizer. "pose" and "fusionRaw" both point at
@@ -189,6 +189,7 @@ type RosProvider struct {
 // the foxglove client and the fanOut. Topics absent from this map are
 // forwarded as-is (snake_case JSON from CDR deserialization).
 var foxgloveAdapters = map[string]func([]byte) ([]byte, error){
+	"gps":        adaptGPS,
 	"gnssStatus": adaptGnssStatus,
 	"pose":       adaptPose,
 }

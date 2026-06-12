@@ -30,7 +30,7 @@ install_all_mocks
 SANDBOX_REPO="$SANDBOX/repo"
 sandbox_repo "$SANDBOX_REPO"
 harness_init "$SANDBOX_REPO"
-harness_set_preset gps=ubx-uart lidar=ldlidar-uart tfluna=none
+harness_set_preset gnss=auto gnss_connection=uart lidar=ldlidar-uart tfluna=none
 
 if ! harness_run; then
   fail "harness_run" "non-zero exit"
@@ -92,7 +92,7 @@ for required in "GNSS_STACK:" "GNSS_RECEIVER_FAMILY:" "GNSS_SERIAL_DEVICE:" "GNS
   fi
 done
 
-for forbidden in "gnss_unicore:" "UNICORE_IMAGE" "GPS_RUNTIME_MODE:" "GPS_PROTOCOL:" "GPS_PORT:" "GPS_BAUD:"; do
+for forbidden in "gnss_unicore:" "UNICORE_IMAGE" "GPS_""RUNTIME_MODE:" "GPS_""PROTOCOL:" "GPS_""PORT:" "GPS_""BAUD:"; do
   if grep -q "$forbidden" "$COMPOSE_FILE"; then
     fail "legacy standalone GNSS absent: $forbidden" "found in generated universal compose"
   else

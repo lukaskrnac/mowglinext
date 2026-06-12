@@ -39,7 +39,7 @@ section "HARDWARE_BACKEND=mowgli (Mowgli STM32 board)"
 mowgli_repo="$SANDBOX/repo_mowgli"
 sandbox_repo "$mowgli_repo"
 harness_init "$mowgli_repo"
-harness_set_preset backend=mowgli gps=ubx-uart lidar=ldlidar-uart tfluna=none
+harness_set_preset backend=mowgli gnss=auto gnss_connection=uart lidar=ldlidar-uart tfluna=none
 if harness_run; then
   pass "mowgli backend: harness_run succeeds"
 else
@@ -59,11 +59,11 @@ for required in docker-compose.base.yml docker-compose.gui.yml docker-compose.gp
   esac
 done
 case "$mowgli_fragments" in
-  *docker-compose.unicore.yaml*|*docker-compose.mavros.yml*)
-    fail "mowgli backend: NO legacy unicore or mavros GNSS fragment by default" "unexpected GNSS fragment selected"
+  *docker-compose.mavros.yml*)
+    fail "mowgli backend: no MAVROS fragment by default" "unexpected fragment selected"
     ;;
   *)
-    pass "mowgli backend: NO legacy unicore or mavros GNSS fragment by default"
+    pass "mowgli backend: no MAVROS fragment by default"
     ;;
 esac
 
@@ -73,7 +73,7 @@ section "HARDWARE_BACKEND=mavros (Pixhawk via MAVROS)"
 mavros_repo="$SANDBOX/repo_mavros"
 sandbox_repo "$mavros_repo"
 harness_init "$mavros_repo"
-harness_set_preset backend=mavros gps=ubx-uart lidar=ldlidar-uart tfluna=none
+harness_set_preset backend=mavros gnss=auto gnss_connection=uart lidar=ldlidar-uart tfluna=none
 if harness_run; then
   pass "mavros backend: harness_run succeeds"
 else
@@ -92,11 +92,11 @@ for required in docker-compose.base.yml docker-compose.gui.yml docker-compose.ma
   esac
 done
 case "$mavros_fragments" in
-  *docker-compose.gps.yml*|*docker-compose.unicore.yaml*)
-    fail "mavros backend: NO direct GNSS fragment" "direct GNSS fragment leaked into mavros compose selection"
+  *docker-compose.gps.yml*)
+    fail "mavros backend: no direct GNSS fragment" "direct GNSS fragment leaked into mavros compose selection"
     ;;
   *)
-    pass "mavros backend: NO direct GNSS fragment"
+    pass "mavros backend: no direct GNSS fragment"
     ;;
 esac
 

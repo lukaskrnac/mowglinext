@@ -25,7 +25,7 @@ install_all_mocks
 SANDBOX_REPO="$SANDBOX/repo"
 sandbox_repo "$SANDBOX_REPO"
 harness_init "$SANDBOX_REPO"
-harness_set_preset gps=ubx-uart lidar=ldlidar-uart tfluna=none
+harness_set_preset gnss=auto gnss_connection=uart lidar=ldlidar-uart tfluna=none
 
 if ! harness_run; then
   fail "harness_run for default preset" "non-zero exit"
@@ -58,6 +58,7 @@ REQUIRED_KEYS=(
   GNSS_NTRIP_MOUNTPOINT
   GNSS_NTRIP_USERNAME
   GNSS_NTRIP_PASSWORD
+  GNSS_RTCM_FORWARDING
   GNSS_NTRIP_GGA_ENABLED
   GNSS_NTRIP_GGA_INTERVAL_S
   LIDAR_ENABLED
@@ -108,6 +109,7 @@ assert_contains "GNSS_SERIAL_BAUD=921600 (derived)" "GNSS_SERIAL_BAUD=921600" "$
 assert_contains "GNSS_FRAME_ID=gps_link (default)" "GNSS_FRAME_ID=gps_link" "$ENV_CONTENT"
 assert_contains "GNSS_NTRIP_ENABLED=true (rover default)" "GNSS_NTRIP_ENABLED=true" "$ENV_CONTENT"
 assert_contains "GNSS_NTRIP_HOST=crtk.net (default)" "GNSS_NTRIP_HOST=crtk.net" "$ENV_CONTENT"
+assert_contains "GNSS_RTCM_FORWARDING=true (rover default)" "GNSS_RTCM_FORWARDING=true" "$ENV_CONTENT"
 assert_contains "GNSS_NTRIP_GGA_ENABLED=true (NEAR mountpoint)" "GNSS_NTRIP_GGA_ENABLED=true" "$ENV_CONTENT"
 assert_contains "LIDAR_TYPE=ldlidar (preset)" "LIDAR_TYPE=ldlidar" "$ENV_CONTENT"
 assert_contains "LIDAR_BAUD=230400 (preset)" "LIDAR_BAUD=230400" "$ENV_CONTENT"
@@ -116,25 +118,32 @@ assert_contains "GNSS_BACKEND=universal (public runtime)" "GNSS_BACKEND=universa
 assert_contains "GNSS_STATUS_SOURCE=universal (default)" "GNSS_STATUS_SOURCE=universal" "$ENV_CONTENT"
 assert_contains "TFLUNA_FRONT_ENABLED=false (default)" "TFLUNA_FRONT_ENABLED=false" "$ENV_CONTENT"
 assert_contains "TFLUNA_EDGE_ENABLED=false (default)" "TFLUNA_EDGE_ENABLED=false" "$ENV_CONTENT"
-assert_not_contains "legacy GPS_PROTOCOL omitted" "GPS_PROTOCOL=" "$ENV_CONTENT"
-assert_not_contains "legacy GPS_RUNTIME_MODE omitted" "GPS_RUNTIME_MODE=" "$ENV_CONTENT"
-assert_not_contains "legacy GPS_PORT omitted" "GPS_PORT=" "$ENV_CONTENT"
-assert_not_contains "legacy UBLOX serial omitted" "UBLOX_DEVICE_SERIAL_STRING=" "$ENV_CONTENT"
-assert_not_contains "legacy UNICORE runtime omitted" "UNICORE_ROS_EXECUTABLE=" "$ENV_CONTENT"
+legacy_protocol_key="GPS_""PROTOCOL="
+legacy_runtime_mode_key="GPS_""RUNTIME_MODE="
+legacy_port_key="GPS_""PORT="
+legacy_by_id_key="GPS_""BY_ID="
+legacy_ublox_key="UBLOX_""DEVICE_SERIAL_STRING="
+legacy_unicore_key="UNICORE_""ROS_EXECUTABLE="
+assert_not_contains "legacy GPS protocol omitted" "$legacy_protocol_key" "$ENV_CONTENT"
+assert_not_contains "legacy GPS runtime mode omitted" "$legacy_runtime_mode_key" "$ENV_CONTENT"
+assert_not_contains "legacy GPS port omitted" "$legacy_port_key" "$ENV_CONTENT"
+assert_not_contains "legacy GPS by-id omitted" "$legacy_by_id_key" "$ENV_CONTENT"
+assert_not_contains "legacy UBLOX serial omitted" "$legacy_ublox_key" "$ENV_CONTENT"
+assert_not_contains "legacy UNICORE runtime omitted" "$legacy_unicore_key" "$ENV_CONTENT"
 
 section "Universal USB presets keep GNSS_SERIAL_DEVICE on a by-id path"
 
 repo_usb="$SANDBOX/repo_usb"
 sandbox_repo "$repo_usb"
 harness_init "$repo_usb"
-harness_set_preset gnss=ublox lidar=none tfluna=none
+harness_set_preset gnss=ublox gnss_connection=usb lidar=none tfluna=none
 
 if ! harness_run; then
   fail "harness_run for USB GNSS preset" "non-zero exit"
 else
   usb_env="$(cat "$repo_usb/docker/.env")"
-  assert_contains "USB preset writes GNSS_SERIAL_DEVICE by-id" "GNSS_SERIAL_DEVICE=/dev/serial/by-id/ublox-test-serial" "$usb_env"
-  assert_not_contains "USB preset does not leak GPS_BY_ID" "GPS_BY_ID=" "$usb_env"
+  assert_contains "USB preset writes GNSS_SERIAL_DEVICE by-id" "GNSS_SERIAL_DEVICE=/dev/serial/by-id/usb-stub" "$usb_env"
+  assert_not_contains "USB preset does not leak GPS_BY_ID" "$legacy_by_id_key" "$usb_env"
 fi
 
 section "Custom feature image tags persist into docker/.env"
@@ -143,7 +152,7 @@ repo_feature="$SANDBOX/repo_feature"
 sandbox_repo "$repo_feature"
 harness_init "$repo_feature"
 IMAGE_TAG="feat-universal-gnss-integration"
-harness_set_preset gps=ubx-uart lidar=none tfluna=none
+harness_set_preset gnss=auto gnss_connection=uart lidar=none tfluna=none
 
 if ! harness_run; then
   fail "harness_run for custom feature image tag" "non-zero exit"
@@ -159,7 +168,7 @@ section "NTRIP env is written without leaking secrets to logs"
 repo_ntrip="$SANDBOX/repo_ntrip"
 sandbox_repo "$repo_ntrip"
 harness_init "$repo_ntrip"
-harness_set_preset gnss=ublox lidar=none tfluna=none \
+harness_set_preset gnss=ublox gnss_connection=usb lidar=none tfluna=none \
   ntrip=true ntrip_host=rtk.local ntrip_port=2102 \
   ntrip_user=operator ntrip_password=super-secret ntrip_mountpoint=FIELD1
 

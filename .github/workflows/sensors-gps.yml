@@ -39,7 +39,7 @@ jobs:
         find /opt -name setup.bash 2>/dev/null | sort
         set +u
         source /opt/ros/kilted/setup.bash
-        for f in /opt/ublox_dgnss/setup.bash /opt/gnss_sidecar/setup.bash; do
+        for f in /opt/gnss_sidecar/setup.bash; do
           [ -f "$f" ] && echo "sourcing $f" && source "$f"
         done
         set -u

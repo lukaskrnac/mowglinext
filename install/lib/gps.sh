@@ -73,24 +73,16 @@ configure_gps() {
   : "${GNSS_RECEIVER_FAMILY:=auto}"
   : "${GNSS_SERIAL_DEVICE:=}"
   : "${GNSS_SERIAL_BAUD:=}"
+  : "${GNSS_CONNECTION_HINT:=}"
 
   local serial_preconfigured=false
   local baud_preconfigured=false
   local probe_mode="ask"
   local receiver_family
   local probe_backend
-  local probe_protocol
   local connection
   local probe_port=""
   local default_baud="921600"
-
-  case "${GNSS_BACKEND:-}" in
-    ublox|unicore|nmea)
-      if [[ -z "${GNSS_RECEIVER_FAMILY:-}" || "${GNSS_RECEIVER_FAMILY:-}" == "auto" ]]; then
-        GNSS_RECEIVER_FAMILY="${GNSS_BACKEND}"
-      fi
-      ;;
-  esac
 
   if [[ "$(effective_gnss_backend "${GNSS_BACKEND:-universal}")" == "disabled" ]]; then
     info "Direct GNSS configuration disabled for HARDWARE_BACKEND=${HARDWARE_BACKEND:-mowgli}"
@@ -127,7 +119,7 @@ configure_gps() {
     local connection_default="2"
     [[ "$connection" == "usb" ]] && connection_default="1"
     echo ""
-    echo "$MSG_GPS_CONNECTION"
+    echo "$MSG_GNSS_CONNECTION"
     echo "  1) USB"
     echo "  2) UART"
     prompt "$MSG_CHOICE" "$connection_default"
@@ -156,20 +148,16 @@ configure_gps() {
   default_baud="${GNSS_SERIAL_BAUD:-921600}"
   probe_port="${GNSS_SERIAL_DEVICE:-}"
   case "$receiver_family" in
-    ublox)   probe_backend="ublox" ;;
+    ublox|auto) probe_backend="ublox" ;;
     unicore) probe_backend="unicore" ;;
-    *)       probe_backend="gps" ;;
+    *)          probe_backend="nmea" ;;
   esac
-  probe_protocol="$(gnss_receiver_family_to_gps_protocol "$receiver_family")"
 
   if [[ "$baud_preconfigured" != "true" && -n "$probe_port" ]]; then
-    GPS_PROTOCOL="$probe_protocol"
-    prompt_or_probe_baud "$probe_port" "$probe_backend" "$probe_protocol" "$default_baud" "$probe_mode"
+    prompt_or_probe_baud "$probe_port" "$probe_backend" "$default_baud" "$probe_mode"
     GNSS_SERIAL_BAUD="$REPLY"
-    GPS_BAUD="$GNSS_SERIAL_BAUD"
     maybe_upgrade_unicore_baud "$probe_port" "$GNSS_SERIAL_BAUD" "$probe_mode"
     maybe_upgrade_ublox_baud "$probe_port" "$GNSS_SERIAL_BAUD" "$probe_mode"
-    GNSS_SERIAL_BAUD="${GPS_BAUD:-$GNSS_SERIAL_BAUD}"
   elif [[ -z "${GNSS_SERIAL_BAUD:-}" ]]; then
     GNSS_SERIAL_BAUD="$default_baud"
   fi

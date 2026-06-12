@@ -103,6 +103,8 @@ Visit [mowgli.garden](https://mowgli.garden/#getting-started) to pick your hardw
 curl -sSL https://mowgli.garden/install.sh | bash
 ```
 
+The website composer and bootstrap installer now target the Universal GNSS runtime only for direct GNSS setups.
+
 GUI at `http://<mower-ip>:4006` · See **[Getting Started](https://github.com/cedbossneo/mowglinext/wiki/Getting-Started)** for full setup.
 
 ## Monorepo

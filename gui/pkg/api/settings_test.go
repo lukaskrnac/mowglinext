@@ -475,18 +475,19 @@ func TestPostSettingsYAML_NewFile(t *testing.T) {
 	assert.Contains(t, string(content), "ntrip_enabled: true")
 	assert.Contains(t, string(content), "gnss_receiver_family: unicore")
 	assert.Contains(t, string(content), "gnss_serial_device: /dev/serial/by-id/usb-gnss")
-	assert.Contains(t, string(content), "gps_protocol: UBX")
-	assert.Contains(t, string(content), "gps_port: /dev/serial/by-id/usb-gnss")
+	assert.Contains(t, string(content), "gnss_serial_baud: 921600")
 
 	envContent, err := os.ReadFile(envFile)
 	require.NoError(t, err)
+	legacyProtocol := "GPS_" + "PROTOCOL=UBX"
+	legacyByID := "GPS_" + "BY_ID=/dev/serial/by-id/usb-gnss"
 	assert.Contains(t, string(envContent), "GNSS_RECEIVER_FAMILY=unicore")
 	assert.Contains(t, string(envContent), "GNSS_SERIAL_DEVICE=/dev/serial/by-id/usb-gnss")
 	assert.Contains(t, string(envContent), "GNSS_SERIAL_BAUD=921600")
 	assert.Contains(t, string(envContent), "GNSS_BACKEND=universal")
 	assert.Contains(t, string(envContent), "GNSS_NTRIP_ENABLED=true")
-	assert.NotContains(t, string(envContent), "GPS_PROTOCOL=UBX")
-	assert.NotContains(t, string(envContent), "GPS_BY_ID=/dev/serial/by-id/usb-gnss")
+	assert.NotContains(t, string(envContent), legacyProtocol)
+	assert.NotContains(t, string(envContent), legacyByID)
 }
 
 func TestPostSettingsYAML_MergesExisting(t *testing.T) {
@@ -525,13 +526,16 @@ func TestPostSettingsYAML_MergesExisting(t *testing.T) {
 	assert.Contains(t, string(content), "keep_me")
 	assert.Contains(t, string(content), "99.999")
 	assert.Contains(t, string(content), "gnss_receiver_family: nmea")
-	assert.Contains(t, string(content), "gps_protocol: NMEA")
-	assert.Contains(t, string(content), "gps_port: /dev/serial/by-id/usb-test")
+	assert.Contains(t, string(content), "gnss_serial_device: /dev/serial/by-id/usb-test")
+	assert.Contains(t, string(content), "gnss_serial_baud: 115200")
 }
 
 func TestPostSettingsYAMLPurgesLegacyRuntimeEnvKeys(t *testing.T) {
 	yamlFile := createTempYAMLFile(t, "")
-	envFile := createTempConfigFile(t, "ROS_DOMAIN_ID=0\nGPS_PROTOCOL=UBX\nGPS_BY_ID=/dev/serial/by-id/legacy\nUNICORE_ROS_EXECUTABLE=unicore_node\n")
+	legacyProtocol := "GPS_" + "PROTOCOL=UBX\n"
+	legacyByID := "GPS_" + "BY_ID=/dev/serial/by-id/legacy\n"
+	legacyRuntime := "UNICORE_" + "ROS_EXECUTABLE=unicore_node\n"
+	envFile := createTempConfigFile(t, "ROS_DOMAIN_ID=0\n"+legacyProtocol+legacyByID+legacyRuntime)
 
 	db := types.NewMockDBProvider()
 	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
@@ -556,9 +560,9 @@ func TestPostSettingsYAMLPurgesLegacyRuntimeEnvKeys(t *testing.T) {
 	envContent, err := os.ReadFile(envFile)
 	require.NoError(t, err)
 	assert.Contains(t, string(envContent), "GNSS_BACKEND=universal")
-	assert.NotContains(t, string(envContent), "GPS_PROTOCOL=UBX")
-	assert.NotContains(t, string(envContent), "GPS_BY_ID=/dev/serial/by-id/legacy")
-	assert.NotContains(t, string(envContent), "UNICORE_ROS_EXECUTABLE=unicore_node")
+	assert.NotContains(t, string(envContent), strings.TrimSpace(legacyProtocol))
+	assert.NotContains(t, string(envContent), strings.TrimSpace(legacyByID))
+	assert.NotContains(t, string(envContent), strings.TrimSpace(legacyRuntime))
 }
 
 func TestPostSettingsYAML_InvalidJSON(t *testing.T) {

@@ -229,13 +229,6 @@
           "default": 921600,
           "description": "Receiver serial baud rate. 921600 is the recommended runtime default."
         },
-        "gps_protocol": {
-          "type": "string",
-          "title": "Legacy GPS Protocol",
-          "enum": ["UBX", "NMEA"],
-          "default": "UBX",
-          "description": "Compatibility mirror derived from the Universal GNSS receiver family."
-        },
         "gps_wait_after_undock_sec": {
           "type": "number",
           "title": "GPS Wait After Undock",

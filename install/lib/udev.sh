@@ -34,7 +34,7 @@ emit_by_id_udev_rule() {
 
   # Prefer a USB-attribute match (idVendor/idProduct[/serial]) so the symlink
   # survives re-enumeration. The previous KERNEL=="ttyACMn" form broke as soon
-  # as a device's CDC-ACM index changed (e.g. F9P resets after ublox_dgnss
+  # as a device's CDC-ACM index changed (e.g. F9P resets after receiver reconfiguration
   # writes config, jumping ttyACM1 -> ttyACM3, leaving /dev/gps dangling and
   # causing EIO on every RTCM write).
   if command -v udevadm >/dev/null 2>&1 && [ -e "$resolved" ]; then

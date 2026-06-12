@@ -31,14 +31,7 @@ assert_canonical_gnss_fragment() {
   fragments="$(selected_fragments_in_current_run)"
   case "$fragments" in
     *docker-compose.gps.yml*)
-      case "$fragments" in
-        *docker-compose.unicore.yaml*)
-          fail "$label" "unexpected unicore fragment in: $fragments"
-          ;;
-        *)
-          pass "$label"
-          ;;
-      esac
+      pass "$label"
       ;;
     *)
       fail "$label" "missing docker-compose.gps.yml in: $fragments"
@@ -54,7 +47,7 @@ section "Universal GNSS default UART path"
 repo="$SANDBOX/repo_universal_uart"
 sandbox_repo "$repo"
 harness_init "$repo"
-harness_set_preset gnss=auto lidar=none tfluna=none
+harness_set_preset gnss=auto gnss_connection=uart lidar=none tfluna=none
 if harness_run; then pass "harness_run universal uart"; else fail "harness_run universal uart"; fi
 assert_eq "uart: GNSS_STACK=universal" "universal" "$(env_value "$repo" GNSS_STACK)"
 assert_eq "uart: GNSS_STATUS_SOURCE=universal" "universal" "$(env_value "$repo" GNSS_STATUS_SOURCE)"
@@ -71,8 +64,7 @@ section "Universal GNSS USB by-id path"
 repo="$SANDBOX/repo_universal_usb"
 sandbox_repo "$repo"
 harness_init "$repo"
-GPS_CONNECTION=usb
-harness_set_preset gnss=auto lidar=none tfluna=none
+harness_set_preset gnss=auto gnss_connection=usb lidar=none tfluna=none
 if harness_run; then pass "harness_run universal usb"; else fail "harness_run universal usb"; fi
 assert_eq "usb: GNSS_STACK=universal" "universal" "$(env_value "$repo" GNSS_STACK)"
 assert_eq "usb: GNSS_BACKEND=universal" "universal" "$(env_value "$repo" GNSS_BACKEND)"

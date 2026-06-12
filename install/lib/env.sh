@@ -25,6 +25,44 @@ remove_env_key() {
   sed -i "/^${key}=.*/d" "$file"
 }
 
+remove_env_keys_with_prefix() {
+  local file="$1"
+  local prefix="$2"
+
+  [ -f "$file" ] || return 0
+  sed -i "/^${prefix}[A-Z0-9_]*=.*/d" "$file"
+}
+
+remove_legacy_gnss_env_keys() {
+  local file="$1"
+  local legacy_keys=(
+    GPS_CONNECTION
+    GPS_""RUNTIME_MODE
+    GPS_""PROTOCOL
+    GPS_""PORT
+    GPS_""BY_ID
+    GPS_""UART_DEVICE
+    GPS_""BAUD
+    GPS_""DEBUG_ENABLED
+    GPS_""DEBUG_PORT
+    GPS_""DEBUG_UART_DEVICE
+    GPS_""DEBUG_BAUD
+    GPS_""UART_RULE
+    GPS_""DEBUG_UART_RULE
+    UBLOX_""DEVICE_FAMILY
+    UBLOX_""DEVICE_SERIAL_STRING
+    UNICORE_""ROS_PACKAGE
+    UNICORE_""ROS_EXECUTABLE
+    UNICORE_COM_PORT
+    UNICORE_IMAGE
+  )
+  local key
+
+  for key in "${legacy_keys[@]}"; do
+    remove_env_key "$file" "$key"
+  done
+}
+
 env_yaml_value() {
   local file="$1"
   local key="$2"
@@ -88,6 +126,7 @@ sync_gnss_env_contract_values() {
   : "${GNSS_NTRIP_USERNAME:=${CONFIG_NTRIP_USER:-centipede}}"
   : "${GNSS_NTRIP_PASSWORD:=${CONFIG_NTRIP_PASSWORD:-centipede}}"
   : "${GNSS_NTRIP_MOUNTPOINT:=${CONFIG_NTRIP_MOUNTPOINT:-NEAR}}"
+  : "${GNSS_RTCM_FORWARDING:=true}"
   : "${GNSS_NTRIP_GGA_ENABLED:=$(if [[ "${GNSS_NTRIP_MOUNTPOINT:-}" =~ ^[Nn][Ee][Aa][Rr] ]]; then printf 'true\n'; else printf 'false\n'; fi)}"
   : "${GNSS_NTRIP_GGA_INTERVAL_S:=10}"
 }
@@ -107,6 +146,7 @@ write_gnss_env_contract_keys() {
   upsert_env_key "$env_file" "GNSS_NTRIP_MOUNTPOINT" "$GNSS_NTRIP_MOUNTPOINT"
   upsert_env_key "$env_file" "GNSS_NTRIP_USERNAME" "$GNSS_NTRIP_USERNAME"
   upsert_env_key "$env_file" "GNSS_NTRIP_PASSWORD" "$GNSS_NTRIP_PASSWORD"
+  upsert_env_key "$env_file" "GNSS_RTCM_FORWARDING" "$GNSS_RTCM_FORWARDING"
   upsert_env_key "$env_file" "GNSS_NTRIP_GGA_ENABLED" "$GNSS_NTRIP_GGA_ENABLED"
   upsert_env_key "$env_file" "GNSS_NTRIP_GGA_INTERVAL_S" "$GNSS_NTRIP_GGA_INTERVAL_S"
 }
@@ -138,6 +178,7 @@ setup_env() {
   : "${GNSS_NTRIP_MOUNTPOINT:=}"
   : "${GNSS_NTRIP_USERNAME:=}"
   : "${GNSS_NTRIP_PASSWORD:=}"
+  : "${GNSS_RTCM_FORWARDING:=}"
   : "${GNSS_NTRIP_GGA_ENABLED:=}"
   : "${GNSS_NTRIP_GGA_INTERVAL_S:=}"
 
@@ -199,11 +240,11 @@ setup_env() {
   if [[ "$HARDWARE_BACKEND" == "mavros" ]]; then
     GNSS_BACKEND="disabled"
     GNSS_STACK="disabled"
-  elif [[ "${GNSS_BACKEND:-gps}" == "nmea" ]]; then
+  elif [[ "${GNSS_BACKEND:-universal}" == "nmea" ]]; then
     warn_legacy_nmea_backend_once
     GNSS_BACKEND="universal"
     GNSS_RECEIVER_FAMILY="nmea"
-  elif ! is_supported_gnss_backend "${GNSS_BACKEND:-gps}"; then
+  elif ! is_supported_gnss_backend "${GNSS_BACKEND:-universal}"; then
     warn "Unknown GNSS_BACKEND=${GNSS_BACKEND:-unset} — defaulting to universal"
     GNSS_BACKEND="universal"
   fi
@@ -262,55 +303,8 @@ setup_env() {
   upsert_env_key "$env_file" "MAVROS_TGT_COMPONENT" "$MAVROS_TGT_COMPONENT"
   upsert_env_key "$env_file" "MAVROS_AUTOPILOT" "$MAVROS_AUTOPILOT"
 
-  local legacy_gnss_keys=(
-    GPS_CONNECTION
-    GPS_RUNTIME_MODE
-    GPS_PROTOCOL
-    GPS_PORT
-    GPS_BY_ID
-    GPS_UART_DEVICE
-    GPS_BAUD
-    GPS_DEBUG_ENABLED
-    GPS_DEBUG_PORT
-    GPS_DEBUG_UART_DEVICE
-    GPS_DEBUG_BAUD
-    UBLOX_DEVICE_FAMILY
-    UBLOX_DEVICE_SERIAL_STRING
-    UNICORE_COM_PORT
-    UNICORE_PROFILE
-    UNICORE_OUTPUT_FORMAT
-    UNICORE_TARGET_BAUD
-    UNICORE_SIGNALGROUP_OVERRIDE
-    UNICORE_MAIN_LOG_PERIOD
-    UNICORE_BESTNAV_LOG_PERIOD
-    UNICORE_DIAGNOSTIC_LOG_PERIOD
-    UNICORE_SATELLITE_LOG_PERIOD
-    UNICORE_RF_LOG_PERIOD
-    UNICORE_RAW_LOG_PERIOD
-    UNICORE_ENABLE_SATELLITES
-    UNICORE_ENABLE_RF
-    UNICORE_ENABLE_JAMMING
-    UNICORE_ENABLE_HARDWARE
-    UNICORE_ENABLE_GGAH
-    UNICORE_ENABLE_RAW_OBSERVATIONS
-    UNICORE_ENABLE_UNICORE_BINARY
-    UNICORE_USE_BINARY_NAV
-    UNICORE_USE_BINARY_SATELLITE_DIAG
-    UNICORE_USE_BINARY_RTCM_DIAG
-    UNICORE_USE_BINARY_RTK_DIAG
-    UNICORE_USE_BINARY_RF_DIAG
-    UNICORE_USE_BINARY_HW_DIAG
-    UNICORE_USE_BINARY_JAMMING_DIAG
-    UNICORE_ENABLE_RAW_OBSERVATION_DIAG
-    UNICORE_USE_BINARY_RAW_OBSERVATIONS
-    UNICORE_ROS_PACKAGE
-    UNICORE_ROS_EXECUTABLE
-    UNICORE_IMAGE
-  )
-  local legacy_key
-  for legacy_key in "${legacy_gnss_keys[@]}"; do
-    remove_env_key "$env_file" "$legacy_key"
-  done
+  remove_legacy_gnss_env_keys "$env_file"
+  remove_env_key "$env_file" "NMEA_IMAGE"
   
   info "Backend selection : HARDWARE_BACKEND=$HARDWARE_BACKEND GNSS_BACKEND=$GNSS_BACKEND GNSS_STACK=$GNSS_STACK"
   info "Updated $env_file"

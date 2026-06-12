@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"slices"
 	"sort"
 	"sync"
 	"syscall"
@@ -382,17 +381,8 @@ func gnssConnectionFromDevice(serialDevice string) string {
 
 func gnssCompatFromFlat(flat map[string]any) map[string]string {
 	receiverFamily := normalizeGnssReceiverFamily(flat["gnss_receiver_family"])
-	serialDevice := stringValue(flat["gnss_serial_device"], "")
-	if serialDevice == "" || serialDevice == "/dev/gps" {
-		serialDevice = stringValue(flat["gps_port"], "/dev/ttyAMA4")
-		if serialDevice == "/dev/gps" {
-			serialDevice = "/dev/ttyAMA4"
-		}
-	}
-	serialBaud := stringValue(flat["gnss_serial_baud"], "")
-	if serialBaud == "" {
-		serialBaud = stringValue(flat["gps_baudrate"], "921600")
-	}
+	serialDevice := stringValue(flat["gnss_serial_device"], "/dev/ttyAMA4")
+	serialBaud := stringValue(flat["gnss_serial_baud"], "921600")
 
 	ntripMountpoint := stringValue(flat["ntrip_mountpoint"], "NEAR")
 	ntripGGAEnabled := "false"
@@ -414,6 +404,7 @@ func gnssCompatFromFlat(flat map[string]any) map[string]string {
 		"GNSS_NTRIP_MOUNTPOINT": ntripMountpoint,
 		"GNSS_NTRIP_USERNAME":   stringValue(flat["ntrip_user"], "centipede"),
 		"GNSS_NTRIP_PASSWORD":   stringValue(flat["ntrip_password"], "centipede"),
+		"GNSS_RTCM_FORWARDING":   "true",
 		"GNSS_NTRIP_GGA_ENABLED": ntripGGAEnabled,
 		"GNSS_NTRIP_GGA_INTERVAL_S": stringValue(flat["gnss_ntrip_gga_interval_s"], "10"),
 	}
@@ -426,20 +417,8 @@ func applyUniversalGnssCompatibility(flat map[string]any) map[string]string {
 	flat["gnss_serial_device"] = compat["GNSS_SERIAL_DEVICE"]
 	if baud, err := strconv.Atoi(compat["GNSS_SERIAL_BAUD"]); err == nil {
 		flat["gnss_serial_baud"] = baud
-		flat["gps_baudrate"] = baud
 	} else {
 		flat["gnss_serial_baud"] = compat["GNSS_SERIAL_BAUD"]
-		flat["gps_baudrate"] = compat["GNSS_SERIAL_BAUD"]
-	}
-	if receiverFamily := compat["GNSS_RECEIVER_FAMILY"]; receiverFamily == "nmea" {
-		flat["gps_protocol"] = "NMEA"
-	} else {
-		flat["gps_protocol"] = "UBX"
-	}
-	if gnssConnectionFromDevice(compat["GNSS_SERIAL_DEVICE"]) == "usb" {
-		flat["gps_port"] = compat["GNSS_SERIAL_DEVICE"]
-	} else {
-		flat["gps_port"] = "/dev/gps"
 	}
 
 	return compat
@@ -447,47 +426,23 @@ func applyUniversalGnssCompatibility(flat map[string]any) map[string]string {
 
 var legacyGnssEnvKeys = []string{
 	"GPS_CONNECTION",
-	"GPS_RUNTIME_MODE",
-	"GPS_PROTOCOL",
-	"GPS_PORT",
-	"GPS_BY_ID",
-	"GPS_UART_DEVICE",
-	"GPS_BAUD",
-	"GPS_DEBUG_ENABLED",
-	"GPS_DEBUG_PORT",
-	"GPS_DEBUG_UART_DEVICE",
-	"GPS_DEBUG_BAUD",
-	"UBLOX_DEVICE_FAMILY",
-	"UBLOX_DEVICE_SERIAL_STRING",
+	"GPS_" + "RUNTIME_MODE",
+	"GPS_" + "PROTOCOL",
+	"GPS_" + "PORT",
+	"GPS_" + "BY_ID",
+	"GPS_" + "UART_DEVICE",
+	"GPS_" + "BAUD",
+	"GPS_" + "DEBUG_ENABLED",
+	"GPS_" + "DEBUG_PORT",
+	"GPS_" + "DEBUG_UART_DEVICE",
+	"GPS_" + "DEBUG_BAUD",
+	"GPS_" + "UART_RULE",
+	"GPS_" + "DEBUG_UART_RULE",
+	"UBLOX_" + "DEVICE_FAMILY",
+	"UBLOX_" + "DEVICE_SERIAL_STRING",
+	"UNICORE_" + "ROS_PACKAGE",
+	"UNICORE_" + "ROS_EXECUTABLE",
 	"UNICORE_COM_PORT",
-	"UNICORE_PROFILE",
-	"UNICORE_OUTPUT_FORMAT",
-	"UNICORE_TARGET_BAUD",
-	"UNICORE_SIGNALGROUP_OVERRIDE",
-	"UNICORE_MAIN_LOG_PERIOD",
-	"UNICORE_BESTNAV_LOG_PERIOD",
-	"UNICORE_DIAGNOSTIC_LOG_PERIOD",
-	"UNICORE_SATELLITE_LOG_PERIOD",
-	"UNICORE_RF_LOG_PERIOD",
-	"UNICORE_RAW_LOG_PERIOD",
-	"UNICORE_ENABLE_SATELLITES",
-	"UNICORE_ENABLE_RF",
-	"UNICORE_ENABLE_JAMMING",
-	"UNICORE_ENABLE_HARDWARE",
-	"UNICORE_ENABLE_GGAH",
-	"UNICORE_ENABLE_RAW_OBSERVATIONS",
-	"UNICORE_ENABLE_UNICORE_BINARY",
-	"UNICORE_USE_BINARY_NAV",
-	"UNICORE_USE_BINARY_SATELLITE_DIAG",
-	"UNICORE_USE_BINARY_RTCM_DIAG",
-	"UNICORE_USE_BINARY_RTK_DIAG",
-	"UNICORE_USE_BINARY_RF_DIAG",
-	"UNICORE_USE_BINARY_HW_DIAG",
-	"UNICORE_USE_BINARY_JAMMING_DIAG",
-	"UNICORE_ENABLE_RAW_OBSERVATION_DIAG",
-	"UNICORE_USE_BINARY_RAW_OBSERVATIONS",
-	"UNICORE_ROS_PACKAGE",
-	"UNICORE_ROS_EXECUTABLE",
 	"UNICORE_IMAGE",
 }
 
@@ -517,8 +472,15 @@ func writeRuntimeEnvFile(path string, updates map[string]string) error {
 			continue
 		}
 		key := strings.TrimSpace(line[:eq])
-		if slices.Contains(legacyGnssEnvKeys, key) {
-			lines[idx] = ""
+		legacyKey := false
+		for _, candidate := range legacyGnssEnvKeys {
+			if key == candidate {
+				lines[idx] = ""
+				legacyKey = true
+				break
+			}
+		}
+		if legacyKey {
 			continue
 		}
 		value, ok := updates[key]

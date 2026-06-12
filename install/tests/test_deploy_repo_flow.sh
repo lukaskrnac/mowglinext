@@ -151,7 +151,9 @@ write_runtime_files() {
 
   cat > "$repo_dir/docker/.env" <<'EOF'
 ROS_DOMAIN_ID=42
-GPS_PROTOCOL=UBX
+GNSS_BACKEND=universal
+GNSS_STACK=universal
+GNSS_RECEIVER_FAMILY=auto
 EOF
 
   cat > "$repo_dir/docker/config/mowgli/mowgli_robot.yaml" <<'EOF'

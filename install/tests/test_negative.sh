@@ -36,25 +36,16 @@ load_locale
 source "$SANDBOX_REPO/install/lib/config.sh"
 
 # parse_args calls `exit 1` on bad input; run it in a subshell.
-out=$( ( parse_args --gps=garbage-uart ) 2>&1 )
+out=$( ( parse_args --gnss=garbage ) 2>&1 )
 ec=$?
 if [ "$ec" -ne 0 ]; then
-  pass "--gps=garbage-uart fails (exit=$ec)"
+  pass "--gnss=garbage fails (exit=$ec)"
   case "$out" in
-    *"Unknown GPS protocol"*) pass "--gps error mentions 'Unknown GPS protocol'" ;;
-    *)                        fail "--gps error mentions 'Unknown GPS protocol'" "got: $out" ;;
+    *"Unknown GNSS backend"*) pass "--gnss error mentions 'Unknown GNSS backend'" ;;
+    *)                        fail "--gnss error mentions 'Unknown GNSS backend'" "got: $out" ;;
   esac
 else
-  fail "--gps=garbage-uart fails" "exit=0 unexpectedly"
-fi
-
-# Bad GPS connection
-out=$( ( parse_args --gps=ubx-blue ) 2>&1 )
-ec=$?
-if [ "$ec" -ne 0 ]; then
-  pass "--gps=ubx-blue fails (exit=$ec)"
-else
-  fail "--gps=ubx-blue fails" "exit=0 unexpectedly"
+  fail "--gnss=garbage fails" "exit=0 unexpectedly"
 fi
 
 out=$( ( parse_args --gnss-connection=blue ) 2>&1 )
@@ -91,17 +82,17 @@ else
   fail "--tfluna=midnight fails" "exit=0 unexpectedly"
 fi
 
-# Legacy pseudo-backend nmea must be rejected
-out=$( ( parse_args --gnss=nmea ) 2>&1 )
+# GNSS receiver-family nmea is now accepted on the Universal path
+out=$( ( parse_args --gnss=nmea; printf 'GNSS_RECEIVER_FAMILY=%s\n' "$GNSS_RECEIVER_FAMILY" ) 2>&1 )
 ec=$?
-if [ "$ec" -ne 0 ]; then
-  pass "--gnss=nmea fails (exit=$ec)"
+if [ "$ec" -eq 0 ]; then
+  pass "--gnss=nmea succeeds"
   case "$out" in
-    *"Unknown GNSS backend"*) pass "--gnss=nmea error mentions 'Unknown GNSS backend'" ;;
-    *)                        fail "--gnss=nmea error mentions 'Unknown GNSS backend'" "got: $out" ;;
+    *"GNSS_RECEIVER_FAMILY=nmea"*) pass "--gnss=nmea selects the nmea receiver family" ;;
+    *)                            fail "--gnss=nmea selects the nmea receiver family" "got: $out" ;;
   esac
 else
-  fail "--gnss=nmea fails" "exit=0 unexpectedly"
+  fail "--gnss=nmea succeeds" "exit=$ec"
 fi
 
 out=$( ( parse_args --image-tag=feat/universal-gnss-integration; printf 'IMAGE_TAG=%s\n' "$IMAGE_TAG" ) 2>&1 )
@@ -128,21 +119,20 @@ else
   fail "--branch feature branch syntax is accepted" "exit=$ec"
 fi
 
-section "build_compose_stack rejects invalid GNSS_BACKEND"
+section "build_compose_stack normalizes invalid GNSS_BACKEND safely"
 
 repo_bad="$SANDBOX/repo_bad_compose"
 sandbox_repo "$repo_bad"
-( harness_init "$repo_bad" >/dev/null 2>&1
+compose_state="$(
+  harness_init "$repo_bad" >/dev/null 2>&1
   HARDWARE_BACKEND=mowgli
   GNSS_BACKEND=typo
-  if build_compose_stack >/dev/null 2>&1; then exit 0; else exit 1; fi
-)
-ec=$?
-if [ "$ec" -ne 0 ]; then
-  pass "build_compose_stack rejects GNSS_BACKEND=typo"
-else
-  fail "build_compose_stack rejects GNSS_BACKEND=typo" "exit=0 unexpectedly"
-fi
+  build_compose_stack >/dev/null 2>&1
+  printf 'GNSS_BACKEND_EFFECTIVE=%s\n' "$(effective_gnss_backend)"
+  printf 'COMPOSE_FILES=%s\n' "${COMPOSE_FILES[*]}"
+)"
+assert_contains "invalid GNSS_BACKEND falls back to universal" "GNSS_BACKEND_EFFECTIVE=universal" "$compose_state"
+assert_contains "invalid GNSS_BACKEND still selects the gps sidecar fragment" "docker-compose.gps.yml" "$compose_state"
 
 section "Bootstrap script (docs/install.sh) rejects unknown args gracefully"
 

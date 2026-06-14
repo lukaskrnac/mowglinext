@@ -22,14 +22,14 @@ Complete Mowgli robot mower system launch.
 Brings up all subsystems:
   1. mowgli.launch.py        — hardware bridge, RSP, twist_mux
   2. navigation.launch.py    — robot_localization (dual EKF), Nav2
-  3. Behavior tree node       — mowgli_behavior
-  4. Map server               — mowgli_map
-  5. Wheel odometry            — mowgli_localization
-  6. NavSat converter          — mowgli_localization (/gps/absolute_pose, /gps/status, /gps/pose_cov)
-  7. Localization monitor      — mowgli_localization
-  8. Diagnostics               — mowgli_monitoring
-  9. MQTT bridge (optional)   — mowgli_monitoring
-  10. foxglove_bridge — WebSocket bridge for GUI and Foxglove Studio
+  3. Behavior tree node      — mowgli_behavior
+  4. Map server              — mowgli_map
+  5. Wheel odometry          — mowgli_localization
+  6. NavSat converter        — mowgli_localization (/gps/absolute_pose, /gps/pose_cov)
+  7. Localization monitor    — mowgli_localization
+  8. Diagnostics             — mowgli_monitoring
+  9. MQTT bridge (optional)  — mowgli_monitoring
+  10. foxglove_bridge        — WebSocket bridge for GUI and Foxglove Studio
 """
 
 import os
@@ -48,6 +48,12 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description() -> LaunchDescription:
+    # Keep sidecar-internal GNSS transport/status channels out of Foxglove.
+    # This covers the current hidden topic prefix plus older visible names.
+    internal_gnss_topic_whitelist = (
+        r"^(?!/(?:_gps_internal|gps_internal|universal_gnss)(?:/.*)?$).*"
+    )
+
     # ------------------------------------------------------------------
     # Package directories
     # ------------------------------------------------------------------
@@ -263,16 +269,13 @@ def generate_launch_description() -> LaunchDescription:
     # publisher for /wheel_odom. Keep the source in the package for now
     # (disabled) and rely on hardware_bridge alone.
     # ------------------------------------------------------------------
-    # 7a. NavSat adapter for legacy AbsolutePose + typed GNSS status
+    # 6a. NavSat adapter for legacy AbsolutePose-compatible consumers.
     # navsat_transform_node takes /gps/fix directly for the EKF pipeline;
-    # this node publishes /gps/status through the shared GNSS adapter,
-    # keeps /gps/absolute_pose for legacy consumers, and emits /gps/pose_cov
-    # for ekf_map_node fusion.
+    # this node keeps /gps/absolute_pose for legacy consumers and emits
+    # /gps/pose_cov for ekf_map_node fusion. Universal GNSS owns /gps/status.
     # ------------------------------------------------------------------
     datum_lat = float(robot_params.get("datum_lat", 0.0))
     datum_lon = float(robot_params.get("datum_lon", 0.0))
-    gnss_backend = os.environ.get("GNSS_BACKEND", "gps")
-    gps_protocol = os.environ.get("GPS_PROTOCOL", "UBX")
     navsat_converter_node = Node(
         package="mowgli_localization",
         executable="navsat_to_absolute_pose_node",
@@ -282,15 +285,13 @@ def generate_launch_description() -> LaunchDescription:
             {
                 "datum_lat": datum_lat,
                 "datum_lon": datum_lon,
-                "gnss_backend": gnss_backend,
-                "gps_protocol": gps_protocol,
             },
             {"use_sim_time": use_sim_time},
         ],
     )
 
     # ------------------------------------------------------------------
-    # 8. Localization monitor
+    # 7. Localization monitor
     # ------------------------------------------------------------------
     localization_monitor_node = Node(
         package="mowgli_localization",
@@ -303,7 +304,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
-    # 8b. IMU yaw calibration node (on-demand)
+    # 7b. IMU yaw calibration node (on-demand)
     # Exposes /calibrate_imu_yaw_node/calibrate — idle until called.
     # ------------------------------------------------------------------
     calibrate_imu_yaw_node = Node(
@@ -319,7 +320,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
-    # 9. Diagnostics
+    # 8. Diagnostics
     # ------------------------------------------------------------------
     diagnostics_node = Node(
         package="mowgli_monitoring",
@@ -333,7 +334,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
-    # 10. MQTT bridge (optional)
+    # 9. MQTT bridge (optional)
     # ------------------------------------------------------------------
     mqtt_bridge_node = Node(
         condition=IfCondition(enable_mqtt),
@@ -348,10 +349,11 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
-    # 11. Foxglove Bridge — WebSocket bridge for GUI and Foxglove Studio
+    # 10. Foxglove Bridge — WebSocket bridge for GUI and Foxglove Studio
     # ------------------------------------------------------------------
-    # No topic/service whitelists — all topics are available for Foxglove
-    # Studio debugging. The GUI backend throttles subscriptions on its side.
+    # Expose the public graph broadly, but keep sidecar-internal GNSS
+    # transport/status topics out of Foxglove so they do not leak into the
+    # GUI contract or trigger schema-resolution noise.
     foxglove_bridge_node = Node(
         condition=IfCondition(enable_foxglove),
         package="foxglove_bridge",
@@ -362,8 +364,10 @@ def generate_launch_description() -> LaunchDescription:
             {
                 "port": foxglove_port,
                 "address": "0.0.0.0",
-                "send_buffer_limit": 1000000,
+                "send_buffer_limit": 10000000,
                 "num_threads": 2,
+                "topic_whitelist": [internal_gnss_topic_whitelist],
+                "client_topic_whitelist": [internal_gnss_topic_whitelist],
                 "capabilities": [
                     "clientPublish",
                     "services",

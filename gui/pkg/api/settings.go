@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -306,6 +307,298 @@ func coerceValue(value string, schemaType string) any {
 		}
 	}
 	return value
+}
+
+func stringValue(value any, defaultValue string) string {
+	if value == nil {
+		return defaultValue
+	}
+	text := strings.TrimSpace(fmt.Sprintf("%v", value))
+	if text == "" || text == "<nil>" {
+		return defaultValue
+	}
+	return text
+}
+
+func boolStringValue(value any, defaultValue bool) string {
+	if value == nil {
+		if defaultValue {
+			return "true"
+		}
+		return "false"
+	}
+	switch v := value.(type) {
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	default:
+		text := strings.ToLower(stringValue(value, ""))
+		switch text {
+		case "1", "true", "yes", "on":
+			return "true"
+		case "0", "false", "no", "off":
+			return "false"
+		}
+	}
+	if defaultValue {
+		return "true"
+	}
+	return "false"
+}
+
+func normalizeGnssReceiverFamily(value any) string {
+	switch strings.ToLower(stringValue(value, "auto")) {
+	case "", "auto":
+		return "auto"
+	case "u-blox", "ublox":
+		return "ublox"
+	case "unicore":
+		return "unicore"
+	case "nmea":
+		return "nmea"
+	default:
+		return strings.ToLower(stringValue(value, "auto"))
+	}
+}
+
+func normalizeGnssProfile(value any) string {
+	switch strings.ToLower(strings.ReplaceAll(stringValue(value, "runtime_only"), "-", "_")) {
+	case "", "runtime_only", "balanced", "power_saving":
+		return "runtime_only"
+	case "high_precision", "survey", "rover_high_precision":
+		return "rover_high_precision"
+	case "debug", "rover_high_precision_debug":
+		return "rover_high_precision_debug"
+	case "factory_reset":
+		return "factory_reset"
+	default:
+		return "runtime_only"
+	}
+}
+
+func normalizeGnssSignalProfile(value any) string {
+	switch strings.ToLower(strings.ReplaceAll(stringValue(value, "balanced"), "-", "_")) {
+	case "", "balanced":
+		return "balanced"
+	case "minimal":
+		return "minimal"
+	case "ppp_optimized", "high_precision":
+		return "high_precision"
+	case "all_signals":
+		return "all_signals"
+	case "custom":
+		return "custom"
+	default:
+		return "balanced"
+	}
+}
+
+func normalizeGnssProfileRate(value any) string {
+	switch stringValue(value, "5") {
+	case "1", "5", "7", "10":
+		return stringValue(value, "5")
+	default:
+		return "5"
+	}
+}
+
+func normalizeGnssSignalGroup(value any) string {
+	fields := strings.Fields(stringValue(value, ""))
+	return strings.Join(fields, " ")
+}
+
+func firstValue(flat map[string]any, keys ...string) any {
+	for _, key := range keys {
+		value, ok := flat[key]
+		if !ok || value == nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			if strings.TrimSpace(typed) == "" {
+				continue
+			}
+		}
+		return value
+	}
+	return nil
+}
+
+func gnssConnectionFromDevice(serialDevice string) string {
+	switch {
+	case strings.HasPrefix(serialDevice, "/dev/serial/by-id/"),
+		strings.HasPrefix(serialDevice, "/dev/ttyUSB"),
+		strings.HasPrefix(serialDevice, "/dev/ttyACM"):
+		return "usb"
+	case strings.HasPrefix(serialDevice, "/dev/ttyAMA"),
+		strings.HasPrefix(serialDevice, "/dev/ttyS"),
+		strings.HasPrefix(serialDevice, "/dev/ttyTHS"),
+		strings.HasPrefix(serialDevice, "/dev/ttyHS"):
+		return "uart"
+	default:
+		return "uart"
+	}
+}
+
+func gnssCompatFromFlat(flat map[string]any) map[string]string {
+	receiverFamily := normalizeGnssReceiverFamily(flat["gnss_receiver_family"])
+	serialDevice := stringValue(flat["gnss_serial_device"], "/dev/ttyAMA4")
+	serialBaud := stringValue(flat["gnss_serial_baud"], "921600")
+	configBaud := stringValue(firstValue(flat, "gnss_config_baud", "gnss_serial_baud"), serialBaud)
+	profile := normalizeGnssProfile(flat["gnss_profile"])
+	signalProfile := normalizeGnssSignalProfile(flat["gnss_signal_profile"])
+	profileRateHz := normalizeGnssProfileRate(firstValue(flat, "gnss_profile_rate_hz", "gnss_rate_hz"))
+	ntripMountpoint := stringValue(flat["ntrip_mountpoint"], "NEAR")
+	ntripGGAEnabled := "false"
+	if strings.HasPrefix(strings.ToLower(ntripMountpoint), "near") {
+		ntripGGAEnabled = "true"
+	}
+
+	return map[string]string{
+		"GNSS_STACK":           "universal",
+		"GNSS_STATUS_SOURCE":   "universal",
+		"GNSS_RECEIVER_FAMILY": receiverFamily,
+		"GNSS_TRANSPORT":       "serial",
+		"GNSS_SERIAL_DEVICE":   serialDevice,
+		"GNSS_SERIAL_BAUD":     serialBaud,
+		"GNSS_CONFIG_BAUD":     configBaud,
+		"GNSS_PROFILE":         profile,
+		"GNSS_SIGNAL_PROFILE":  signalProfile,
+		"GNSS_PROFILE_RATE_HZ": profileRateHz,
+		"GNSS_BACKEND":         "universal",
+		"GNSS_NTRIP_ENABLED":   boolStringValue(flat["ntrip_enabled"], true),
+		"GNSS_NTRIP_HOST":      stringValue(flat["ntrip_host"], "crtk.net"),
+		"GNSS_NTRIP_PORT":      stringValue(flat["ntrip_port"], "2101"),
+		"GNSS_NTRIP_MOUNTPOINT": ntripMountpoint,
+		"GNSS_NTRIP_USERNAME":   stringValue(flat["ntrip_user"], "centipede"),
+		"GNSS_NTRIP_PASSWORD":   stringValue(flat["ntrip_password"], "centipede"),
+		"GNSS_RTCM_FORWARDING":   "true",
+		"GNSS_NTRIP_GGA_ENABLED": ntripGGAEnabled,
+		"GNSS_NTRIP_GGA_INTERVAL_S": stringValue(flat["gnss_ntrip_gga_interval_s"], "10"),
+	}
+}
+
+func applyUniversalGnssCompatibility(flat map[string]any) map[string]string {
+	compat := gnssCompatFromFlat(flat)
+
+	flat["gnss_receiver_family"] = compat["GNSS_RECEIVER_FAMILY"]
+	flat["gnss_serial_device"] = compat["GNSS_SERIAL_DEVICE"]
+	if baud, err := strconv.Atoi(compat["GNSS_SERIAL_BAUD"]); err == nil {
+		flat["gnss_serial_baud"] = baud
+	} else {
+		flat["gnss_serial_baud"] = compat["GNSS_SERIAL_BAUD"]
+	}
+	if configBaud, err := strconv.Atoi(compat["GNSS_CONFIG_BAUD"]); err == nil {
+		flat["gnss_config_baud"] = configBaud
+	} else {
+		flat["gnss_config_baud"] = compat["GNSS_CONFIG_BAUD"]
+	}
+	flat["gnss_profile"] = compat["GNSS_PROFILE"]
+	flat["gnss_signal_profile"] = compat["GNSS_SIGNAL_PROFILE"]
+	if rateHz, err := strconv.Atoi(compat["GNSS_PROFILE_RATE_HZ"]); err == nil {
+		flat["gnss_profile_rate_hz"] = rateHz
+	} else {
+		flat["gnss_profile_rate_hz"] = compat["GNSS_PROFILE_RATE_HZ"]
+	}
+	flat["gnss_signal_group"] = normalizeGnssSignalGroup(flat["gnss_signal_group"])
+	delete(flat, "gnss_rate_hz")
+
+	return compat
+}
+
+var legacyGnssEnvKeys = []string{
+	"GPS_CONNECTION",
+	"GPS_" + "RUNTIME_MODE",
+	"GPS_" + "PROTOCOL",
+	"GPS_" + "PORT",
+	"GPS_" + "BY_ID",
+	"GPS_" + "UART_DEVICE",
+	"GPS_" + "BAUD",
+	"GPS_" + "DEBUG_ENABLED",
+	"GPS_" + "DEBUG_PORT",
+	"GPS_" + "DEBUG_UART_DEVICE",
+	"GPS_" + "DEBUG_BAUD",
+	"GPS_" + "UART_RULE",
+	"GPS_" + "DEBUG_UART_RULE",
+	"UBLOX_" + "DEVICE_FAMILY",
+	"UBLOX_" + "DEVICE_SERIAL_STRING",
+	"UNICORE_" + "ROS_PACKAGE",
+	"UNICORE_" + "ROS_EXECUTABLE",
+	"UNICORE_COM_PORT",
+	"UNICORE_IMAGE",
+}
+
+func writeRuntimeEnvFile(path string, updates map[string]string) error {
+	var content string
+	if file, err := os.ReadFile(path); err == nil {
+		content = string(file)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	lines := []string{}
+	if content != "" {
+		lines = strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	} else {
+		lines = []string{}
+	}
+
+	seen := map[string]bool{}
+	for idx, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		eq := strings.IndexByte(line, '=')
+		if eq <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:eq])
+		legacyKey := false
+		for _, candidate := range legacyGnssEnvKeys {
+			if key == candidate {
+				lines[idx] = ""
+				legacyKey = true
+				break
+			}
+		}
+		if legacyKey {
+			continue
+		}
+		value, ok := updates[key]
+		if !ok {
+			continue
+		}
+		lines[idx] = fmt.Sprintf("%s=%s", key, value)
+		seen[key] = true
+	}
+
+	keys := make([]string, 0, len(updates))
+	for key := range updates {
+		if !seen[key] {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		lines = append(lines, fmt.Sprintf("%s=%s", key, updates[key]))
+	}
+
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+
+	out := strings.TrimRight(strings.Join(filtered, "\n"), "\n") + "\n"
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return writePreservingPerms(path, []byte(out))
 }
 
 // applyMowgliOverlay modifies the settings schema to add Mowgli-specific
@@ -672,6 +965,8 @@ func GetSettingsYAML(r *gin.RouterGroup, dbProvider types.IDBProvider) gin.IRout
 			}
 		}
 
+		applyUniversalGnssCompatibility(flat)
+
 		c.JSON(200, flat)
 	})
 }
@@ -731,6 +1026,7 @@ func PostSettingsYAML(r *gin.RouterGroup, dbProvider types.IDBProvider) gin.IRou
 		for key, value := range payload {
 			existing[key] = value
 		}
+		gnssEnvUpdates := applyUniversalGnssCompatibility(existing)
 
 		// Nest back into ROS2 YAML structure
 		nested := nestToROS2YAML(existing, nodeMappings, existingYAML)
@@ -753,6 +1049,14 @@ func PostSettingsYAML(r *gin.RouterGroup, dbProvider types.IDBProvider) gin.IRou
 		if err := writePreservingPerms(string(configFilePath), []byte(header+string(out))); err != nil {
 			c.JSON(500, ErrorResponse{Error: err.Error()})
 			return
+		}
+
+		envFilePath, err := dbProvider.Get("system.mower.runtimeEnvFile")
+		if err == nil && len(envFilePath) > 0 {
+			if err := writeRuntimeEnvFile(string(envFilePath), gnssEnvUpdates); err != nil {
+				c.JSON(500, ErrorResponse{Error: "failed to update runtime env: " + err.Error()})
+				return
+			}
 		}
 
 		log.Printf("Saved mowgli_robot.yaml (%d bytes)", len(out)+len(header))

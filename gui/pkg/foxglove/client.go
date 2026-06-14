@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -71,9 +72,9 @@ type Client struct {
 	connMu sync.Mutex
 
 	// channels maps topic name → channel state.
-	channels   map[string]*channelState
+	channels     map[string]*channelState
 	channelsByID map[uint32]*channelState
-	chanMu     sync.RWMutex
+	chanMu       sync.RWMutex
 
 	// services maps service name → service state.
 	services     map[string]*serviceState
@@ -118,6 +119,38 @@ type Client struct {
 
 	// dialer is the WebSocket dialer with the required subprotocol.
 	dialer websocket.Dialer
+}
+
+// sanitizeJSONValue converts non-finite floats from live ROS payloads into nil
+// so json.Marshal can encode the frame instead of dropping the whole message.
+func sanitizeJSONValue(v interface{}) interface{} {
+	switch typed := v.(type) {
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return nil
+		}
+		return typed
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(typed))
+		for key, value := range typed {
+			out[key] = sanitizeJSONValue(value)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(typed))
+		for idx, value := range typed {
+			out[idx] = sanitizeJSONValue(value)
+		}
+		return out
+	case []float64:
+		out := make([]interface{}, len(typed))
+		for idx, value := range typed {
+			out[idx] = sanitizeJSONValue(value)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // NewClient creates a Client that will connect to the foxglove_bridge
@@ -747,7 +780,7 @@ func (c *Client) handleMessageData(data []byte) {
 		return
 	}
 
-	jsonData, err := json.Marshal(result)
+	jsonData, err := json.Marshal(sanitizeJSONValue(result))
 	if err != nil {
 		logrus.WithError(err).WithField("topic", topic).
 			Debug("foxglove: JSON marshal failed")

@@ -27,7 +27,8 @@ Thanks for your interest in contributing! MowgliNext is a community-driven proje
 # Requires ROS2 Kilted on Ubuntu 24.04
 cd ros2
 source /opt/ros/kilted/setup.bash
-rosdep install --from-paths src --ignore-src -y
+rosdep install --from-paths src --ignore-src \
+  --skip-keys universal_gnss_ros2 -y
 colcon build
 colcon test
 ```

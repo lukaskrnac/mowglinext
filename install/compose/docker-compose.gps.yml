@@ -1,15 +1,15 @@
   # -------------------------------------------------------------------------
-  # GNSS backend slot used by the current default GPS container.
+  # Canonical direct-GNSS sidecar.
   #
-  # The common GNSS contract for backend-specific compose fragments is:
-  #   /gps/fix           -> sensor_msgs/msg/NavSatFix
-  #   /gps/azimuth       -> compass_msgs/msg/Azimuth
-  #   /gps/status        -> mowgli_interfaces/msg/GnssStatus
-  #   /diagnostics       -> diagnostic_msgs/msg/DiagnosticArray
+  # PR 2 runtime flip:
+  #   GNSS_STACK=universal now means the existing mowgli-gps sidecar owns
+  #   Universal GNSS and publishes the shared external contract:
+  #     /gps/fix
+  #     /gps/status
+  #     /diagnostics
+  #     /rtcm
   #
-  # Current compatibility behavior remains unchanged here. This fragment still
-  # points at the existing GPS container while dedicated backend fragments can
-  # converge on the same external /gps/* interface later.
+  # Universal GNSS is the only supported direct-GNSS runtime.
   # -------------------------------------------------------------------------
 x-ros2-env: &ros2-env
   ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
@@ -34,16 +34,20 @@ services:
     environment:
       <<: *ros2-env
       HARDWARE_BACKEND: ${HARDWARE_BACKEND}
-      # Pass the host-side device path straight through. start_gps.sh uses
-      # GPS_DEVICE_PATH as the ublox_dgnss DEVICE_PATH when transport=serial,
-      # which lets the container use /dev/serial/by-id/... directly (always
-      # created by systemd-udev) instead of depending on the /dev/gps symlink
-      # from /etc/udev/rules.d/50-mowgli.rules. GPS_PORT is the canonical
-      # installer key; fall back to UBLOX_DEVICE_SERIAL_STRING for compose
-      # generations carried over from the legacy ublox backend.
-      GPS_DEVICE_PATH: ${GPS_PORT:-${UBLOX_DEVICE_SERIAL_STRING:-/dev/gps}}
-      GPS_PROTOCOL: ${GPS_PROTOCOL:-UBX}
-      GPS_BAUD: ${GPS_BAUD:-921600}
+      GNSS_STACK: ${GNSS_STACK:-universal}
+      GNSS_RECEIVER_FAMILY: ${GNSS_RECEIVER_FAMILY:-auto}
+      GNSS_TRANSPORT: ${GNSS_TRANSPORT:-serial}
+      GNSS_SERIAL_DEVICE: ${GNSS_SERIAL_DEVICE:-/dev/gps}
+      GNSS_SERIAL_BAUD: ${GNSS_SERIAL_BAUD:-921600}
+      GNSS_FRAME_ID: ${GNSS_FRAME_ID:-gps_link}
+      GNSS_NTRIP_ENABLED: ${GNSS_NTRIP_ENABLED:-true}
+      GNSS_NTRIP_HOST: ${GNSS_NTRIP_HOST:-crtk.net}
+      GNSS_NTRIP_PORT: ${GNSS_NTRIP_PORT:-2101}
+      GNSS_NTRIP_MOUNTPOINT: ${GNSS_NTRIP_MOUNTPOINT:-NEAR}
+      GNSS_NTRIP_USERNAME: ${GNSS_NTRIP_USERNAME:-centipede}
+      GNSS_NTRIP_PASSWORD: ${GNSS_NTRIP_PASSWORD:-centipede}
+      GNSS_NTRIP_GGA_ENABLED: ${GNSS_NTRIP_GGA_ENABLED:-true}
+      GNSS_NTRIP_GGA_INTERVAL_S: ${GNSS_NTRIP_GGA_INTERVAL_S:-10}
     volumes:
       - /dev:/dev
       - ./docker/config/mowgli:/config:ro

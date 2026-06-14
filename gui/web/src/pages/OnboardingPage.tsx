@@ -14,10 +14,12 @@ import { useIsMobile } from "../hooks/useIsMobile";
 import { useSettingsSchema } from "../hooks/useSettingsSchema.ts";
 import { useApi } from "../hooks/useApi.ts";
 import { useGnssStatus } from "../hooks/useGnssStatus.ts";
+import { useDiagnostics } from "../hooks/useDiagnostics.ts";
 import { useCalibrationStatus } from "../hooks/useCalibrationStatus.ts";
 import { useImuYawCalibration } from "../hooks/useImuYawCalibration.ts";
 import { GnssStatusConstants } from "../types/ros.ts";
 import { CompassOutlined } from "@ant-design/icons";
+import { deriveGpsStatus, gnssReceiverLabel } from "../utils/gpsStatus.ts";
 import { RobotComponentEditor } from "../components/RobotComponentEditor.tsx";
 import { FlashBoardComponent } from "../components/FlashBoardComponent.tsx";
 import { MOWER_MODELS } from "../constants/mowerModels.ts";
@@ -28,6 +30,21 @@ import {
     GPS_RESTART_KEYS,
 } from "../utils/containers.ts";
 import { useContainerRestart } from "../hooks/useContainerRestart.ts";
+import {
+    GNSS_BAUD_OPTIONS,
+    GNSS_ACTION_SETTINGS_KEYS,
+    GNSS_PROFILE_OPTIONS,
+    GNSS_PROFILE_RATE_OPTIONS,
+    GNSS_RECEIVER_FAMILY_OPTIONS,
+    GNSS_SIGNAL_PROFILE_OPTIONS,
+    GNSS_SIGNAL_PROFILE_CUSTOM_HELP_TEXT,
+    normalizeGnssProfile,
+    normalizeGnssSignalProfile,
+} from "../components/settings/gnssConfig.ts";
+import { GnssSignalProfileHelp } from "../components/settings/GnssSignalProfileHelp.tsx";
+import { UniversalGnssAdvancedSettings } from "../components/settings/UniversalGnssAdvancedSettings.tsx";
+import { UniversalGnssLiveStatusCard } from "../components/settings/UniversalGnssLiveStatusCard.tsx";
+import { GnssReceiverActionsCard } from "../components/settings/GnssReceiverActionsCard.tsx";
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -225,58 +242,227 @@ const RobotModelStep: React.FC<RobotModelStepProps> = ({ values, onChange }) => 
 
 // ── GPS Configuration step (receiver + NTRIP, no datum) ─────────────────
 
-type GpsStepProps = RobotModelStepProps & { gpsRestarting?: boolean };
+type GpsStepProps = RobotModelStepProps & {
+    gpsRestarting?: boolean;
+    onPersistGnssSettings: (settings: Record<string, any>) => Promise<boolean>;
+};
 
-const GpsStep: React.FC<GpsStepProps> = ({ values, onChange, gpsRestarting }) => {
+const GpsStep: React.FC<GpsStepProps> = ({ values, onChange, gpsRestarting, onPersistGnssSettings }) => {
+    const [expertMode, setExpertMode] = useState(false);
+    const gnssStatus = useGnssStatus();
+    const { diagnostics } = useDiagnostics();
+    const gpsStatus = deriveGpsStatus(gnssStatus);
+    const detectedReceiver = gnssReceiverLabel(gnssStatus);
     const ntripEnabled = values.ntrip_enabled ?? true;
+    const selectedSignalProfile = normalizeGnssSignalProfile(values.gnss_signal_profile);
+    const gnssAlertType: "success" | "warning" | "info" = gpsStatus.fixType === "RTK_FIX"
+        ? "success"
+        : gpsStatus.fixType === "NO_FIX"
+            ? "warning"
+            : "info";
+    const persistCurrentGnssSettings = async () => {
+        const partial: Record<string, any> = {};
+        for (const key of GNSS_ACTION_SETTINGS_KEYS) {
+            if (Object.prototype.hasOwnProperty.call(values, key)) {
+                partial[key] = values[key];
+            }
+        }
+        return onPersistGnssSettings(partial);
+    };
 
     return (
-        <div style={{ maxWidth: 640, margin: "0 auto" }}>
+        <div style={{ maxWidth: 760, margin: "0 auto" }}>
             <Title level={4}>
-                <GlobalOutlined /> GPS Configuration
+                <GlobalOutlined /> GNSS Configuration
             </Title>
             <Paragraph type="secondary">
-                Configure how the robot talks to its GPS receiver and (optionally) where it pulls RTK corrections
-                from. The map origin (datum) is set later — once this step is saved and the receiver has had a
-                moment to acquire an RTK fix, the Datum step will let you anchor the map at your dock.
+                Configure the GNSS receiver with vendor-neutral profiles first, then enable Expert mode only when you need
+                receiver-family-specific overrides. The map origin (datum) is set later, once the receiver has had a moment
+                to acquire an RTK fix.
             </Paragraph>
 
             {gpsRestarting && (
                 <Alert
                     type="info"
                     showIcon
-                    message="GPS container is restarting to apply your NTRIP / serial settings"
-                    description="Wait ~10–30 s for RTK Fix to come back before setting the datum."
+                    message="GNSS receiver is restarting to apply your serial and NTRIP settings"
+                    description="Wait ~10–30 s for RTK Fix to come back before setting the datum. Receiver profile apply, factory reset, and GNSS restart actions are available from the receiver actions panel below."
                     style={{ marginBottom: 12 }}
                 />
             )}
 
-            <Card size="small" title={<Space><WifiOutlined /> GPS Receiver</Space>} style={{ marginBottom: 16 }}>
+            <Alert
+                type={gnssAlertType}
+                showIcon
+                message={`Detected receiver: ${detectedReceiver}`}
+                description={`Live GNSS status: ${gpsStatus.label}. The normal onboarding UI stays vendor-neutral; family-specific tuning lives in Expert mode.`}
+                style={{ marginBottom: 12 }}
+            />
+
+            <Card
+                size="small"
+                title={<Space><WifiOutlined /> GNSS Receiver</Space>}
+                extra={(
+                    <Space size="small">
+                        <Text type="secondary" style={{ fontSize: 12 }}>Expert mode</Text>
+                        <Switch size="small" checked={expertMode} onChange={setExpertMode} />
+                    </Space>
+                )}
+                style={{ marginBottom: 16 }}
+            >
+                <Paragraph type="secondary" style={{ marginTop: 0 }}>
+                    Normal settings are vendor-neutral. Expert settings are receiver-family specific.
+                </Paragraph>
                 <Form layout="vertical">
                     <Row gutter={16}>
-                        <Col xs={12}>
-                            <Form.Item label="Protocol">
+                        <Col xs={24} sm={12}>
+                            <Form.Item label="Receiver Profile">
                                 <Select
-                                    value={values.gps_protocol ?? "UBX"}
-                                    onChange={(v) => onChange("gps_protocol", v)}
-                                    options={[
-                                        { label: "UBX (u-blox)", value: "UBX" },
-                                        { label: "NMEA", value: "NMEA" },
-                                    ]}
+                                    value={normalizeGnssProfile(values.gnss_profile)}
+                                    onChange={(v) => onChange("gnss_profile", v)}
+                                    options={GNSS_PROFILE_OPTIONS.map((option) => ({
+                                        label: option.label,
+                                        value: option.value,
+                                    }))}
                                 />
                             </Form.Item>
                         </Col>
-                        <Col xs={12}>
-                            <Form.Item label="Serial Port">
-                                <Input
-                                    value={values.gps_port ?? "/dev/gps"}
-                                    onChange={(e) => onChange("gps_port", e.target.value)}
+                        <Col xs={24} sm={12}>
+                            <Form.Item
+                                label="Signal Profile"
+                                tooltip="High-level constellation and signal preset. Use Expert mode only when you need family-specific overrides."
+                                extra={<GnssSignalProfileHelp selectedProfile={selectedSignalProfile} />}
+                            >
+                                <Select
+                                    value={selectedSignalProfile}
+                                    onChange={(v) => onChange("gnss_signal_profile", v)}
+                                    options={GNSS_SIGNAL_PROFILE_OPTIONS.map((option) => ({
+                                        label: option.label,
+                                        value: option.value,
+                                        description: option.description,
+                                    }))}
+                                    optionRender={(option) => (
+                                        <div>
+                                            <div>{String(option.data.label)}</div>
+                                            <Text type="secondary" style={{ fontSize: 12 }}>
+                                                {String(option.data.description ?? "")}
+                                            </Text>
+                                        </div>
+                                    )}
+                                />
+                            </Form.Item>
+                        </Col>
+                    </Row>
+                    <Row gutter={16}>
+                        <Col xs={24} sm={8}>
+                            <Form.Item label="Position Rate">
+                                <Select
+                                    value={values.gnss_profile_rate_hz ?? 5}
+                                    onChange={(v) => onChange("gnss_profile_rate_hz", v)}
+                                    options={GNSS_PROFILE_RATE_OPTIONS.map((option) => ({
+                                        label: option.label,
+                                        value: option.value,
+                                    }))}
+                                />
+                            </Form.Item>
+                        </Col>
+                        <Col xs={24} sm={8}>
+                            <Form.Item label="Runtime Baud">
+                                <Select
+                                    value={values.gnss_serial_baud ?? 921600}
+                                    onChange={(v) => onChange("gnss_serial_baud", v)}
+                                    options={GNSS_BAUD_OPTIONS.map((option) => ({
+                                        label: option.label,
+                                        value: option.value,
+                                    }))}
+                                />
+                            </Form.Item>
+                        </Col>
+                        <Col xs={24} sm={8}>
+                            <Form.Item label="Configured Receiver Baud">
+                                <Select
+                                    value={values.gnss_config_baud ?? values.gnss_serial_baud ?? 921600}
+                                    onChange={(v) => onChange("gnss_config_baud", v)}
+                                    options={GNSS_BAUD_OPTIONS.map((option) => ({
+                                        label: option.label,
+                                        value: option.value,
+                                    }))}
                                 />
                             </Form.Item>
                         </Col>
                     </Row>
                 </Form>
             </Card>
+
+            <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message="Receiver baud and profile guidance"
+                description={`Changing baud also requires the receiver to be configured to the same baud. 460800 is recommended for unstable USB serial links. 921600 may work on direct UART or robust USB adapters, but it must be validated. Factory reset clears receiver settings before rebuilding the selected profile.${selectedSignalProfile === "custom" ? ` ${GNSS_SIGNAL_PROFILE_CUSTOM_HELP_TEXT}` : ""}`}
+            />
+
+            {expertMode && (
+                <>
+                    <Card size="small" title={<Space><SettingOutlined /> Expert GNSS Settings</Space>} style={{ marginBottom: 16 }}>
+                        <Paragraph type="secondary" style={{ marginTop: 0 }}>
+                            Receiver-family selection, raw serial wiring, and vendor-specific overrides live here.
+                        </Paragraph>
+                        <Form layout="vertical">
+                            <Row gutter={16}>
+                                <Col xs={24} sm={10}>
+                                    <Form.Item label="Receiver Family">
+                                        <Select
+                                            value={values.gnss_receiver_family ?? "auto"}
+                                            onChange={(v) => onChange("gnss_receiver_family", v)}
+                                            options={GNSS_RECEIVER_FAMILY_OPTIONS.map((option) => ({
+                                                label: option.label,
+                                                value: option.value,
+                                            }))}
+                                        />
+                                    </Form.Item>
+                                </Col>
+                                <Col xs={24} sm={14}>
+                                    <Form.Item label="Serial Device">
+                                        <Input
+                                            value={values.gnss_serial_device ?? "/dev/ttyAMA4"}
+                                            onChange={(e) => onChange("gnss_serial_device", e.target.value)}
+                                            placeholder="/dev/serial/by-id/..."
+                                        />
+                                    </Form.Item>
+                                </Col>
+                            </Row>
+                        </Form>
+                        <Alert
+                            type="info"
+                            showIcon
+                            message="Expert-mode scope"
+                            description={"For UM982, \"UM982 recommended\" maps to CONFIG SIGNALGROUP 3 6. These expert fields are saved now, but the backend API that translates them into receiver commands is still TODO."}
+                        />
+                    </Card>
+
+                    <UniversalGnssAdvancedSettings
+                        receiverFamily={values.gnss_receiver_family ?? "auto"}
+                        values={values}
+                        onChange={onChange}
+                    />
+                </>
+            )}
+
+            <UniversalGnssLiveStatusCard
+                diagnostics={diagnostics}
+                gnssStatus={gnssStatus}
+                selectedBaud={values.gnss_serial_baud}
+                selectedConfigBaud={values.gnss_config_baud}
+                selectedProfile={values.gnss_profile}
+                selectedSignalProfile={values.gnss_signal_profile}
+                selectedReceiverFamily={values.gnss_receiver_family}
+            />
+
+            <GnssReceiverActionsCard
+                gpsRestarting={gpsRestarting}
+                onPersistBeforeAction={persistCurrentGnssSettings}
+            />
 
             <Card
                 size="small"
@@ -359,7 +545,7 @@ const GpsStep: React.FC<GpsStepProps> = ({ values, onChange, gpsRestarting }) =>
                 type="info"
                 showIcon
                 message="Save & Continue to start the receiver"
-                description="The GPS daemon picks up these settings when the configuration is saved. Acquiring an RTK fix can take 30 s to a few minutes — by the time you reach the Datum step it should be ready."
+                description="Saving this step persists the receiver, signal, rate, and baud settings. Serial/NTRIP changes restart the GNSS runtime automatically; the receiver actions panel can also plan, apply, reset, or restart the GNSS sidecar directly. Acquiring an RTK fix can take 30 s to a few minutes."
                 style={{ marginTop: 8 }}
             />
         </div>
@@ -883,7 +1069,7 @@ const STEP_TITLES = [
 const OnboardingWizard: React.FC = () => {
     const { colors } = useThemeMode();
     const isMobile = useIsMobile();
-    const { values: savedValues, saveValues, loading } = useSettingsSchema();
+    const { values: savedValues, saveValues, savePartialValues, loading } = useSettingsSchema();
     const guiApi = useApi();
     const [currentStep, setCurrentStep] = useState(0);
     const [localValues, setLocalValues] = useState<Record<string, any>>({});
@@ -1007,7 +1193,17 @@ const OnboardingWizard: React.FC = () => {
                 {currentStep === 0 && <WelcomeStep onNext={handleNext} />}
                 {currentStep === 1 && <RobotModelStep values={localValues} onChange={handleChange} />}
                 {currentStep === 2 && <FirmwareStep onNext={handleNext} />}
-                {currentStep === 3 && <GpsStep values={localValues} onChange={handleChange} gpsRestarting={gpsRestarting} />}
+                {currentStep === 3 && (
+                    <GpsStep
+                        values={localValues}
+                        onChange={handleChange}
+                        gpsRestarting={gpsRestarting}
+                        onPersistGnssSettings={(settings) => savePartialValues(settings, {
+                            silentSuccess: true,
+                            errorMessage: "Failed to save GNSS settings before running the receiver action",
+                        })}
+                    />
+                )}
                 {currentStep === 4 && <SensorStep values={localValues} onChange={handleChange} />}
                 {currentStep === 5 && <ImuYawStep values={localValues} onChange={handleChange} />}
                 {currentStep === 6 && <DatumStep values={localValues} onChange={handleChange} gpsRestarting={gpsRestarting} />}

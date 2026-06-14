@@ -49,6 +49,7 @@ export const SettingsPage = () => {
         handleBulkChange,
         isSectionDirty,
         save,
+        savePartialValues,
         saveAndRestartGps,
         revert,
         gpsRestarting,
@@ -79,6 +80,10 @@ export const SettingsPage = () => {
                         saving={saving}
                         gpsRestarting={gpsRestarting}
                         onSave={save}
+                        onPersistGnssSettings={(settings) => savePartialValues(settings, {
+                            silentSuccess: true,
+                            errorMessage: "Failed to save GNSS settings before running the receiver action",
+                        })}
                         onSaveAndRestartGps={saveAndRestartGps}
                     />
                 );

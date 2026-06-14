@@ -329,6 +329,60 @@ export const useSettingsManager = () => {
         }
     }, [localValues, dirtyKeys, guiApi, notification, gpsRestart]);
 
+    const savePartialValues = useCallback(async (
+        partialValues: Record<string, any>,
+        options?: {
+            successMessage?: string;
+            successDescription?: string;
+            errorMessage?: string;
+            silentSuccess?: boolean;
+            markRestartRequired?: boolean;
+        },
+    ) => {
+        try {
+            const changedPayload: Record<string, any> = {};
+            for (const [key, value] of Object.entries(partialValues)) {
+                if (JSON.stringify(value) !== JSON.stringify(savedValues[key])) {
+                    changedPayload[key] = value;
+                }
+            }
+
+            if (Object.keys(changedPayload).length === 0) {
+                return true;
+            }
+
+            setSaving(true);
+            const res = await guiApi.settings.yamlCreate(changedPayload);
+            if (res.error) {
+                throw new Error((res.error as any).error);
+            }
+
+            setSavedValues((prev) => ({ ...prev, ...changedPayload }));
+            setLocalValues((prev) => ({ ...prev, ...changedPayload }));
+
+            if (options?.markRestartRequired ?? true) {
+                setRestartRequired(true);
+            }
+
+            if (!options?.silentSuccess) {
+                notification.success({
+                    message: options?.successMessage ?? "Settings saved",
+                    description: options?.successDescription,
+                });
+            }
+
+            return true;
+        } catch (e: any) {
+            notification.error({
+                message: options?.errorMessage ?? "Failed to save settings",
+                description: e.message,
+            });
+            return false;
+        } finally {
+            setSaving(false);
+        }
+    }, [guiApi, notification, savedValues]);
+
     const save = useCallback(async () => {
         await persistSettings();
     }, [persistSettings]);
@@ -403,6 +457,7 @@ export const useSettingsManager = () => {
         isSectionDirty,
         matchesSearch,
         save,
+        savePartialValues,
         saveAndRestartGps,
         revert,
     };

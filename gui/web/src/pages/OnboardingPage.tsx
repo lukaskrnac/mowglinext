@@ -32,6 +32,7 @@ import {
 import { useContainerRestart } from "../hooks/useContainerRestart.ts";
 import {
     GNSS_BAUD_OPTIONS,
+    GNSS_ACTION_SETTINGS_KEYS,
     GNSS_PROFILE_OPTIONS,
     GNSS_PROFILE_RATE_OPTIONS,
     GNSS_RECEIVER_FAMILY_OPTIONS,
@@ -43,11 +44,9 @@ import {
 import { GnssSignalProfileHelp } from "../components/settings/GnssSignalProfileHelp.tsx";
 import { UniversalGnssAdvancedSettings } from "../components/settings/UniversalGnssAdvancedSettings.tsx";
 import { UniversalGnssLiveStatusCard } from "../components/settings/UniversalGnssLiveStatusCard.tsx";
+import { GnssReceiverActionsCard } from "../components/settings/GnssReceiverActionsCard.tsx";
 
 const { Title, Text, Paragraph } = Typography;
-const ONBOARDING_PROFILE_APPLY_GAP =
-    "Profile apply / factory reset is not wired yet. The onboarding flow can save these settings, " +
-    "but a backend API still needs to translate them into gnss_config_apply operations.";
 
 // ── Step 0: Welcome ─────────────────────────────────────────────────────
 
@@ -243,9 +242,12 @@ const RobotModelStep: React.FC<RobotModelStepProps> = ({ values, onChange }) => 
 
 // ── GPS Configuration step (receiver + NTRIP, no datum) ─────────────────
 
-type GpsStepProps = RobotModelStepProps & { gpsRestarting?: boolean };
+type GpsStepProps = RobotModelStepProps & {
+    gpsRestarting?: boolean;
+    onPersistGnssSettings: (settings: Record<string, any>) => Promise<boolean>;
+};
 
-const GpsStep: React.FC<GpsStepProps> = ({ values, onChange, gpsRestarting }) => {
+const GpsStep: React.FC<GpsStepProps> = ({ values, onChange, gpsRestarting, onPersistGnssSettings }) => {
     const [expertMode, setExpertMode] = useState(false);
     const gnssStatus = useGnssStatus();
     const { diagnostics } = useDiagnostics();
@@ -258,6 +260,15 @@ const GpsStep: React.FC<GpsStepProps> = ({ values, onChange, gpsRestarting }) =>
         : gpsStatus.fixType === "NO_FIX"
             ? "warning"
             : "info";
+    const persistCurrentGnssSettings = async () => {
+        const partial: Record<string, any> = {};
+        for (const key of GNSS_ACTION_SETTINGS_KEYS) {
+            if (Object.prototype.hasOwnProperty.call(values, key)) {
+                partial[key] = values[key];
+            }
+        }
+        return onPersistGnssSettings(partial);
+    };
 
     return (
         <div style={{ maxWidth: 760, margin: "0 auto" }}>
@@ -275,7 +286,7 @@ const GpsStep: React.FC<GpsStepProps> = ({ values, onChange, gpsRestarting }) =>
                     type="info"
                     showIcon
                     message="GNSS receiver is restarting to apply your serial and NTRIP settings"
-                    description="Wait ~10–30 s for RTK Fix to come back before setting the datum. Profile apply and factory reset remain backend TODOs."
+                    description="Wait ~10–30 s for RTK Fix to come back before setting the datum. Receiver profile apply, factory reset, and GNSS restart actions are available from the receiver actions panel below."
                     style={{ marginBottom: 12 }}
                 />
             )}
@@ -448,23 +459,10 @@ const GpsStep: React.FC<GpsStepProps> = ({ values, onChange, gpsRestarting }) =>
                 selectedReceiverFamily={values.gnss_receiver_family}
             />
 
-            <Card size="small" title="Receiver Actions" style={{ marginBottom: 16 }}>
-                <Space wrap size={[8, 8]}>
-                    <Button disabled>
-                        Apply profile to receiver
-                    </Button>
-                    <Button danger disabled>
-                        Factory reset + apply profile
-                    </Button>
-                </Space>
-                <Alert
-                    type="warning"
-                    showIcon
-                    style={{ marginTop: 12 }}
-                    message="Apply/reset actions are not wired yet"
-                    description={ONBOARDING_PROFILE_APPLY_GAP}
-                />
-            </Card>
+            <GnssReceiverActionsCard
+                gpsRestarting={gpsRestarting}
+                onPersistBeforeAction={persistCurrentGnssSettings}
+            />
 
             <Card
                 size="small"
@@ -547,7 +545,7 @@ const GpsStep: React.FC<GpsStepProps> = ({ values, onChange, gpsRestarting }) =>
                 type="info"
                 showIcon
                 message="Save & Continue to start the receiver"
-                description="Saving this step persists the receiver, signal, rate, and baud settings. Serial/NTRIP changes restart the GNSS runtime automatically; profile apply and factory reset still need a backend API. Acquiring an RTK fix can take 30 s to a few minutes."
+                description="Saving this step persists the receiver, signal, rate, and baud settings. Serial/NTRIP changes restart the GNSS runtime automatically; the receiver actions panel can also plan, apply, reset, or restart the GNSS sidecar directly. Acquiring an RTK fix can take 30 s to a few minutes."
                 style={{ marginTop: 8 }}
             />
         </div>
@@ -1071,7 +1069,7 @@ const STEP_TITLES = [
 const OnboardingWizard: React.FC = () => {
     const { colors } = useThemeMode();
     const isMobile = useIsMobile();
-    const { values: savedValues, saveValues, loading } = useSettingsSchema();
+    const { values: savedValues, saveValues, savePartialValues, loading } = useSettingsSchema();
     const guiApi = useApi();
     const [currentStep, setCurrentStep] = useState(0);
     const [localValues, setLocalValues] = useState<Record<string, any>>({});
@@ -1195,7 +1193,17 @@ const OnboardingWizard: React.FC = () => {
                 {currentStep === 0 && <WelcomeStep onNext={handleNext} />}
                 {currentStep === 1 && <RobotModelStep values={localValues} onChange={handleChange} />}
                 {currentStep === 2 && <FirmwareStep onNext={handleNext} />}
-                {currentStep === 3 && <GpsStep values={localValues} onChange={handleChange} gpsRestarting={gpsRestarting} />}
+                {currentStep === 3 && (
+                    <GpsStep
+                        values={localValues}
+                        onChange={handleChange}
+                        gpsRestarting={gpsRestarting}
+                        onPersistGnssSettings={(settings) => savePartialValues(settings, {
+                            silentSuccess: true,
+                            errorMessage: "Failed to save GNSS settings before running the receiver action",
+                        })}
+                    />
+                )}
                 {currentStep === 4 && <SensorStep values={localValues} onChange={handleChange} />}
                 {currentStep === 5 && <ImuYawStep values={localValues} onChange={handleChange} />}
                 {currentStep === 6 && <DatumStep values={localValues} onChange={handleChange} gpsRestarting={gpsRestarting} />}

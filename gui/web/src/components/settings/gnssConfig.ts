@@ -65,6 +65,21 @@ export const GNSS_PROFILE_RATE_OPTIONS = [
     { value: 10, label: "10 Hz" },
 ] as const;
 
+export const GNSS_ACTION_SETTINGS_KEYS = [
+    "gnss_receiver_family",
+    "gnss_serial_device",
+    "gnss_serial_baud",
+    "gnss_config_baud",
+    "gnss_profile",
+    "gnss_signal_profile",
+    "gnss_profile_rate_hz",
+    "gnss_signal_group",
+    "gnss_unicore_pvt_algorithm",
+    "gnss_unicore_rtk_reliability",
+    "gnss_unicore_rtk_timeout_s",
+    "gnss_unicore_dgps_timeout_s",
+] as const;
+
 export const GNSS_CUSTOM_OPTION_VALUE = "__custom__";
 
 export type GnssPresetTextFieldOption = {
@@ -77,6 +92,16 @@ export type GnssSelectFieldOption = {
     value: string;
     label: string;
     description?: string;
+};
+
+export const pickGnssActionSettings = (values: Record<string, any>): Record<string, any> => {
+    const partial: Record<string, any> = {};
+    for (const key of GNSS_ACTION_SETTINGS_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(values, key)) {
+            partial[key] = values[key];
+        }
+    }
+    return partial;
 };
 
 export type GnssPresetTextFieldDefinition = {

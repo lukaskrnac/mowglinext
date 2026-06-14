@@ -1,12 +1,13 @@
 import React, { useState } from "react";
-import { Alert, App, Button, Card, Col, Form, Input, InputNumber, Row, Select, Space, Switch, Tooltip, Typography } from "antd";
-import { GlobalOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, WifiOutlined } from "@ant-design/icons";
+import { Alert, App, Button, Card, Col, Form, Input, InputNumber, Row, Select, Space, Switch, Typography } from "antd";
+import { GlobalOutlined, SettingOutlined, WifiOutlined } from "@ant-design/icons";
 import { useApi } from "../../hooks/useApi.ts";
 import { useDiagnostics } from "../../hooks/useDiagnostics.ts";
 import { useGnssStatus } from "../../hooks/useGnssStatus.ts";
 import { deriveGpsStatus, gnssReceiverLabel } from "../../utils/gpsStatus.ts";
 import {
     GNSS_BAUD_OPTIONS,
+    GNSS_ACTION_SETTINGS_KEYS,
     GNSS_PROFILE_OPTIONS,
     GNSS_PROFILE_RATE_OPTIONS,
     GNSS_RECEIVER_FAMILY_OPTIONS,
@@ -18,6 +19,7 @@ import {
 import { GnssSignalProfileHelp } from "./GnssSignalProfileHelp.tsx";
 import { UniversalGnssAdvancedSettings } from "./UniversalGnssAdvancedSettings.tsx";
 import { UniversalGnssLiveStatusCard } from "./UniversalGnssLiveStatusCard.tsx";
+import { GnssReceiverActionsCard } from "./GnssReceiverActionsCard.tsx";
 
 const { Text, Paragraph } = Typography;
 
@@ -29,11 +31,8 @@ type Props = {
     gpsRestarting: boolean;
     onSave: () => void | Promise<void>;
     onSaveAndRestartGps: () => void | Promise<void>;
+    onPersistGnssSettings: (settings: Record<string, any>) => Promise<boolean>;
 };
-
-const PROFILE_APPLY_GAP =
-    "Backend API missing: the GUI cannot yet execute gnss_config_apply inside mowgli-gps " +
-    "or translate the saved vendor-neutral GUI settings into receiver-specific apply plans.";
 
 export const PositioningSection: React.FC<Props> = ({
     values,
@@ -43,6 +42,7 @@ export const PositioningSection: React.FC<Props> = ({
     gpsRestarting,
     onSave,
     onSaveAndRestartGps,
+    onPersistGnssSettings,
 }) => {
     const guiApi = useApi();
     const { notification } = App.useApp();
@@ -79,6 +79,15 @@ export const PositioningSection: React.FC<Props> = ({
     };
 
     const ntripEnabled = values.ntrip_enabled ?? true;
+    const persistCurrentGnssSettings = async () => {
+        const partial: Record<string, any> = {};
+        for (const key of GNSS_ACTION_SETTINGS_KEYS) {
+            if (Object.prototype.hasOwnProperty.call(values, key)) {
+                partial[key] = values[key];
+            }
+        }
+        return onPersistGnssSettings(partial);
+    };
 
     return (
         <div>
@@ -336,48 +345,15 @@ export const PositioningSection: React.FC<Props> = ({
                 </>
             )}
 
-            <Card size="small" title="Receiver Actions" style={{ marginBottom: 16 }}>
-                <Space wrap size={[8, 8]}>
-                    <Button
-                        type="primary"
-                        icon={<SaveOutlined />}
-                        onClick={onSave}
-                        loading={saving && !gpsRestarting}
-                        disabled={!isDirty || gpsRestarting}
-                    >
-                        Save settings
-                    </Button>
-                    <Tooltip title={PROFILE_APPLY_GAP}>
-                        <span>
-                            <Button disabled>
-                                Apply profile to receiver
-                            </Button>
-                        </span>
-                    </Tooltip>
-                    <Button
-                        icon={<ReloadOutlined />}
-                        onClick={onSaveAndRestartGps}
-                        loading={gpsRestarting}
-                        disabled={saving || gpsRestarting}
-                    >
-                        Save + restart GPS
-                    </Button>
-                    <Tooltip title={PROFILE_APPLY_GAP}>
-                        <span>
-                            <Button danger disabled>
-                                Factory reset + apply profile
-                            </Button>
-                        </span>
-                    </Tooltip>
-                </Space>
-                <Alert
-                    type="warning"
-                    showIcon
-                    style={{ marginTop: 12 }}
-                    message="Apply/reset actions are placeholders for now"
-                    description="The GUI can already persist GNSS_PROFILE, GNSS_SIGNAL_PROFILE, GNSS_PROFILE_RATE_HZ, GNSS_SERIAL_BAUD, GNSS_CONFIG_BAUD, GNSS_RECEIVER_FAMILY, and GNSS_SERIAL_DEVICE, but there is no backend endpoint yet that runs gnss_config_apply, previews a dry-run plan, sends raw developer commands, or performs a confirmed factory reset flow."
-                />
-            </Card>
+            <GnssReceiverActionsCard
+                isDirty={isDirty}
+                saving={saving}
+                gpsRestarting={gpsRestarting}
+                onSave={onSave}
+                onSaveAndRestartGps={onSaveAndRestartGps}
+                onPersistBeforeAction={persistCurrentGnssSettings}
+                showSaveButtons
+            />
 
             <Card size="small" style={{ marginBottom: 16 }}>
                 <Space direction="vertical" size={12} style={{ width: "100%" }}>

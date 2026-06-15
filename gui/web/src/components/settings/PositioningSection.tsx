@@ -115,8 +115,8 @@ export const PositioningSection: React.FC<Props> = ({
                                     <InputNumber
                                         value={values.datum_lat}
                                         onChange={(value) => onChange("datum_lat", value)}
-                                        step={0.0000001}
-                                        precision={7}
+                                        step={0.000000001}
+                                        precision={9}
                                         style={{ width: "100%" }}
                                     />
                                 </Form.Item>
@@ -126,8 +126,8 @@ export const PositioningSection: React.FC<Props> = ({
                                     <InputNumber
                                         value={values.datum_lon}
                                         onChange={(value) => onChange("datum_lon", value)}
-                                        step={0.0000001}
-                                        precision={7}
+                                        step={0.000000001}
+                                        precision={9}
                                         style={{ width: "100%" }}
                                     />
                                 </Form.Item>

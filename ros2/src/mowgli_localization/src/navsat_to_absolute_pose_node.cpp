@@ -169,12 +169,12 @@ void NavSatToAbsolutePoseNode::on_set_datum(
   cos_datum_lat_ = std::cos(datum_lat_ * DEG_TO_RAD);
 
   RCLCPP_INFO(get_logger(),
-              "Datum updated to [%.8f, %.8f] from current GPS position",
+              "Datum updated to [%.9f, %.9f] from current GPS position",
               datum_lat_,
               datum_lon_);
 
   std::ostringstream oss;
-  oss << std::fixed << std::setprecision(8) << datum_lat_ << "," << datum_lon_;
+  oss << std::fixed << std::setprecision(9) << datum_lat_ << "," << datum_lon_;
   response->success = true;
   response->message = oss.str();
 }

@@ -559,7 +559,7 @@ const DatumStep: React.FC<DatumStepProps> = ({ values, onChange, gpsRestarting }
                                 <InputNumber
                                     value={values.datum_lat ?? 0}
                                     onChange={(v) => onChange("datum_lat", v)}
-                                    step={0.000001} precision={8} style={{ width: "100%" }}
+                                    step={0.000000001} precision={9} style={{ width: "100%" }}
                                     placeholder="48.8796"
                                 />
                             </Form.Item>
@@ -569,7 +569,7 @@ const DatumStep: React.FC<DatumStepProps> = ({ values, onChange, gpsRestarting }
                                 <InputNumber
                                     value={values.datum_lon ?? 0}
                                     onChange={(v) => onChange("datum_lon", v)}
-                                    step={0.000001} precision={8} style={{ width: "100%" }}
+                                    step={0.000000001} precision={9} style={{ width: "100%" }}
                                     placeholder="2.1728"
                                 />
                             </Form.Item>

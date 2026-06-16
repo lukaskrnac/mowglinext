@@ -4,9 +4,11 @@ import { App } from "antd";
 import { dirtyKeysRequireGpsRestart, restartGps } from "../utils/containers.ts";
 import { useContainerRestart } from "./useContainerRestart.ts";
 import { getQuaternionFromHeading } from "../utils/map.tsx";
+import { ContentType } from "../api/Api.ts";
 
 export type SettingsSection =
     | "hardware"
+    | "drive_motor"
     | "ntrip"
     | "positioning"
     | "sensors"
@@ -38,6 +40,16 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
             "wheel_x_offset", "chassis_center_x", "chassis_length", "chassis_width",
             "chassis_height", "chassis_mass_kg", "caster_radius", "caster_track",
             "ticks_per_meter", "tool_width", "blade_radius",
+        ],
+    },
+    {
+        id: "drive_motor",
+        label: "Drive Motor",
+        icon: "dashboard",
+        description: "Firmware wheel-velocity PID gains and feedforward (applied live)",
+        keys: [
+            "wheel_pid_kp", "wheel_pid_ki", "wheel_pid_kd",
+            "wheel_pid_integral_limit", "wheel_pid_pwm_per_mps",
         ],
     },
     {
@@ -75,7 +87,6 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
             "imu_x", "imu_y", "imu_z", "imu_yaw", "imu_pitch", "imu_roll",
             "gps_x", "gps_y", "gps_z",
             "dock_pose_yaw",
-            "imu_cal_samples", "imu_cal_auto_rest_sec", "imu_cal_periodic_recal_sec",
         ],
     },
     {
@@ -86,7 +97,6 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
         keys: [
             "use_scan_matching", "use_loop_closure",
             "use_magnetometer",
-            "enable_mag_cal", "declination_deg", "min_horizontal_uT", "mag_yaw_variance",
         ],
     },
     {
@@ -114,7 +124,6 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
             "undock_distance", "undock_speed", "dock_approach_distance",
             "dock_max_retries", "dock_use_charger_detection",
             "dock_charging_threshold",
-            "dock_approach_overshoot", "dock_pose_yaw_sigma_rad",
         ],
     },
     {
@@ -263,6 +272,11 @@ export const useSettingsManager = () => {
                 dirtyKeys.has("dock_pose_x") ||
                 dirtyKeys.has("dock_pose_y") ||
                 dirtyKeys.has("dock_pose_yaw");
+            const driveKeys = [
+                "wheel_pid_kp", "wheel_pid_ki", "wheel_pid_kd",
+                "wheel_pid_integral_limit", "wheel_pid_pwm_per_mps",
+            ];
+            const driveDirty = driveKeys.some((k) => dirtyKeys.has(k));
             const hasDirtyChanges = dirtyKeys.size > 0;
             if (!hasDirtyChanges && !shouldRestartGps) {
                 notification.info({
@@ -334,6 +348,33 @@ export const useSettingsManager = () => {
                         description: e?.message ??
                             "Restart ROS2 (or call /map_server_node/set_docking_point manually) to pick up the new dock pose.",
                     });
+                }
+            }
+            // Push drive-motor PID gains to the running hardware_bridge node so
+            // they take effect live (no restart). yamlCreate above persisted
+            // them to mowgli_robot.yaml for the next boot; this sets the live
+            // ROS params, whose on-set callback re-sends them to the STM32
+            // firmware (which re-validates and clamps every value).
+            if (hasDirtyChanges && driveDirty) {
+                const parameters = driveKeys
+                    .filter((k) => dirtyKeys.has(k) && k in localValues)
+                    .map((k) => ({ name: `hardware_bridge.${k}`, value: Number(localValues[k]) }));
+                if (parameters.length > 0) {
+                    try {
+                        await guiApi.request({
+                            path: "/params",
+                            method: "POST",
+                            type: ContentType.Json,
+                            format: "json",
+                            body: { parameters },
+                        });
+                    } catch (e: any) {
+                        notification.warning({
+                            message: "Settings saved, but live drive-PID update failed",
+                            description: e?.message ??
+                                "Restart ROS2 to apply the new drive-motor PID gains.",
+                        });
+                    }
                 }
             }
         } catch (e: any) {

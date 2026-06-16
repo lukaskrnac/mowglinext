@@ -210,12 +210,16 @@ mowgli:
     # edge margins (harness: 95 % → 100 % on the 9×6 m field). tool_width (the
     # map_server stamp radius) is unchanged. 0 = swaths exactly tool_width apart.
     swath_overlap: 0.02
-    # min_turning_radius: CC-Dubins arc radius F2C plans between swaths. Coverage
-    # runs CONTINUOUS arcs, so this is LIVE. Two-sided: too small → MPPI
-    # reverse-sweeps the tight forward arc; too large → the Ω-turn bulges OUTSIDE
-    # the polygon at the swath ends (R=0.35 left the area by ~0.8 m, then got
-    # clipped into ragged turns). 0.15 m keeps every turn fully in-bounds
-    # (harness: 0 cm bulge) and stays MPPI-trackable. Keep within [0.10, 0.50].
+    # min_turning_radius: hard floor on every forward turn-around / corner-fillet
+    # arc in the CONTINUOUS coverage path (coverage_server → buildContinuousPath),
+    # injected into coverage_server.min_turning_radius — so this is LIVE.
+    # Two-sided: too small → the in-bounds shrink picks a loop tighter than MPPI
+    # can track (wz≈vx/r), so the robot loops/hesitates at corners; too large →
+    # the Ω-turn bulges OUTSIDE the polygon at the swath ends (R=0.35 left the
+    # area by ~0.8 m, then got clipped into ragged turns). 0.15 m keeps every turn
+    # fully in-bounds (harness: 0 cm bulge) and stays MPPI-trackable. A turn that
+    # cannot be made in-bounds at >= this is left as a sharp pivot, never a
+    # tighter loop. Keep within [0.10, 0.50].
     min_turning_radius: 0.15
 
     # -----------------------------------------------------------------

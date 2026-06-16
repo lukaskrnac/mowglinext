@@ -615,8 +615,8 @@ TEST(CoverageContinuousPath, RecordedArea1NoCuspInBounds)
   // forbidding every >90° corner — the old strict check only passed because
   // sub-min_turning_radius fillets (the bug below) masked those right angles.
   const double worst_turn = maxTurnDeg(path);
-  EXPECT_LT(worst_turn, 120.0)
-      << "path has a " << worst_turn << "° turn — a near-reversal cusp MPPI will dither at";
+  EXPECT_LT(worst_turn, 120.0) << "path has a " << worst_turn
+                               << "° turn — a near-reversal cusp MPPI will dither at";
   // (2) Every point inside the recorded boundary.
   EXPECT_EQ(oob, 0u) << oob << "/" << path.size() << " continuous-path points are out of bounds";
   // (3) NO sustained arc tighter than the robot's min turning radius. A turn
@@ -625,8 +625,7 @@ TEST(CoverageContinuousPath, RecordedArea1NoCuspInBounds)
   // sharp ring corner is ONE over-curved step (allowed — it's a pivot); a
   // too-tight loop is many consecutive over-curved steps.
   const std::size_t tight_run = maxTightArcRun(path, kStep, kMinTurnRadius);
-  std::cout << "max_tight_arc_run=" << tight_run << " steps (floor " << kMinTurnRadius
-            << " m)\n"
+  std::cout << "max_tight_arc_run=" << tight_run << " steps (floor " << kMinTurnRadius << " m)\n"
             << std::flush;
   EXPECT_LT(tight_run, 3u) << "found a run of " << tight_run
                            << " consecutive steps tighter than min_turning_radius ("

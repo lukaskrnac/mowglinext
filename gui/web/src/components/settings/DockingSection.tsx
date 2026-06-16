@@ -102,6 +102,26 @@ export const DockingSection: React.FC<Props> = ({ values, onChange }) => {
                                                     />
                                                 </Form.Item>
                                             </Col>
+                                            <Col xs={24} sm={12}>
+                                                <Form.Item label="Dépassement d'approche" tooltip="Distance (m) parcourue au-delà de la pose de la base pour bien enfoncer les contacts de charge. ~0,05 m compense le bruit RTK/bras de levier résiduel.">
+                                                    <InputNumber
+                                                        value={values.dock_approach_overshoot}
+                                                        onChange={(v) => onChange("dock_approach_overshoot", v)}
+                                                        min={0} max={0.3} step={0.01} precision={2}
+                                                        style={{ width: "100%" }} addonAfter="m"
+                                                    />
+                                                </Form.Item>
+                                            </Col>
+                                            <Col xs={24} sm={12}>
+                                                <Form.Item label="Incertitude du cap de la base" tooltip="Écart-type (rad) du cap de la base utilisé pour amorcer le graphe de fusion au contact de charge. Plus faible = on fait davantage confiance au cap calibré.">
+                                                    <InputNumber
+                                                        value={values.dock_pose_yaw_sigma_rad}
+                                                        onChange={(v) => onChange("dock_pose_yaw_sigma_rad", v)}
+                                                        min={0.005} max={0.5} step={0.005} precision={3}
+                                                        style={{ width: "100%" }} addonAfter="rad"
+                                                    />
+                                                </Form.Item>
+                                            </Col>
                                         </Row>
                                     </Form>
                                 ),

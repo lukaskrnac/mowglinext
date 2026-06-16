@@ -1,6 +1,6 @@
 import React from "react";
-import { Card, Switch, Typography } from "antd";
-import { RadarChartOutlined } from "@ant-design/icons";
+import { Card, Col, Form, InputNumber, Row, Switch, Typography } from "antd";
+import { AimOutlined, RadarChartOutlined } from "@ant-design/icons";
 import { RobotComponentEditor } from "../RobotComponentEditor.tsx";
 
 const { Text, Paragraph } = Typography;
@@ -48,6 +48,53 @@ export const SensorsSection: React.FC<Props> = ({ values, onChange }) => {
 
             {/* Sensor placement visual editor */}
             <RobotComponentEditor values={values} onChange={onChange} />
+
+            {/* IMU bias calibration (hardware_bridge_node, auto-triggered on dock) */}
+            <Card size="small" style={{ marginTop: 16 }} title={
+                <Text strong style={{ fontSize: 14 }}>
+                    <AimOutlined style={{ marginRight: 6 }} />
+                    IMU bias calibration
+                </Text>
+            }>
+                <Paragraph type="secondary" style={{ margin: "0 0 12px", fontSize: 12 }}>
+                    The hardware bridge re-estimates IMU gyro/accel bias automatically while the
+                    robot is parked and stationary on the dock. These tune how it samples.
+                </Paragraph>
+                <Form layout="vertical" size="small">
+                    <Row gutter={[16, 0]}>
+                        <Col xs={24} sm={8}>
+                            <Form.Item label="Calibration samples" tooltip="Number of stationary IMU samples averaged per bias calibration.">
+                                <InputNumber
+                                    value={values.imu_cal_samples}
+                                    onChange={(v) => onChange("imu_cal_samples", v)}
+                                    min={50} max={2000} step={50} precision={0}
+                                    style={{ width: "100%" }}
+                                />
+                            </Form.Item>
+                        </Col>
+                        <Col xs={24} sm={8}>
+                            <Form.Item label="Rest window before cal" tooltip="How long the robot must be detected stationary before a calibration starts.">
+                                <InputNumber
+                                    value={values.imu_cal_auto_rest_sec}
+                                    onChange={(v) => onChange("imu_cal_auto_rest_sec", v)}
+                                    min={1} max={120} step={1} precision={0}
+                                    style={{ width: "100%" }} addonAfter="s"
+                                />
+                            </Form.Item>
+                        </Col>
+                        <Col xs={24} sm={8}>
+                            <Form.Item label="Periodic recal interval" tooltip="Re-estimate the IMU bias every N seconds while docked. 0 disables periodic recal.">
+                                <InputNumber
+                                    value={values.imu_cal_periodic_recal_sec}
+                                    onChange={(v) => onChange("imu_cal_periodic_recal_sec", v)}
+                                    min={0} max={3600} step={30} precision={0}
+                                    style={{ width: "100%" }} addonAfter="s"
+                                />
+                            </Form.Item>
+                        </Col>
+                    </Row>
+                </Form>
+            </Card>
         </div>
     );
 };

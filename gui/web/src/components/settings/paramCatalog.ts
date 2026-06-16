@@ -53,6 +53,8 @@ const CATALOG: Record<string, ParamMeta> = {
   // ── GNSS / datum ─────────────────────────────────────────────────────────
   declination_deg: {label: "Magnetic declination", description: "Local magnetic declination applied to the magnetometer yaw.", tier: "middle", group: "GNSS", unit: "°"},
   mag_yaw_variance: {label: "Mag yaw variance", description: "Sensor-noise variance for the magnetometer yaw factor.", tier: "expert", group: "GNSS"},
+  enable_mag_cal: {label: "Collect mag calibration", description: "Gather magnetometer samples while RTK-Fixed to estimate hard/soft-iron offsets.", tier: "expert", group: "GNSS"},
+  min_horizontal_uT: {label: "Min horizontal field", description: "Minimum horizontal field magnitude below which the magnetometer yaw is rejected.", tier: "expert", group: "GNSS", unit: "µT"},
   datum_lat: {label: "Datum latitude", description: "Map origin latitude. Set during onboarding from an RTK-Fixed position.", tier: "expert", group: "GNSS", unit: "°"},
   datum_lon: {label: "Datum longitude", description: "Map origin longitude. Set during onboarding from an RTK-Fixed position.", tier: "expert", group: "GNSS", unit: "°"},
 
@@ -78,6 +80,7 @@ const CATALOG: Record<string, ParamMeta> = {
 
   // ── IMU calibration ──────────────────────────────────────────────────────
   imu_cal_samples: {label: "IMU cal samples", description: "Number of samples averaged during the on-dock IMU bias calibration.", tier: "expert", group: "IMU"},
+  imu_cal_auto_rest_sec: {label: "IMU rest window", description: "How long the robot must be detected stationary before a bias calibration starts.", tier: "expert", group: "IMU", unit: "s"},
   imu_cal_periodic_recal_sec: {label: "IMU recal interval", description: "How often the IMU bias is re-estimated while parked.", tier: "expert", group: "IMU", unit: "s"},
 
   // ── Diagnostics thresholds ───────────────────────────────────────────────

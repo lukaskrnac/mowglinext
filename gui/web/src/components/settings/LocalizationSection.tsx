@@ -1,5 +1,5 @@
 import React, {useMemo} from "react";
-import {Alert, Card, Col, Row, Space, Switch, Tag, Typography} from "antd";
+import {Alert, Card, Col, Form, InputNumber, Row, Space, Switch, Tag, Typography} from "antd";
 import {
     CompassOutlined,
     NodeIndexOutlined,
@@ -243,6 +243,75 @@ export const LocalizationSection: React.FC<Props> = ({values, onChange}) => {
                         </Col>
                     </Row>
                 </Card>
+            </Card>
+
+            {/* ── Group D: Magnetometer calibration & tuning ──────────────── */}
+            <Card
+                size="small"
+                style={{marginTop: 16}}
+                title={
+                    <Space>
+                        <CompassOutlined style={{color: colors.accent}}/>
+                        <span>Magnetometer calibration &amp; tuning</span>
+                    </Space>
+                }
+            >
+                <Paragraph type="secondary" style={{marginTop: 0, marginBottom: 12, fontSize: 12}}>
+                    Only used when <Text strong>Magnetometer yaw</Text> is enabled above.
+                    Calibration collects hard/soft-iron samples while RTK-Fixed; the rest tune
+                    when the mag yaw is trusted and how strongly.
+                </Paragraph>
+                <Card size="small" style={{marginBottom: 12}} styles={{body: {padding: "10px 12px"}}}>
+                    <Row align="middle" gutter={[16, 8]} wrap={false}>
+                        <Col flex="auto">
+                            <Text strong style={{fontSize: 14}}>Collect calibration samples</Text>
+                            <Paragraph type="secondary" style={{margin: "4px 0 0", fontSize: 11}}>
+                                Gather magnetometer samples while RTK-Fixed to estimate hard/soft-iron
+                                offsets. Run with motors off, then disable.
+                            </Paragraph>
+                        </Col>
+                        <Col flex="none">
+                            <Switch
+                                checked={asBool(values.enable_mag_cal)}
+                                onChange={(v) => onChange("enable_mag_cal", v)}
+                            />
+                        </Col>
+                    </Row>
+                </Card>
+                <Form layout="vertical" size="small">
+                    <Row gutter={[16, 0]}>
+                        <Col xs={24} sm={8}>
+                            <Form.Item label="Magnetic declination" tooltip="Local magnetic declination applied to the magnetometer yaw (France ≈ 1.5°).">
+                                <InputNumber
+                                    value={values.declination_deg}
+                                    onChange={(v) => onChange("declination_deg", v)}
+                                    min={-30} max={30} step={0.1} precision={2}
+                                    style={{width: "100%"}} addonAfter="°"
+                                />
+                            </Form.Item>
+                        </Col>
+                        <Col xs={24} sm={8}>
+                            <Form.Item label="Min horizontal field" tooltip="Minimum horizontal field magnitude for a valid yaw. Below this the mag yaw is rejected.">
+                                <InputNumber
+                                    value={values.min_horizontal_uT}
+                                    onChange={(v) => onChange("min_horizontal_uT", v)}
+                                    min={0} max={100} step={1} precision={1}
+                                    style={{width: "100%"}} addonAfter="µT"
+                                />
+                            </Form.Item>
+                        </Col>
+                        <Col xs={24} sm={8}>
+                            <Form.Item label="Mag yaw variance" tooltip="Sensor-noise variance (rad²) for the magnetometer yaw unary factor. Higher = trusted less.">
+                                <InputNumber
+                                    value={values.mag_yaw_variance}
+                                    onChange={(v) => onChange("mag_yaw_variance", v)}
+                                    min={0.0001} max={1} step={0.0001} precision={4}
+                                    style={{width: "100%"}} addonAfter="rad²"
+                                />
+                            </Form.Item>
+                        </Col>
+                    </Row>
+                </Form>
             </Card>
         </div>
     );

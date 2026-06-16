@@ -75,6 +75,7 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
             "imu_x", "imu_y", "imu_z", "imu_yaw", "imu_pitch", "imu_roll",
             "gps_x", "gps_y", "gps_z",
             "dock_pose_yaw",
+            "imu_cal_samples", "imu_cal_auto_rest_sec", "imu_cal_periodic_recal_sec",
         ],
     },
     {
@@ -85,6 +86,7 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
         keys: [
             "use_scan_matching", "use_loop_closure",
             "use_magnetometer",
+            "enable_mag_cal", "declination_deg", "min_horizontal_uT", "mag_yaw_variance",
         ],
     },
     {
@@ -112,6 +114,7 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
             "undock_distance", "undock_speed", "dock_approach_distance",
             "dock_max_retries", "dock_use_charger_detection",
             "dock_charging_threshold",
+            "dock_approach_overshoot", "dock_pose_yaw_sigma_rad",
         ],
     },
     {

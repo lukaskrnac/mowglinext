@@ -88,6 +88,7 @@ CMD_PERIOD_S = 1.0 / CMD_RATE_HZ
 RECORDING_ENTRY_TIMEOUT_S = 15.0
 RECORDING_EXIT_TIMEOUT_S = 3.0
 RECORDING_SETTLE_S = 0.6
+ODOM_ACTIVE_SPEED_THRESHOLD_MPS = 0.10
 
 
 @dataclass(frozen=True)
@@ -121,13 +122,22 @@ class TrialRecorder:
     command_duration_s: float
     ramp_down: bool = True
     pretrial_last_odom_time: float | None = None
+    actual_end_s: float | None = None
     speed_samples: list[SpeedSample] = field(default_factory=list)
     rtk_samples: list[RtkPoseSample] = field(default_factory=list)
     tick_samples: list[TickSample] = field(default_factory=list)
 
     @property
     def command_end_s(self) -> float:
+        if self.actual_end_s is not None:
+            return self.actual_end_s
         return self.command_start_s + self.command_duration_s
+
+
+class TrialAbortedError(RuntimeError):
+    def __init__(self, message: str, metrics: TrialMetrics | None = None) -> None:
+        super().__init__(message)
+        self.metrics = metrics
 
 
 def _default_backup_path() -> Path:
@@ -647,15 +657,20 @@ class DrivePidTuner(Node):
             f"Feed-forward phase at speeds: {', '.join(f'{s:.2f}' for s in speeds)}"
         )
         for index, speed in enumerate(speeds, start=1):
-            feedforward_trials.append(
-                self._run_speed_trial(
-                    name=f"ff_{index}_{speed:.2f}mps",
-                    phase="feedforward",
-                    initial_speed=0.0,
-                    target_speed=speed,
-                    params=working_params,
+            try:
+                feedforward_trials.append(
+                    self._run_speed_trial(
+                        name=f"ff_{index}_{speed:.2f}mps",
+                        phase="feedforward",
+                        initial_speed=0.0,
+                        target_speed=speed,
+                        params=working_params,
+                    )
                 )
-            )
+            except TrialAbortedError as exc:
+                if exc.metrics is not None:
+                    feedforward_trials.append(exc.metrics)
+                raise
 
         provisional_params, provisional_reasons = recommend_drive_pid_params(
             working_params,
@@ -670,15 +685,20 @@ class DrivePidTuner(Node):
             f"Response phase at speeds: {', '.join(f'{s:.2f}' for s in response_speeds)}"
         )
         for index, speed in enumerate(response_speeds, start=1):
-            response_trials.append(
-                self._run_speed_trial(
-                    name=f"resp_{index}_{speed:.2f}mps",
-                    phase="response",
-                    initial_speed=0.0,
-                    target_speed=speed,
-                    params=provisional_params,
+            try:
+                response_trials.append(
+                    self._run_speed_trial(
+                        name=f"resp_{index}_{speed:.2f}mps",
+                        phase="response",
+                        initial_speed=0.0,
+                        target_speed=speed,
+                        params=provisional_params,
+                    )
                 )
-            )
+            except TrialAbortedError as exc:
+                if exc.metrics is not None:
+                    response_trials.append(exc.metrics)
+                raise
 
         proposed_params, final_reasons = recommend_drive_pid_params(
             working_params,
@@ -703,15 +723,20 @@ class DrivePidTuner(Node):
             f"{self._args.distance:.2f} m target distance, {target_speed:.2f} m/s target speed."
         )
         for pass_index in range(self._args.passes):
-            trial = self._run_speed_trial(
-                name=f"ff_pass_{pass_index + 1}_{target_speed:.2f}mps",
-                phase="feedforward",
-                initial_speed=0.0,
-                target_speed=target_speed,
-                params=params,
-                duration_s=duration_s,
-            )
-            trials.append(trial)
+            try:
+                trial = self._run_speed_trial(
+                    name=f"ff_pass_{pass_index + 1}_{target_speed:.2f}mps",
+                    phase="feedforward",
+                    initial_speed=0.0,
+                    target_speed=target_speed,
+                    params=params,
+                    duration_s=duration_s,
+                )
+                trials.append(trial)
+            except TrialAbortedError as exc:
+                if exc.metrics is not None:
+                    trials.append(exc.metrics)
+                raise
 
             measured_speed = (
                 trial.ground_speed_mean
@@ -787,17 +812,23 @@ class DrivePidTuner(Node):
             pass_trials: list[TrialMetrics] = []
             for step_index, (initial_speed, target_speed) in enumerate(sequence):
                 is_last_step = step_index == len(sequence) - 1
-                trial = self._run_speed_trial(
-                    name=f"pid_pass_{pass_index + 1}_step_{step_index + 1}",
-                    phase="pid",
-                    initial_speed=initial_speed,
-                    target_speed=target_speed,
-                    params=params,
-                    ramp_down=is_last_step,
-                    hold_zero_after=is_last_step,
-                    stop_after=is_last_step,
-                )
-                pass_trials.append(trial)
+                try:
+                    trial = self._run_speed_trial(
+                        name=f"pid_pass_{pass_index + 1}_step_{step_index + 1}",
+                        phase="pid",
+                        initial_speed=initial_speed,
+                        target_speed=target_speed,
+                        params=params,
+                        ramp_down=is_last_step,
+                        hold_zero_after=is_last_step,
+                        stop_after=is_last_step,
+                    )
+                    pass_trials.append(trial)
+                except TrialAbortedError as exc:
+                    if exc.metrics is not None:
+                        pass_trials.append(exc.metrics)
+                        trials.extend(pass_trials)
+                    raise
             trials.extend(pass_trials)
 
             params, pass_reasons = recommend_pid_only_params(params, pass_trials)
@@ -969,21 +1000,36 @@ class DrivePidTuner(Node):
             pretrial_last_odom_time=self._latest_odom_time,
         )
         self._active_trial = recorder
+        failure: Exception | None = None
         try:
             self._drive_segment(recorder)
+            recorder.actual_end_s = time.monotonic()
             if hold_zero_after:
                 self._hold_zero(self._args.stop_between_tests)
+        except Exception as exc:
+            recorder.actual_end_s = time.monotonic()
+            failure = exc
         finally:
             self._active_trial = None
             if stop_after:
                 self._stop_robot()
-        metrics = self._finalize_trial(recorder)
+        metrics = self._finalize_trial_with_options(
+            recorder,
+            allow_incomplete=failure is not None,
+            additional_notes=(
+                [f"Partial trial metrics recorded after abort: {failure}"]
+                if failure is not None
+                else ()
+            ),
+        )
         ground_summary = "n/a" if metrics.ground_speed_mean is None else f"{metrics.ground_speed_mean:.3f} m/s"
         self.get_logger().info(
             f"Trial {metrics.name} summary: wheel={metrics.measured_speed_mean:.3f} m/s "
             f"ground={ground_summary} overshoot={metrics.overshoot:.3f} "
             f"stall={metrics.stall_detected} osc={metrics.oscillation_detected}"
         )
+        if failure is not None:
+            raise TrialAbortedError(str(failure), metrics) from failure
         return metrics
 
     def _drive_segment(self, recorder: TrialRecorder) -> None:
@@ -1003,6 +1049,7 @@ class DrivePidTuner(Node):
                 elapsed,
                 commanded_speed=vx,
             )
+        recorder.actual_end_s = time.monotonic()
         self._stop_robot()
 
     def _segment_speed_target(self, recorder: TrialRecorder, elapsed_s: float) -> float:
@@ -1028,6 +1075,9 @@ class DrivePidTuner(Node):
         if recorder.speed_samples:
             return recorder.speed_samples[-1].time_s
         return self._latest_odom_time
+
+    def _movement_is_active(self, commanded_speed: float) -> bool:
+        return abs(commanded_speed) >= ODOM_ACTIVE_SPEED_THRESHOLD_MPS
 
     def _log_odom_debug(
         self,
@@ -1131,7 +1181,7 @@ class DrivePidTuner(Node):
         ):
             raise RuntimeError(f"Emergency asserted during {recorder.name}: {self._latest_emergency.reason}")
         if (
-            abs(commanded_speed) > 1e-3
+            self._movement_is_active(commanded_speed)
             and elapsed_s >= self._args.startup_grace
             and recorder.speed_samples
         ):
@@ -1154,9 +1204,13 @@ class DrivePidTuner(Node):
             if not bool(gnss.fix_valid) or not bool(gnss.corrections_active) or not mode_ok:
                 raise RuntimeError(f"Lost RTK/GPS validity during {recorder.name}.")
         recent = [sample for sample in recorder.speed_samples if now_s - sample.time_s <= 0.8]
-        if elapsed_s >= recorder.ramp_time_s + 0.8 and len(recent) >= 5:
+        if (
+            self._movement_is_active(commanded_speed)
+            and elapsed_s >= recorder.ramp_time_s + 0.8
+            and len(recent) >= 5
+        ):
             recent_mean = sum(sample.speed_mps for sample in recent) / len(recent)
-            expected_speed = max(abs(recorder.initial_speed), abs(recorder.target_speed))
+            expected_speed = abs(commanded_speed)
             if expected_speed >= 0.10 and recent_mean < max(0.02, 0.20 * expected_speed):
                 self._raise_stall_failure(
                     recorder,
@@ -1231,6 +1285,15 @@ class DrivePidTuner(Node):
     # ------------------------------------------------------------------
 
     def _finalize_trial(self, recorder: TrialRecorder) -> TrialMetrics:
+        return self._finalize_trial_with_options(recorder, allow_incomplete=False, additional_notes=())
+
+    def _finalize_trial_with_options(
+        self,
+        recorder: TrialRecorder,
+        *,
+        allow_incomplete: bool,
+        additional_notes: list[str] | tuple[str, ...],
+    ) -> TrialMetrics:
         steady_start = recorder.command_start_s + recorder.ramp_time_s
         steady_end = recorder.command_end_s
         if recorder.ramp_down:
@@ -1247,37 +1310,46 @@ class DrivePidTuner(Node):
             speed_samples = recorder.speed_samples
         if len(response_samples) < 3:
             response_samples = recorder.speed_samples
+        notes = list(additional_notes)
         if not speed_samples:
-            now_s = time.monotonic()
-            elapsed_s = now_s - recorder.command_start_s
-            if recorder.pretrial_last_odom_time is None:
+            if allow_incomplete:
+                notes.append(
+                    "Trial ended before enough /wheel_odom samples were available for a full steady-state slice."
+                )
+                speed_samples = recorder.speed_samples
+                response_samples = recorder.speed_samples
+            else:
+                now_s = time.monotonic()
+                elapsed_s = now_s - recorder.command_start_s
+                if recorder.pretrial_last_odom_time is None:
+                    self._raise_odom_failure(
+                        recorder=recorder,
+                        now_s=now_s,
+                        elapsed_s=elapsed_s,
+                        commanded_speed=recorder.target_speed,
+                        reason="no_odom_sample_ever_received",
+                        message=f"No /wheel_odom sample was ever received before or during {recorder.name}.",
+                    )
                 self._raise_odom_failure(
                     recorder=recorder,
                     now_s=now_s,
                     elapsed_s=elapsed_s,
                     commanded_speed=recorder.target_speed,
-                    reason="no_odom_sample_ever_received",
-                    message=f"No /wheel_odom sample was ever received before or during {recorder.name}.",
+                    reason="no_trial_odom_sample_received",
+                    message=(
+                        f"No /wheel_odom samples were received during {recorder.name}; "
+                        "odometry was seen before the trial but never arrived once the test started."
+                    ),
                 )
-            self._raise_odom_failure(
-                recorder=recorder,
-                now_s=now_s,
-                elapsed_s=elapsed_s,
-                commanded_speed=recorder.target_speed,
-                reason="no_trial_odom_sample_received",
-                message=(
-                    f"No /wheel_odom samples were received during {recorder.name}; "
-                    "odometry was seen before the trial but never arrived once the test started."
-                ),
-            )
 
         odom_distance_m = integrate_distance(speed_samples)
         ticks_seen, left_ticks_seen, right_ticks_seen = self._ticks_seen(recorder.tick_samples)
-        ground_speed_mean, rtk_distance_m, notes = self._compute_rtk_metrics(
+        ground_speed_mean, rtk_distance_m, rtk_notes = self._compute_rtk_metrics(
             recorder=recorder,
             steady_start=steady_start,
             steady_end=steady_end,
         )
+        notes.extend(rtk_notes)
         return compute_trial_metrics(
             name=recorder.name,
             phase=recorder.phase,

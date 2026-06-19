@@ -62,6 +62,7 @@ type driveFFCalibrationStartRequest struct {
 	driveTuningStartRequest
 	DistanceMeters float64 `json:"distance_m"`
 	TestSpeedMps   float64 `json:"test_speed_mps"`
+	OdomTimeoutS   float64 `json:"odom_timeout_s"`
 	Passes         int     `json:"passes"`
 	AutoTurn       *bool   `json:"auto_turn"`
 	TurnDirection  string  `json:"turn_direction"`
@@ -151,6 +152,7 @@ type driveTuningReport struct {
 	MaxSpeedMps     float64                  `json:"max_speed_mps" yaml:"max_speed_mps"`
 	TestSpeedMps    *float64                 `json:"test_speed_mps,omitempty" yaml:"test_speed_mps"`
 	SegmentDuration float64                  `json:"segment_duration_s" yaml:"segment_duration_s"`
+	OdomTimeoutS    float64                  `json:"odom_timeout_s,omitempty" yaml:"odom_timeout_s"`
 	Passes          int                      `json:"passes" yaml:"passes"`
 	AutoTurn        bool                     `json:"auto_turn" yaml:"auto_turn"`
 	TurnDirection   string                   `json:"turn_direction" yaml:"turn_direction"`
@@ -164,12 +166,12 @@ type driveTuningReport struct {
 }
 
 type driveTuningStatusReport struct {
-	ActiveEmergency       *bool  `json:"active_emergency,omitempty" yaml:"active_emergency"`
-	LatchedEmergency      *bool  `json:"latched_emergency,omitempty" yaml:"latched_emergency"`
-	IsCharging            *bool  `json:"is_charging,omitempty" yaml:"is_charging"`
-	MowerStatus           *int   `json:"mower_status,omitempty" yaml:"mower_status"`
-	EscPower              *bool  `json:"esc_power,omitempty" yaml:"esc_power"`
-	WheelTickFactor       *int   `json:"wheel_tick_factor,omitempty" yaml:"wheel_tick_factor"`
+	ActiveEmergency        *bool  `json:"active_emergency,omitempty" yaml:"active_emergency"`
+	LatchedEmergency       *bool  `json:"latched_emergency,omitempty" yaml:"latched_emergency"`
+	IsCharging             *bool  `json:"is_charging,omitempty" yaml:"is_charging"`
+	MowerStatus            *int   `json:"mower_status,omitempty" yaml:"mower_status"`
+	EscPower               *bool  `json:"esc_power,omitempty" yaml:"esc_power"`
+	WheelTickFactor        *int   `json:"wheel_tick_factor,omitempty" yaml:"wheel_tick_factor"`
 	LastWheelTickTimestamp string `json:"last_wheel_tick_timestamp,omitempty" yaml:"last_wheel_tick_timestamp"`
 }
 
@@ -674,6 +676,9 @@ func normalizeFFRequest(req driveFFCalibrationStartRequest) (driveFFCalibrationS
 	if req.TestSpeedMps == 0 {
 		req.TestSpeedMps = 0.3
 	}
+	if req.OdomTimeoutS == 0 {
+		req.OdomTimeoutS = 4.0
+	}
 	if req.Passes == 0 {
 		req.Passes = 3
 	}
@@ -692,6 +697,9 @@ func normalizeFFRequest(req driveFFCalibrationStartRequest) (driveFFCalibrationS
 	}
 	if req.TestSpeedMps <= 0 || req.TestSpeedMps > 0.5 {
 		return req, errors.New("test_speed_mps must be > 0 and <= 0.5")
+	}
+	if req.OdomTimeoutS <= 0 {
+		return req, errors.New("odom_timeout_s must be > 0")
 	}
 	if req.Passes < 1 {
 		return req, errors.New("passes must be >= 1")
@@ -737,6 +745,7 @@ func buildFeedForwardCommand(req driveFFCalibrationStartRequest) ([]string, stri
 		"--test-speed", formatFloat(req.TestSpeedMps),
 		"--distance", formatFloat(req.DistanceMeters),
 		"--passes", strconv.Itoa(req.Passes),
+		"--odom-timeout", formatFloat(req.OdomTimeoutS),
 		"--turn-direction", req.TurnDirection,
 		"--output", reportPath,
 		"--backup-file", driveTuningBackupFile,

@@ -205,6 +205,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
             await startFeedForward({
                 distance_m: values.distance_m,
                 test_speed_mps: values.test_speed_mps,
+                odom_timeout_s: values.odom_timeout_s,
                 passes: values.passes,
                 auto_turn: values.auto_turn,
                 turn_direction: "right",
@@ -553,6 +554,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                         initialValues={{
                             distance_m: 3,
                             test_speed_mps: 0.3,
+                            odom_timeout_s: 4.0,
                             passes: 3,
                             auto_turn: true,
                             apply: false,
@@ -574,6 +576,16 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                             <Col xs={24} sm={12}>
                                 <Form.Item name="passes" label="Passes" rules={[{ required: true }]}>
                                     <InputNumber min={1} max={10} step={1} precision={0} style={{ width: "100%" }} />
+                                </Form.Item>
+                            </Col>
+                            <Col xs={24} sm={12}>
+                                <Form.Item
+                                    name="odom_timeout_s"
+                                    label="Odometry timeout"
+                                    tooltip="Lost-odometry safety only applies while the robot is still commanded above the low-speed threshold."
+                                    rules={[{ required: true }]}
+                                >
+                                    <InputNumber min={0.5} max={15} step={0.5} precision={1} style={{ width: "100%" }} addonAfter="s" />
                                 </Form.Item>
                             </Col>
                             <Col xs={24} sm={12}>

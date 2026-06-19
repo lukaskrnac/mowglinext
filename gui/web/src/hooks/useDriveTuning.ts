@@ -80,6 +80,7 @@ export interface DriveTuningReport {
     max_speed_mps: number;
     test_speed_mps?: number | null;
     segment_duration_s: number;
+    odom_timeout_s?: number;
     passes: number;
     auto_turn: boolean;
     turn_direction: string;

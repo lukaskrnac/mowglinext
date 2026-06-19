@@ -355,6 +355,7 @@ def recommend_pid_only_params(
 
     max_target = max(abs(trial.target_speed) for trial in usable_trials)
     median_error = _median([trial.error_mean for trial in usable_trials])
+    median_abs_error = _median([abs(trial.error_mean) for trial in usable_trials])
     median_overshoot = _median([trial.overshoot for trial in usable_trials])
     oscillation_count = sum(
         1
@@ -373,62 +374,126 @@ def recommend_pid_only_params(
         if trial.left_right_tick_imbalance is not None and trial.left_right_tick_imbalance > 0.12
     )
     integral_sat_count = sum(1 for trial in usable_trials if trial.integral_saturation_suspected)
+    warning_count = sum(1 for trial in usable_trials if trial.trial_quality != "ok" or trial.warnings)
 
-    kp_scale = 1.0
-    ki_scale = 1.0
-    kd_scale = 1.0
-    integral_scale = 1.0
+    overshoot_warning_threshold = max(0.03, 0.12 * max_target)
+    severe_overshoot_threshold = max(0.05, 0.20 * max_target)
+    steady_state_error_threshold = max(0.02, 0.10 * max_target)
+    lag_error_threshold = max(0.03, 0.15 * max_target)
+    good_ff_tracking = median_abs_error <= max(0.02, 0.08 * max_target) and stall_count == 0
+    oscillation_or_overshoot_warning = (
+        oscillation_count > 0 or median_overshoot > overshoot_warning_threshold
+    )
+    early_pid_mode = base_params.wheel_pid_kp <= 0.2
 
-    if oscillation_count > 0 or median_overshoot > max(0.04, 0.2 * max_target):
-        kp_scale *= 0.90
-        ki_scale *= 0.85
-        kd_scale *= 1.35
-        integral_scale *= 0.90
-        reasons.append("Oscillation or overshoot detected, softening KP/KI/integral limit and nudging Kd upward.")
-    else:
-        if median_error > max(0.02, 0.10 * max_target):
-            kp_scale *= 1.08
-            reasons.append("Average underspeed remained positive, nudging KP upward.")
-        elif median_error < -max(0.02, 0.10 * max_target):
-            kp_scale *= 0.94
+    recommended_kp = params.wheel_pid_kp
+    recommended_ki = params.wheel_pid_ki
+    recommended_kd = params.wheel_pid_kd
+    recommended_integral_limit = params.wheel_pid_integral_limit
+
+    if early_pid_mode:
+        if params.wheel_pid_kp < 0.2:
+            recommended_kp = max(recommended_kp, 0.2)
+            reasons.append("Starting KP is near zero; seeding a conservative P-only baseline at 0.2.")
+
+        if oscillation_or_overshoot_warning or warning_count > 0:
+            recommended_kp = min(recommended_kp, 0.5)
+            reasons.append(
+                "Oscillation or overshoot warnings were present, so early PID tuning keeps KP conservative and avoids adding I/D terms."
+            )
+        elif median_error > steady_state_error_threshold or slow_count > 0:
+            kp_step = 0.2 if median_error > lag_error_threshold or slow_count > 1 else 0.1
+            recommended_kp = min(max(recommended_kp, params.wheel_pid_kp + kp_step), 0.5)
+            reasons.append(
+                f"Feed-forward is already close; nudging KP by {kp_step:.1f} for a conservative early P-only trial."
+            )
+        elif median_error < -steady_state_error_threshold:
+            recommended_kp = max(0.0, params.wheel_pid_kp - 0.1)
             reasons.append("Average overspeed remained negative, trimming KP slightly.")
+        elif good_ff_tracking:
+            recommended_kp = min(max(recommended_kp, params.wheel_pid_kp), 0.5)
+            reasons.append(
+                "Feed-forward already tracks target speed reasonably well; keeping the early PID proposal in the conservative 0.2 to 0.5 range."
+            )
+    else:
+        kp_scale = 1.0
+        ki_scale = 1.0
+        kd_scale = 1.0
+        integral_scale = 1.0
 
-        if slow_count > 0 or median_error > max(0.015, 0.08 * max_target):
-            ki_scale *= 1.12
-            reasons.append("Slow settling or steady-state lag detected, nudging KI upward.")
+        if oscillation_count > 0 or median_overshoot > severe_overshoot_threshold:
+            kp_scale *= 0.92
+            ki_scale *= 0.90
+            integral_scale *= 0.92
+            reasons.append("Oscillation or strong overshoot detected, softening KP/KI/integral support.")
+        else:
+            if median_error > steady_state_error_threshold:
+                kp_scale *= 1.05
+                reasons.append("Average underspeed remained positive, nudging KP upward.")
+            elif median_error < -steady_state_error_threshold:
+                kp_scale *= 0.95
+                reasons.append("Average overspeed remained negative, trimming KP slightly.")
 
-        if stall_count > 0 or integral_sat_count > 0:
-            ki_scale *= 1.05
-            integral_scale *= 1.15
-            reasons.append("Stall behaviour observed, widening integral support modestly.")
+            if slow_count > 0 or median_error > max(0.015, 0.08 * max_target):
+                ki_scale *= 1.08
+                reasons.append("Slow settling or steady-state lag detected, nudging KI upward.")
 
-        if median_overshoot > max(0.02, 0.10 * max_target):
-            kp_scale *= 0.96
-            ki_scale *= 0.96
-            kd_scale *= 1.20
-            reasons.append("Mild overshoot detected, trimming KP/KI and adding a little derivative damping.")
+            if stall_count > 0 or integral_sat_count > 0:
+                ki_scale *= 1.05
+                integral_scale *= 1.10
+                reasons.append("Stall behaviour observed, widening integral support modestly.")
+
+            if median_overshoot > overshoot_warning_threshold:
+                kp_scale *= 0.97
+                ki_scale *= 0.97
+                if params.wheel_pid_kd > 0.0:
+                    kd_scale *= 1.10
+                reasons.append("Mild overshoot detected, trimming KP/KI and damping gently.")
+
+        recommended_kp = clamp(params.wheel_pid_kp * kp_scale, 0.0, 80.0)
+        if params.wheel_pid_ki > 0.0:
+            recommended_ki = clamp(params.wheel_pid_ki * ki_scale, 0.0, 8000.0)
+        if params.wheel_pid_kd > 0.0:
+            recommended_kd = clamp(params.wheel_pid_kd * kd_scale, 0.0, 50.0)
+        if params.wheel_pid_integral_limit > 0.0:
+            recommended_integral_limit = clamp(
+                params.wheel_pid_integral_limit * integral_scale,
+                0.0,
+                200.0,
+            )
+
+    if params.wheel_pid_ki <= 0.0:
+        recommended_ki = 0.0
+        if good_ff_tracking and (oscillation_or_overshoot_warning or warning_count > 0):
+            reasons.append(
+                "Feed-forward already tracks target speed reasonably well, and oscillation/overshoot warnings were present; keeping KI at 0.0 for this early PID proposal."
+            )
+        else:
+            reasons.append(
+                "Starting KI is zero, so the next PID proposal keeps integral gain disabled until P-only trials are stable."
+            )
+
+    if params.wheel_pid_integral_limit <= 0.0:
+        recommended_integral_limit = 0.0
+        reasons.append(
+            "Integral limit remains 0.0 because integral action is still intentionally disabled at this stage."
+        )
+
+    if params.wheel_pid_kd <= 0.0:
+        recommended_kd = 0.0
+        reasons.append(
+            "Kd remains 0.0 during early P-only validation; add derivative only after stable P-only trials if it is still needed."
+        )
 
     if imbalance_count > 0:
         reasons.append("Left/right wheel response diverged noticeably on at least one pass; re-check tire pressure and mechanical drag.")
 
     recommended = replace(
         params,
-        wheel_pid_kp=clamp(params.wheel_pid_kp * kp_scale, 5.0, 80.0),
-        wheel_pid_ki=clamp(params.wheel_pid_ki * ki_scale, 50.0, 8000.0),
-        wheel_pid_kd=clamp(
-            (
-                params.wheel_pid_kd * kd_scale
-                if params.wheel_pid_kd > 0.0
-                else (0.02 if (oscillation_count > 0 or median_overshoot > max(0.02, 0.10 * max_target)) else 0.0)
-            ),
-            0.0,
-            50.0,
-        ),
-        wheel_pid_integral_limit=clamp(
-            params.wheel_pid_integral_limit * integral_scale,
-            10.0,
-            200.0,
-        ),
+        wheel_pid_kp=clamp(recommended_kp, 0.0, 80.0),
+        wheel_pid_ki=clamp(recommended_ki, 0.0, 8000.0),
+        wheel_pid_kd=clamp(recommended_kd, 0.0, 50.0),
+        wheel_pid_integral_limit=clamp(recommended_integral_limit, 0.0, 200.0),
     )
     return recommended, reasons
 

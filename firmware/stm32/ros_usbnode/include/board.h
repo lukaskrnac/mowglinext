@@ -93,7 +93,7 @@ extern "C"
 #define BOARD_HAS_MASTER_USART 0
 #endif
 
-//#define I_DONT_NEED_MY_FINGERS              1      // disables EmergencyController() (no wheel lift, or tilt sensing and stopping the blade anymore)
+#define I_DONT_NEED_MY_FINGERS              1      // disables EmergencyController() (no wheel lift, or tilt sensing and stopping the blade anymore)
 
 /// nominal max charge current is 1.0 Amp
 #define MAX_CHARGE_CURRENT 1.2f

@@ -213,7 +213,7 @@ RUN git clone --filter=blob:none --sparse ${NAV2_URL} navigation2 \
 # index blob hashes — that would ship an UNPATCHED controller. The grep after
 # patching is a fail-fast guard so a future silent miss breaks the build
 # instead of regressing MPPI to corner-cutting behaviour.
-COPY patches/nav2_mppi_controller-findPathFurthestReachedPoint-arclength.patch /tmp/mppi.patch
+COPY ros2/patches/nav2_mppi_controller-findPathFurthestReachedPoint-arclength.patch /tmp/mppi.patch
 RUN cd /ws/src/navigation2/nav2_mppi_controller \
  && patch -p1 < /tmp/mppi.patch \
  && grep -q 'path_integrated_dists' include/nav2_mppi_controller/tools/utils.hpp \
@@ -364,40 +364,45 @@ WORKDIR /ros2_ws
 
 # Copy only package.xml + CMakeLists.txt to resolve rosdep deps (cache layer).
 # This ensures the expensive rosdep install is only re-run when package
-# definitions change, NOT when source code changes.
-COPY src/mowgli_interfaces/package.xml    src/mowgli_interfaces/package.xml
-COPY src/mowgli_interfaces/CMakeLists.txt src/mowgli_interfaces/CMakeLists.txt
-COPY src/mowgli_hardware/package.xml      src/mowgli_hardware/package.xml
-COPY src/mowgli_hardware/CMakeLists.txt   src/mowgli_hardware/CMakeLists.txt
-COPY src/mowgli_localization/package.xml  src/mowgli_localization/package.xml
-COPY src/mowgli_localization/CMakeLists.txt src/mowgli_localization/CMakeLists.txt
-COPY src/mowgli_map/package.xml           src/mowgli_map/package.xml
-COPY src/mowgli_map/CMakeLists.txt        src/mowgli_map/CMakeLists.txt
-COPY src/mowgli_nav2_plugins/package.xml  src/mowgli_nav2_plugins/package.xml
-COPY src/mowgli_nav2_plugins/CMakeLists.txt src/mowgli_nav2_plugins/CMakeLists.txt
-COPY src/mowgli_behavior/package.xml      src/mowgli_behavior/package.xml
-COPY src/mowgli_behavior/CMakeLists.txt   src/mowgli_behavior/CMakeLists.txt
-COPY src/mowgli_monitoring/package.xml    src/mowgli_monitoring/package.xml
-COPY src/mowgli_monitoring/CMakeLists.txt src/mowgli_monitoring/CMakeLists.txt
-COPY src/mowgli_simulation/package.xml    src/mowgli_simulation/package.xml
-COPY src/mowgli_simulation/CMakeLists.txt src/mowgli_simulation/CMakeLists.txt
-COPY src/mowgli_bringup/package.xml       src/mowgli_bringup/package.xml
-COPY src/mowgli_bringup/CMakeLists.txt    src/mowgli_bringup/CMakeLists.txt
-COPY src/fusion_graph/package.xml         src/fusion_graph/package.xml
-COPY src/fusion_graph/CMakeLists.txt      src/fusion_graph/CMakeLists.txt
+# definitions change, NOT when source code changes. The Docker build context
+# is the monorepo root so we can also pull the sidecar tools/motor package.
+COPY ros2/src/mowgli_interfaces/package.xml    src/mowgli_interfaces/package.xml
+COPY ros2/src/mowgli_interfaces/CMakeLists.txt src/mowgli_interfaces/CMakeLists.txt
+COPY ros2/src/mowgli_hardware/package.xml      src/mowgli_hardware/package.xml
+COPY ros2/src/mowgli_hardware/CMakeLists.txt   src/mowgli_hardware/CMakeLists.txt
+COPY ros2/src/mowgli_localization/package.xml  src/mowgli_localization/package.xml
+COPY ros2/src/mowgli_localization/CMakeLists.txt src/mowgli_localization/CMakeLists.txt
+COPY ros2/src/mowgli_map/package.xml           src/mowgli_map/package.xml
+COPY ros2/src/mowgli_map/CMakeLists.txt        src/mowgli_map/CMakeLists.txt
+COPY ros2/src/mowgli_nav2_plugins/package.xml  src/mowgli_nav2_plugins/package.xml
+COPY ros2/src/mowgli_nav2_plugins/CMakeLists.txt src/mowgli_nav2_plugins/CMakeLists.txt
+COPY ros2/src/mowgli_behavior/package.xml      src/mowgli_behavior/package.xml
+COPY ros2/src/mowgli_behavior/CMakeLists.txt   src/mowgli_behavior/CMakeLists.txt
+COPY ros2/src/mowgli_monitoring/package.xml    src/mowgli_monitoring/package.xml
+COPY ros2/src/mowgli_monitoring/CMakeLists.txt src/mowgli_monitoring/CMakeLists.txt
+COPY ros2/src/mowgli_simulation/package.xml    src/mowgli_simulation/package.xml
+COPY ros2/src/mowgli_simulation/CMakeLists.txt src/mowgli_simulation/CMakeLists.txt
+COPY ros2/src/mowgli_bringup/package.xml       src/mowgli_bringup/package.xml
+COPY ros2/src/mowgli_bringup/CMakeLists.txt    src/mowgli_bringup/CMakeLists.txt
+COPY ros2/src/fusion_graph/package.xml         src/fusion_graph/package.xml
+COPY ros2/src/fusion_graph/CMakeLists.txt      src/fusion_graph/CMakeLists.txt
 # fusion_graph is the opt-in factor-graph replacement for ekf_map_node;
 # depends on libgtsam-dev installed in the base stage.
-COPY src/mowgli_coverage/package.xml      src/mowgli_coverage/package.xml
-COPY src/mowgli_coverage/CMakeLists.txt   src/mowgli_coverage/CMakeLists.txt
+COPY ros2/src/mowgli_coverage/package.xml      src/mowgli_coverage/package.xml
+COPY ros2/src/mowgli_coverage/CMakeLists.txt   src/mowgli_coverage/CMakeLists.txt
 # opennav_coverage submodule provides opennav_coverage_msgs (action types
 # consumed by mowgli_coverage). Pulled by checkout submodules: recursive.
-COPY src/opennav_coverage/opennav_coverage_msgs/package.xml    src/opennav_coverage/opennav_coverage_msgs/package.xml
-COPY src/opennav_coverage/opennav_coverage_msgs/CMakeLists.txt src/opennav_coverage/opennav_coverage_msgs/CMakeLists.txt
+COPY ros2/src/opennav_coverage/opennav_coverage_msgs/package.xml    src/opennav_coverage/opennav_coverage_msgs/package.xml
+COPY ros2/src/opennav_coverage/opennav_coverage_msgs/CMakeLists.txt src/opennav_coverage/opennav_coverage_msgs/CMakeLists.txt
 # universal-gnss is vendored as a git submodule under ros2/src/external.
 # gnss_ros2 is the only colcon package; its sibling gnss_* libraries are
 # plain CMake subdirectories pulled in at build time from the same repo root.
-COPY src/external/universal-gnss/gnss_ros2/package.xml    src/external/universal-gnss/gnss_ros2/package.xml
-COPY src/external/universal-gnss/gnss_ros2/CMakeLists.txt src/external/universal-gnss/gnss_ros2/CMakeLists.txt
+COPY ros2/src/external/universal-gnss/gnss_ros2/package.xml    src/external/universal-gnss/gnss_ros2/package.xml
+COPY ros2/src/external/universal-gnss/gnss_ros2/CMakeLists.txt src/external/universal-gnss/gnss_ros2/CMakeLists.txt
+# operator-side drivetrain tools live outside ros2/src but must still be built
+# into the runtime workspace as the ROS 2 package mowgli_tools.
+COPY tools/motor/package.xml    src/mowgli_tools/package.xml
+COPY tools/motor/CMakeLists.txt src/mowgli_tools/CMakeLists.txt
 
 # Resolve rosdep dependencies (cached until package.xml changes)
 RUN rosdep update --rosdistro kilted \
@@ -416,7 +421,7 @@ RUN rosdep update --rosdistro kilted \
 FROM deps AS build-interfaces
 
 # Copy the full mowgli_interfaces package
-COPY src/mowgli_interfaces/ src/mowgli_interfaces/
+COPY ros2/src/mowgli_interfaces/ src/mowgli_interfaces/
 
 RUN /bin/bash -c "\
     source /opt/ros/kilted/setup.bash && \
@@ -434,8 +439,9 @@ FROM build-interfaces AS build
 
 ARG BUILD_TYPE=Release
 
-# Now copy the rest of the source tree
-COPY src/ src/
+# Now copy the rest of the source tree plus the sidecar tools package
+COPY ros2/src/ src/
+COPY tools/motor/ src/mowgli_tools/
 
 # Skip every opennav_coverage subpackage except _msgs. The upstream server
 # is pinned to F2C 1.2.1 (no TrapezoidalDecomp / generateHeadlandSwaths /
@@ -503,29 +509,29 @@ COPY --from=ublox-msgs-builder /ws/install /opt/ublox_msgs
 COPY --from=nav2-mppi-patched-builder /opt/nav2_mppi_patched /opt/nav2_mppi_patched
 
 # Copy all launch files and config from every package
-COPY src/mowgli_bringup/launch/    /ros2_ws/install/mowgli_bringup/share/mowgli_bringup/launch/
-COPY src/mowgli_bringup/config/    /ros2_ws/install/mowgli_bringup/share/mowgli_bringup/config/
+COPY ros2/src/mowgli_bringup/launch/    /ros2_ws/install/mowgli_bringup/share/mowgli_bringup/launch/
+COPY ros2/src/mowgli_bringup/config/    /ros2_ws/install/mowgli_bringup/share/mowgli_bringup/config/
 # mowgli_localization has no launch files; nodes are brought up from
 # mowgli_bringup/navigation.launch.py. Keep the config copy so the YAML
 # files still land in the install tree.
-COPY src/mowgli_localization/config/  /ros2_ws/install/mowgli_localization/share/mowgli_localization/config/
+COPY ros2/src/mowgli_localization/config/  /ros2_ws/install/mowgli_localization/share/mowgli_localization/config/
 
 # fusion_graph ships its own launch + config used by navigation.launch.py
 # when use_fusion_graph:=true.
-COPY src/fusion_graph/launch/  /ros2_ws/install/fusion_graph/share/fusion_graph/launch/
-COPY src/fusion_graph/config/  /ros2_ws/install/fusion_graph/share/fusion_graph/config/
+COPY ros2/src/fusion_graph/launch/  /ros2_ws/install/fusion_graph/share/fusion_graph/launch/
+COPY ros2/src/fusion_graph/config/  /ros2_ws/install/fusion_graph/share/fusion_graph/config/
 
 # Use Cyclone DDS — FastRTPS shared memory causes stale /dev/shm segments
 # and unreliable service discovery on ARM boards
 ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
 # Entrypoint script sources both ROS and workspace setups before exec'ing CMD
-COPY scripts/ros2_entrypoint.sh /ros2_entrypoint.sh
+COPY ros2/scripts/ros2_entrypoint.sh /ros2_entrypoint.sh
 RUN chmod +x /ros2_entrypoint.sh
 
 # Mow-session monitor — runs alongside the live stack to record a full
 # state timeline per mowing test (see CLAUDE.md "Mowing Session Monitoring").
-COPY scripts/mow_session_monitor.py /ros2_ws/scripts/mow_session_monitor.py
+COPY ros2/scripts/mow_session_monitor.py /ros2_ws/scripts/mow_session_monitor.py
 RUN chmod +x /ros2_ws/scripts/mow_session_monitor.py
 
 ENTRYPOINT ["/ros2_entrypoint.sh"]
@@ -559,12 +565,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 # Copy VNC startup script
-COPY scripts/start_vnc.sh /ros2_ws/scripts/start_vnc.sh
+COPY ros2/scripts/start_vnc.sh /ros2_ws/scripts/start_vnc.sh
 RUN chmod +x /ros2_ws/scripts/start_vnc.sh
 
 
 # Copy Foxglove layout for easy import
-COPY foxglove/ /ros2_ws/foxglove/
+COPY ros2/foxglove/ /ros2_ws/foxglove/
 
 # Foxglove Bridge WebSocket port
 EXPOSE 8765

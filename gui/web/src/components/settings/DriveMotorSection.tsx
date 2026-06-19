@@ -39,6 +39,15 @@ const DRIVE_PARAM_KEYS = [
     "wheel_pid_integral_limit",
 ];
 
+const DRIVE_PARAM_PRECISION = 3;
+
+const formatDriveParamValue = (key: string, value: unknown) => {
+    if (typeof value === "number" && Number.isFinite(value) && DRIVE_PARAM_KEYS.includes(key)) {
+        return value.toFixed(DRIVE_PARAM_PRECISION);
+    }
+    return String(value);
+};
+
 const statusTag = (status: "not_validated" | "validated" | "warning") => {
     if (status === "validated") {
         return <Tag color="success">validated</Tag>;
@@ -461,7 +470,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                                     <InputNumber
                                         value={values.wheel_pid_kp}
                                         onChange={(v) => onChange("wheel_pid_kp", v)}
-                                        min={0} max={200} step={1} precision={2}
+                                        min={0} max={200} step={0.001} precision={3}
                                         style={{ width: "100%" }}
                                     />
                                 </Form.Item>
@@ -471,7 +480,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                                     <InputNumber
                                         value={values.wheel_pid_ki}
                                         onChange={(v) => onChange("wheel_pid_ki", v)}
-                                        min={0} max={20000} step={100} precision={0}
+                                        min={0} max={20000} step={0.001} precision={3}
                                         style={{ width: "100%" }}
                                     />
                                 </Form.Item>
@@ -481,7 +490,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                                     <InputNumber
                                         value={values.wheel_pid_kd}
                                         onChange={(v) => onChange("wheel_pid_kd", v)}
-                                        min={0} max={500} step={1} precision={2}
+                                        min={0} max={500} step={0.001} precision={3}
                                         style={{ width: "100%" }}
                                     />
                                 </Form.Item>
@@ -491,7 +500,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                                     <InputNumber
                                         value={values.wheel_pid_integral_limit}
                                         onChange={(v) => onChange("wheel_pid_integral_limit", v)}
-                                        min={0} max={255} step={5} precision={0}
+                                        min={0} max={255} step={0.001} precision={3}
                                         style={{ width: "100%" }} addonAfter="PWM"
                                     />
                                 </Form.Item>
@@ -512,7 +521,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                                 <InputNumber
                                     value={values.wheel_pid_pwm_per_mps}
                                     onChange={(v) => onChange("wheel_pid_pwm_per_mps", v)}
-                                    min={50} max={600} step={10} precision={0}
+                                    min={50} max={600} step={0.001} precision={3}
                                     style={{ width: "100%" }} addonAfter="PWM"
                                 />
                             </Form.Item>
@@ -785,7 +794,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                             <Descriptions size="small" bordered column={2} title="Proposed parameters">
                                 {Object.entries(latestParsedReport.proposed_params).map(([key, value]) => (
                                     <Descriptions.Item key={key} label={key}>
-                                        {value}
+                                        {formatDriveParamValue(key, value)}
                                     </Descriptions.Item>
                                 ))}
                             </Descriptions>

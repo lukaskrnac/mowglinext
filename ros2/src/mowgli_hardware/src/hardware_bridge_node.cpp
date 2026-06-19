@@ -1571,7 +1571,7 @@ private:
                         sizeof(LlSetDrivePid) - sizeof(uint16_t)))
     {
       RCLCPP_INFO(get_logger(),
-                  "Sent drive PID: kp=%.2f ki=%.2f kd=%.2f integral_limit=%.1f pwm_per_mps=%.1f",
+                  "Sent drive PID: kp=%.3f ki=%.3f kd=%.3f integral_limit=%.3f pwm_per_mps=%.3f",
                   wheel_pid_kp_,
                   wheel_pid_ki_,
                   wheel_pid_kd_,

@@ -761,7 +761,7 @@ class DrivePidTuner(Node):
                     2500.0,
                 )
                 reasons.append(
-                    f"Pass {pass_index + 1}: ticks_per_meter -> {next_ticks:.2f} from odom/reference "
+                    f"Pass {pass_index + 1}: ticks_per_meter -> {next_ticks:.3f} from odom/reference "
                     f"{trial.odom_distance_m:.3f}/{trial.rtk_distance_m:.3f} m."
                 )
             elif self._latest_gnss_status is not None:
@@ -786,7 +786,7 @@ class DrivePidTuner(Node):
                 600.0,
             )
             reasons.append(
-                f"Pass {pass_index + 1}: wheel_pid_pwm_per_mps -> {next_pwm:.2f} from target/measured "
+                f"Pass {pass_index + 1}: wheel_pid_pwm_per_mps -> {next_pwm:.3f} from target/measured "
                 f"{target_speed:.3f}/{measured_speed:.3f} m/s."
             )
             if trial.oscillation_detected:

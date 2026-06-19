@@ -28,6 +28,12 @@ def _median(values: Sequence[float]) -> float:
     return statistics.median(values) if values else 0.0
 
 
+def _adaptive_kp_step(current_kp: float, *, aggressive: bool) -> float:
+    magnitude = max(abs(current_kp), 0.02)
+    step = magnitude if aggressive else magnitude * 0.5
+    return clamp(step, 0.005, 0.1)
+
+
 @dataclass(frozen=True)
 class DrivePidParams:
     ticks_per_meter: float
@@ -217,12 +223,18 @@ def compute_trial_metrics(
     tick_average = 0.5 * (abs(left_ticks_seen) + abs(right_ticks_seen))
     if tick_average > 1e-6:
         left_right_tick_imbalance = abs(left_ticks_seen - right_ticks_seen) / tick_average
+    integral_enabled = (
+        params_used.wheel_pid_ki > 0.0 and params_used.wheel_pid_integral_limit > 0.0
+    )
     integral_saturation_suspected = (
-        stall_detected
-        or (settling_time is None and abs(target_speed) >= 0.15)
-        or (
-            measured_speed_mean < max(0.02, 0.85 * abs(target_speed))
-            and params_used.wheel_pid_integral_limit <= 100.0
+        integral_enabled
+        and (
+            stall_detected
+            or (settling_time is None and abs(target_speed) >= 0.15)
+            or (
+                measured_speed_mean < max(0.02, 0.85 * abs(target_speed))
+                and params_used.wheel_pid_integral_limit <= 100.0
+            )
         )
     )
     warning_list = list(dict.fromkeys(warnings))
@@ -384,36 +396,45 @@ def recommend_pid_only_params(
     oscillation_or_overshoot_warning = (
         oscillation_count > 0 or median_overshoot > overshoot_warning_threshold
     )
-    early_pid_mode = base_params.wheel_pid_kp <= 0.2
+    fine_gain_mode = base_params.wheel_pid_kp <= 1.0
+    fine_gain_cap = 0.5 if base_params.wheel_pid_kp <= 0.2 else 1.0
 
     recommended_kp = params.wheel_pid_kp
     recommended_ki = params.wheel_pid_ki
     recommended_kd = params.wheel_pid_kd
     recommended_integral_limit = params.wheel_pid_integral_limit
 
-    if early_pid_mode:
-        if params.wheel_pid_kp < 0.2:
-            recommended_kp = max(recommended_kp, 0.2)
-            reasons.append("Starting KP is near zero; seeding a conservative P-only baseline at 0.2.")
+    if fine_gain_mode:
+        if params.wheel_pid_kp < 0.02:
+            recommended_kp = max(recommended_kp, 0.02)
+            reasons.append("Starting KP is near zero; seeding a conservative low-gain P-only baseline at 0.020.")
+
+        step_reference = max(recommended_kp, params.wheel_pid_kp, 0.02)
+        mild_kp_step = _adaptive_kp_step(step_reference, aggressive=False)
+        strong_kp_step = _adaptive_kp_step(
+            step_reference,
+            aggressive=(median_error > lag_error_threshold or slow_count > 1),
+        )
 
         if oscillation_or_overshoot_warning or warning_count > 0:
-            recommended_kp = min(recommended_kp, 0.5)
+            recommended_kp = min(max(recommended_kp, params.wheel_pid_kp), fine_gain_cap)
             reasons.append(
-                "Oscillation or overshoot warnings were present, so early PID tuning keeps KP conservative and avoids adding I/D terms."
+                "Oscillation or overshoot warnings were present, so low-gain PID tuning keeps KP conservative and avoids adding I/D terms."
             )
         elif median_error > steady_state_error_threshold or slow_count > 0:
-            kp_step = 0.2 if median_error > lag_error_threshold or slow_count > 1 else 0.1
-            recommended_kp = min(max(recommended_kp, params.wheel_pid_kp + kp_step), 0.5)
+            recommended_kp = min(max(recommended_kp, params.wheel_pid_kp + strong_kp_step), fine_gain_cap)
             reasons.append(
-                f"Feed-forward is already close; nudging KP by {kp_step:.1f} for a conservative early P-only trial."
+                f"Feed-forward is already close; nudging KP by {strong_kp_step:.3f} for a conservative low-gain P-only trial."
             )
         elif median_error < -steady_state_error_threshold:
-            recommended_kp = max(0.0, params.wheel_pid_kp - 0.1)
-            reasons.append("Average overspeed remained negative, trimming KP slightly.")
-        elif good_ff_tracking:
-            recommended_kp = min(max(recommended_kp, params.wheel_pid_kp), 0.5)
+            recommended_kp = max(0.0, params.wheel_pid_kp - mild_kp_step)
             reasons.append(
-                "Feed-forward already tracks target speed reasonably well; keeping the early PID proposal in the conservative 0.2 to 0.5 range."
+                f"Average overspeed remained negative, trimming KP by {mild_kp_step:.3f}."
+            )
+        elif good_ff_tracking:
+            recommended_kp = min(max(recommended_kp, params.wheel_pid_kp), fine_gain_cap)
+            reasons.append(
+                "Feed-forward already tracks target speed reasonably well; keeping the PID proposal in the low-gain fine-tuning range."
             )
     else:
         kp_scale = 1.0
@@ -466,7 +487,7 @@ def recommend_pid_only_params(
         recommended_ki = 0.0
         if good_ff_tracking and (oscillation_or_overshoot_warning or warning_count > 0):
             reasons.append(
-                "Feed-forward already tracks target speed reasonably well, and oscillation/overshoot warnings were present; keeping KI at 0.0 for this early PID proposal."
+                "Feed-forward already tracks target speed reasonably well, and oscillation/overshoot warnings were present; keeping KI at 0.0 for this low-gain PID proposal."
             )
         else:
             reasons.append(
@@ -482,7 +503,7 @@ def recommend_pid_only_params(
     if params.wheel_pid_kd <= 0.0:
         recommended_kd = 0.0
         reasons.append(
-            "Kd remains 0.0 during early P-only validation; add derivative only after stable P-only trials if it is still needed."
+            "Kd remains 0.0 during low-gain P-only validation; add derivative only after stable P-only trials if it is still needed."
         )
 
     if imbalance_count > 0:

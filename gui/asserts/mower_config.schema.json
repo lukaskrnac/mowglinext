@@ -79,9 +79,9 @@
           "description": "Centre-to-centre distance between front casters in metres."
         },
         "ticks_per_meter": {
-          "type": "integer",
+          "type": "number",
           "title": "Encoder Ticks per Meter",
-          "default": 300,
+          "default": 300.0,
           "description": "Encoder ticks per metre of wheel travel."
         },
         "tool_width": {

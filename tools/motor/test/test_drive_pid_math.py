@@ -154,6 +154,34 @@ def test_recommend_drive_pid_params_softens_oscillatory_response() -> None:
     assert recommended.wheel_pid_integral_limit <= base_params.wheel_pid_integral_limit
 
 
+def test_compute_trial_metrics_does_not_flag_integral_saturation_with_integral_disabled() -> None:
+    params = _early_pid_params(kp=0.02)
+    trial = compute_trial_metrics(
+        name="pid_step",
+        phase="pid",
+        target_speed=0.30,
+        speed_samples=[
+            SpeedSample(0.0, 0.22),
+            SpeedSample(0.4, 0.24),
+            SpeedSample(0.8, 0.25),
+            SpeedSample(1.2, 0.26),
+            SpeedSample(1.6, 0.27),
+            SpeedSample(2.0, 0.27),
+        ],
+        response_samples=None,
+        ticks_seen=120,
+        left_ticks_seen=118,
+        right_ticks_seen=122,
+        params_used=params,
+        ground_speed_mean=None,
+        odom_distance_m=0.8,
+        rtk_distance_m=None,
+        notes=(),
+    )
+
+    assert not trial.integral_saturation_suspected
+
+
 def test_recommend_pid_only_params_keeps_early_pid_conservative_after_good_ff() -> None:
     base_params = _early_pid_params()
     response_trial = compute_trial_metrics(
@@ -182,7 +210,7 @@ def test_recommend_pid_only_params_keeps_early_pid_conservative_after_good_ff() 
 
     recommended, reasons = recommend_pid_only_params(base_params, [response_trial])
 
-    assert 0.2 <= recommended.wheel_pid_kp <= 0.5
+    assert 0.0 < recommended.wheel_pid_kp <= 0.05
     assert recommended.wheel_pid_ki == 0.0
     assert recommended.wheel_pid_kd == 0.0
     assert recommended.wheel_pid_integral_limit == 0.0
@@ -218,7 +246,41 @@ def test_recommend_pid_only_params_uses_small_kp_steps_from_low_gain_start() -> 
     recommended, _ = recommend_pid_only_params(base_params, [response_trial])
 
     assert 0.2 < recommended.wheel_pid_kp <= 0.5
-    assert round(recommended.wheel_pid_kp - base_params.wheel_pid_kp, 3) in (0.1, 0.2)
+    assert 0.0 < round(recommended.wheel_pid_kp - base_params.wheel_pid_kp, 3) <= 0.1
+    assert recommended.wheel_pid_ki == 0.0
+    assert recommended.wheel_pid_kd == 0.0
+    assert recommended.wheel_pid_integral_limit == 0.0
+
+
+def test_recommend_pid_only_params_uses_fine_steps_for_sub_tenth_kp() -> None:
+    base_params = _early_pid_params(kp=0.01)
+    response_trial = compute_trial_metrics(
+        name="pid_step",
+        phase="pid",
+        target_speed=0.30,
+        speed_samples=[
+            SpeedSample(0.0, 0.21),
+            SpeedSample(0.4, 0.23),
+            SpeedSample(0.8, 0.25),
+            SpeedSample(1.2, 0.26),
+            SpeedSample(1.6, 0.27),
+            SpeedSample(2.0, 0.27),
+        ],
+        response_samples=None,
+        ticks_seen=120,
+        left_ticks_seen=118,
+        right_ticks_seen=122,
+        params_used=base_params,
+        ground_speed_mean=None,
+        odom_distance_m=0.9,
+        rtk_distance_m=None,
+        notes=(),
+    )
+
+    recommended, _ = recommend_pid_only_params(base_params, [response_trial])
+
+    assert base_params.wheel_pid_kp < recommended.wheel_pid_kp < 0.1
+    assert round(recommended.wheel_pid_kp - base_params.wheel_pid_kp, 3) <= 0.05
     assert recommended.wheel_pid_ki == 0.0
     assert recommended.wheel_pid_kd == 0.0
     assert recommended.wheel_pid_integral_limit == 0.0

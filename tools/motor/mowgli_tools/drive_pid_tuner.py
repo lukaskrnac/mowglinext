@@ -84,6 +84,7 @@ CMD_RATE_HZ = 20.0
 CMD_PERIOD_S = 1.0 / CMD_RATE_HZ
 RECORDING_ENTRY_TIMEOUT_S = 15.0
 RECORDING_EXIT_TIMEOUT_S = 3.0
+RECORDING_SETTLE_S = 0.6
 
 
 @dataclass(frozen=True)
@@ -364,6 +365,7 @@ class DrivePidTuner(Node):
 
         try:
             self._ensure_safe_to_start()
+            self._log_motion_gate_state("Before movement")
             session_started = True
             self._enter_recording_if_needed()
             if self._latest_status is not None and self._latest_status.is_charging:
@@ -783,8 +785,20 @@ class DrivePidTuner(Node):
             rclpy.spin_once(self, timeout_sec=0.1)
         return self._latest_high_level_status is not None and self._latest_high_level_status.state == target
 
+    def _log_motion_gate_state(self, label: str) -> None:
+        hl_state = None if self._latest_high_level_status is None else int(self._latest_high_level_status.state)
+        hl_name = None if self._latest_high_level_status is None else str(self._latest_high_level_status.state_name)
+        mower_status = None if self._latest_status is None else int(self._latest_status.mower_status)
+        is_charging = None if self._latest_status is None else bool(self._latest_status.is_charging)
+        self.get_logger().info(
+            f"{label}: high_level_state={hl_state} high_level_name={hl_name!r} "
+            f"mower_status={mower_status} is_charging={is_charging} "
+            f"wheel_ticks_seen={'yes' if self._latest_wheel_tick_time is not None else 'no'}"
+        )
+
     def _enter_recording_if_needed(self) -> None:
         if self._latest_high_level_status is not None and self._latest_high_level_status.state == HL_STATE_RECORDING:
+            self._log_motion_gate_state("Already in RECORDING before movement")
             return
         self.get_logger().info(
             "Entering RECORDING mode so twist_mux forwards the tuner's /cmd_vel_teleop commands."
@@ -795,6 +809,11 @@ class DrivePidTuner(Node):
             )
         if self._wait_for_bt_state(HL_STATE_RECORDING, RECORDING_ENTRY_TIMEOUT_S):
             self._entered_recording = True
+            self._log_motion_gate_state("After entering RECORDING")
+            self.get_logger().info(
+                f"Holding zero for {RECORDING_SETTLE_S:.1f}s after RECORDING entry so hardware_bridge can forward the non-IDLE mode to STM32."
+            )
+            self._hold_zero(RECORDING_SETTLE_S)
             return
         self._call_high_level_control(HL_CMD_RECORD_CANCEL, "cancel after failed recording entry")
         state = None if self._latest_high_level_status is None else self._latest_high_level_status.state

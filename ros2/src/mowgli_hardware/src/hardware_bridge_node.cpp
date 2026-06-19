@@ -73,6 +73,25 @@ static constexpr uint8_t HL_MODE_IDLE = 1u;  ///< Docked or between missions
 static constexpr uint8_t HL_MODE_AUTONOMOUS = 2u;  ///< Autonomous mowing
 static constexpr uint8_t HL_MODE_RECORDING = 3u;  ///< Area recording
 static constexpr uint8_t HL_MODE_MANUAL_MOWING = 4u;  ///< Manual teleop with blade
+
+static const char* high_level_mode_name(const uint8_t mode)
+{
+  switch (mode)
+  {
+    case HL_MODE_NULL:
+      return "NULL";
+    case HL_MODE_IDLE:
+      return "IDLE";
+    case HL_MODE_AUTONOMOUS:
+      return "AUTONOMOUS";
+    case HL_MODE_RECORDING:
+      return "RECORDING";
+    case HL_MODE_MANUAL_MOWING:
+      return "MANUAL_MOWING";
+    default:
+      return "UNKNOWN";
+  }
+}
 #include "mowgli_interfaces/msg/emergency.hpp"
 #include "mowgli_interfaces/msg/high_level_status.hpp"
 #include "mowgli_interfaces/msg/power.hpp"
@@ -336,11 +355,23 @@ private:
         rclcpp::QoS(10),
         [this](mowgli_interfaces::msg::HighLevelStatus::ConstSharedPtr msg)
         {
+          const uint8_t previous_mode = current_mode_;
+          const std::string previous_state_name = current_mode_state_name_;
           current_mode_ = msg->state;
+          current_mode_state_name_ = msg->state_name;
+          if (previous_mode != current_mode_ || previous_state_name != current_mode_state_name_)
+          {
+            RCLCPP_INFO(get_logger(),
+                        "hardware_bridge received HighLevelStatus: state=%u (%s), state_name='%s'",
+                        current_mode_,
+                        high_level_mode_name(current_mode_),
+                        current_mode_state_name_.c_str());
+            send_high_level_state();
+          }
           RCLCPP_DEBUG(get_logger(),
                        "High-level mode updated to %u (%s)",
                        msg->state,
-                       msg->state_name.c_str());
+                        msg->state_name.c_str());
         });
   }
 
@@ -1481,6 +1512,18 @@ private:
     pkt.current_mode = current_mode_;
     pkt.gps_quality = gps_quality_;
 
+    if (last_sent_mode_ != current_mode_ || last_sent_mode_state_name_ != current_mode_state_name_)
+    {
+      RCLCPP_INFO(get_logger(),
+                  "hardware_bridge forwarding HL state to STM32: mode=%u (%s), state_name='%s', gps_quality=%u",
+                  current_mode_,
+                  high_level_mode_name(current_mode_),
+                  current_mode_state_name_.c_str(),
+                  gps_quality_);
+      last_sent_mode_ = current_mode_;
+      last_sent_mode_state_name_ = current_mode_state_name_;
+    }
+
     send_raw_packet(reinterpret_cast<const uint8_t*>(&pkt),
                     sizeof(LlHighLevelState) - sizeof(uint16_t));
   }
@@ -1582,10 +1625,17 @@ private:
     double wz = msg->twist.angular.z;
 
     // The firmware ignores cmd_vel when mode is IDLE.  When velocity commands
-    // arrive (from Nav2 or teleop), ensure the firmware is in AUTONOMOUS mode.
-    if (current_mode_ == 0u && (vx != 0.0 || wz != 0.0))
+    // arrive before the BT publishes any high-level state, ensure the firmware
+    // is not left in NULL/transition mode.
+    if (current_mode_ == HL_MODE_NULL && (vx != 0.0 || wz != 0.0))
     {
-      current_mode_ = 1u;  // AUTONOMOUS
+      current_mode_ = HL_MODE_AUTONOMOUS;
+      current_mode_state_name_ = "AUTONOMOUS_CMD_VEL_FALLBACK";
+      RCLCPP_WARN(get_logger(),
+                  "Received non-zero cmd_vel before BT high-level state propagation; "
+                  "forcing STM32 mode to %u (%s).",
+                  current_mode_,
+                  high_level_mode_name(current_mode_));
       send_high_level_state();
     }
 
@@ -1797,6 +1847,9 @@ private:
   bool mow_enabled_{false};
   bool is_charging_{false};
   uint8_t current_mode_{0};
+  std::string current_mode_state_name_{"UNSET"};
+  uint8_t last_sent_mode_{255};
+  std::string last_sent_mode_state_name_{"UNSET"};
   uint8_t gps_quality_{0};
 
   // Dock heading anchor: on is_charging false→true transition, publish

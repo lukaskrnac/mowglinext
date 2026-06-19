@@ -15,6 +15,8 @@ Drive-wheel PID assistant with:
 - optional RTK-based validation from `/gps/status` + `/gps/absolute_pose`
 - optional undock reverse when the robot starts on the charger
 - YAML export of trial metrics and recommended parameters
+- mode-aware command topics: feed-forward defaults to `/cmd_vel`, PID step
+  tuning defaults to `/cmd_vel_teleop`
 
 Example, proposal only from the dock:
 
@@ -58,3 +60,6 @@ Notes:
 - RTK checks are only used when `/gps/status` reports a valid RTK mode,
   corrections are active, and horizontal accuracy is within the configured
   threshold.
+- `--cmd-topic` can still override the command topic manually, but the default
+  is mode-dependent so feed-forward reaches `hardware_bridge` on `/cmd_vel`
+  while PID autotune keeps the teleop path on `/cmd_vel_teleop`.

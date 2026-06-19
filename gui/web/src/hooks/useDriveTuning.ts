@@ -63,6 +63,7 @@ export interface DriveTuningReport {
     profile: string;
     backup_file: string;
     cmd_topic: string;
+    cmd_vel_topic?: string;
     applied_live: boolean;
     requested_apply: boolean;
     distance_m: number;

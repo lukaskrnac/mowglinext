@@ -144,6 +144,7 @@ type driveTuningReport struct {
 	Profile         string                   `json:"profile" yaml:"profile"`
 	BackupFile      string                   `json:"backup_file" yaml:"backup_file"`
 	CmdTopic        string                   `json:"cmd_topic" yaml:"cmd_topic"`
+	CmdVelTopic     string                   `json:"cmd_vel_topic,omitempty" yaml:"cmd_vel_topic"`
 	AppliedLive     bool                     `json:"applied_live" yaml:"applied_live"`
 	RequestedApply  bool                     `json:"requested_apply" yaml:"requested_apply"`
 	DistanceM       float64                  `json:"distance_m" yaml:"distance_m"`
@@ -631,6 +632,9 @@ func (m *driveTuningManager) readReport(ctx context.Context, containerID string,
 	if err := yaml.Unmarshal([]byte(raw), &report); err != nil {
 		return raw, nil, err
 	}
+	if report.CmdVelTopic == "" {
+		report.CmdVelTopic = report.CmdTopic
+	}
 	return raw, &report, nil
 }
 
@@ -716,7 +720,7 @@ func buildFeedForwardCommand(req driveFFCalibrationStartRequest) ([]string, stri
 	args := []string{
 		"--mode", "ff",
 		"--profile", "custom",
-		"--cmd-topic", "/cmd_vel_teleop",
+		"--cmd-topic", "/cmd_vel",
 		"--max-speed", formatFloat(req.TestSpeedMps),
 		"--test-speed", formatFloat(req.TestSpeedMps),
 		"--distance", formatFloat(req.DistanceMeters),

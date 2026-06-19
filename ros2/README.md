@@ -486,7 +486,10 @@ ros2 run mowgli_tools tune_drive_pid --help
 ```
 
 the `tune_drive_pid` entrypoint should be available inside `mowgli-ros2`. The
-GUI Drive Motor assistant depends on that command path.
+GUI Drive Motor assistant depends on that command path. Its feed-forward flow
+uses `/cmd_vel` by default so `hardware_bridge` sees the straight-line command
+directly, while PID autotune keeps `/cmd_vel_teleop` for the gentler teleop
+path.
 | `dev` | `dev` | — | Interactive shell with bind-mounted source tree |
 
 ### Running Hardware

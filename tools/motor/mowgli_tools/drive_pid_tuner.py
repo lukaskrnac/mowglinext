@@ -109,6 +109,7 @@ class TrialRecorder:
     ramp_time_s: float
     command_duration_s: float
     ramp_down: bool = True
+    pretrial_last_odom_time: float | None = None
     speed_samples: list[SpeedSample] = field(default_factory=list)
     rtk_samples: list[RtkPoseSample] = field(default_factory=list)
     tick_samples: list[TickSample] = field(default_factory=list)
@@ -151,7 +152,7 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Optional YAML output path for results and metrics.")
     parser.add_argument("--backup-file", type=str, default=str(_default_backup_path()),
                         help="Path used to save and restore the live parameter backup.")
-    parser.add_argument("--cmd-topic", type=str, default="/cmd_vel_teleop",
+    parser.add_argument("--cmd-topic", type=str, default="",
                         help="TwistStamped topic used for the test commands.")
     parser.add_argument("--hardware-node", type=str, default="hardware_bridge",
                         help="Node name used by the hardware parameter client.")
@@ -167,6 +168,10 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Ramp time in seconds applied at the start and end of each segment.")
     parser.add_argument("--stop-between-tests", type=float, default=1.5,
                         help="Hold zero cmd_vel this many seconds between trials.")
+    parser.add_argument("--odom-timeout", type=float, default=2.0,
+                        help="Maximum allowed delay between /wheel_odom samples once motion feedback is flowing.")
+    parser.add_argument("--startup-grace", type=float, default=3.0,
+                        help="Grace period after the first command before odom-loss checks can fail the trial.")
     parser.add_argument("--auto-turn", action="store_true",
                         help="Rotate ~180 degrees between feed-forward passes.")
     parser.add_argument("--turn-direction", choices=("left", "right"), default="right",
@@ -186,6 +191,7 @@ class DrivePidTuner(Node):
     def __init__(self, args: argparse.Namespace) -> None:
         super().__init__("tune_drive_pid")
         self._args = args
+        self._cmd_topic = self._resolve_cmd_topic(args)
         self._backup_path = Path(args.backup_file).expanduser()
         self._active_trial: TrialRecorder | None = None
         self._entered_recording = False
@@ -215,7 +221,7 @@ class DrivePidTuner(Node):
             depth=10,
         )
 
-        self._cmd_pub = self.create_publisher(TwistStamped, args.cmd_topic, reliable_qos)
+        self._cmd_pub = self.create_publisher(TwistStamped, self._cmd_topic, reliable_qos)
         self.create_subscription(Status, "/hardware_bridge/status", self._on_status, reliable_qos)
         self.create_subscription(Emergency, "/hardware_bridge/emergency", self._on_emergency, reliable_qos)
         self.create_subscription(
@@ -300,6 +306,9 @@ class DrivePidTuner(Node):
     # ------------------------------------------------------------------
 
     def run(self) -> int:
+        self.get_logger().info(
+            f"Using cmd_vel topic {self._cmd_topic} for mode {self._args.mode}."
+        )
         if self._args.rollback:
             return self._run_rollback()
 
@@ -379,6 +388,13 @@ class DrivePidTuner(Node):
     # ------------------------------------------------------------------
     # High-level flow helpers
     # ------------------------------------------------------------------
+
+    def _resolve_cmd_topic(self, args: argparse.Namespace) -> str:
+        if args.cmd_topic:
+            return str(args.cmd_topic)
+        if args.mode == "pid":
+            return "/cmd_vel_teleop"
+        return "/cmd_vel"
 
     def _run_rollback(self) -> int:
         self._wait_for_initial_state()
@@ -752,6 +768,7 @@ class DrivePidTuner(Node):
             ramp_time_s=min(self._args.ramp_time, max(0.35, command_duration_s / 3.0)),
             command_duration_s=command_duration_s,
             ramp_down=ramp_down,
+            pretrial_last_odom_time=self._latest_odom_time,
         )
         self._active_trial = recorder
         try:
@@ -777,10 +794,17 @@ class DrivePidTuner(Node):
         while time.monotonic() < deadline:
             now_s = time.monotonic()
             elapsed = now_s - recorder.command_start_s
-            self._check_live_trial_safety(recorder, now_s, elapsed)
             vx = self._segment_speed_target(recorder, elapsed)
             self._publish_cmd(vx=vx, wz=0.0)
             rclpy.spin_once(self, timeout_sec=rate_s)
+            now_s = time.monotonic()
+            elapsed = now_s - recorder.command_start_s
+            self._check_live_trial_safety(
+                recorder,
+                now_s,
+                elapsed,
+                commanded_speed=vx,
+            )
         self._stop_robot()
 
     def _segment_speed_target(self, recorder: TrialRecorder, elapsed_s: float) -> float:
@@ -797,13 +821,87 @@ class DrivePidTuner(Node):
                 return target * (1.0 - down_elapsed)
         return target
 
-    def _check_live_trial_safety(self, recorder: TrialRecorder, now_s: float, elapsed_s: float) -> None:
+    def _format_optional_time(self, value: float | None) -> str:
+        if value is None:
+            return "n/a"
+        return f"{value:.3f}"
+
+    def _trial_last_odom_time(self, recorder: TrialRecorder) -> float | None:
+        if recorder.speed_samples:
+            return recorder.speed_samples[-1].time_s
+        return self._latest_odom_time
+
+    def _log_odom_debug(
+        self,
+        *,
+        recorder: TrialRecorder,
+        now_s: float,
+        elapsed_s: float,
+        commanded_speed: float,
+        reason: str,
+    ) -> None:
+        last_odom_time = self._trial_last_odom_time(recorder)
+        time_since_last_odom = None if last_odom_time is None else now_s - last_odom_time
+        self.get_logger().error(
+            "Odom safety debug "
+            f"({reason}) during {recorder.name}: "
+            f"current_time={now_s:.3f}s "
+            f"trial_elapsed={elapsed_s:.3f}s "
+            f"last_odom_timestamp={self._format_optional_time(last_odom_time)}s "
+            f"time_since_last_odom={self._format_optional_time(time_since_last_odom)}s "
+            f"odom_timeout={self._args.odom_timeout:.3f}s "
+            f"startup_grace={self._args.startup_grace:.3f}s "
+            f"commanded_speed={commanded_speed:.3f}mps "
+            f"trial_odom_received={'yes' if bool(recorder.speed_samples) else 'no'} "
+            f"pretrial_last_odom={self._format_optional_time(recorder.pretrial_last_odom_time)}s"
+        )
+
+    def _raise_odom_failure(
+        self,
+        *,
+        recorder: TrialRecorder,
+        now_s: float,
+        elapsed_s: float,
+        commanded_speed: float,
+        reason: str,
+        message: str,
+    ) -> None:
+        self._log_odom_debug(
+            recorder=recorder,
+            now_s=now_s,
+            elapsed_s=elapsed_s,
+            commanded_speed=commanded_speed,
+            reason=reason,
+        )
+        raise RuntimeError(message)
+
+    def _check_live_trial_safety(
+        self,
+        recorder: TrialRecorder,
+        now_s: float,
+        elapsed_s: float,
+        *,
+        commanded_speed: float,
+    ) -> None:
         if self._latest_emergency is not None and (
             self._latest_emergency.active_emergency or self._latest_emergency.latched_emergency
         ):
             raise RuntimeError(f"Emergency asserted during {recorder.name}: {self._latest_emergency.reason}")
-        if self._latest_odom_time is None or now_s - self._latest_odom_time > 0.6:
-            raise RuntimeError(f"Lost /wheel_odom updates during {recorder.name}.")
+        if (
+            abs(commanded_speed) > 1e-3
+            and elapsed_s >= self._args.startup_grace
+            and recorder.speed_samples
+        ):
+            last_odom_time = recorder.speed_samples[-1].time_s
+            if now_s - last_odom_time > self._args.odom_timeout:
+                self._raise_odom_failure(
+                    recorder=recorder,
+                    now_s=now_s,
+                    elapsed_s=elapsed_s,
+                    commanded_speed=commanded_speed,
+                    reason="odom_received_then_stopped",
+                    message=f"Lost /wheel_odom updates during {recorder.name}.",
+                )
         if recorder.phase == "feedforward" and self._latest_gnss_status is not None:
             gnss = self._latest_gnss_status
             require_fixed = not self._args.allow_rtk_float
@@ -904,7 +1002,28 @@ class DrivePidTuner(Node):
         if len(response_samples) < 3:
             response_samples = recorder.speed_samples
         if not speed_samples:
-            raise RuntimeError(f"No /wheel_odom samples captured during {recorder.name}.")
+            now_s = time.monotonic()
+            elapsed_s = now_s - recorder.command_start_s
+            if recorder.pretrial_last_odom_time is None:
+                self._raise_odom_failure(
+                    recorder=recorder,
+                    now_s=now_s,
+                    elapsed_s=elapsed_s,
+                    commanded_speed=recorder.target_speed,
+                    reason="no_odom_sample_ever_received",
+                    message=f"No /wheel_odom sample was ever received before or during {recorder.name}.",
+                )
+            self._raise_odom_failure(
+                recorder=recorder,
+                now_s=now_s,
+                elapsed_s=elapsed_s,
+                commanded_speed=recorder.target_speed,
+                reason="no_trial_odom_sample_received",
+                message=(
+                    f"No /wheel_odom samples were received during {recorder.name}; "
+                    "odometry was seen before the trial but never arrived once the test started."
+                ),
+            )
 
         odom_distance_m = integrate_distance(speed_samples)
         ticks_seen, left_ticks_seen, right_ticks_seen = self._ticks_seen(recorder.tick_samples)
@@ -1014,9 +1133,11 @@ class DrivePidTuner(Node):
         print("=== DRIVE PID TUNER DRY RUN ===")
         print(f"mode: {self._args.mode}")
         print(f"profile: {self._args.profile}")
-        print(f"cmd topic: {self._args.cmd_topic}")
+        print(f"cmd topic: {self._cmd_topic}")
         print(f"backup file: {self._backup_path}")
         print(f"feedforward speeds: {[f'{s:.2f}' for s in self._phase_speeds()]}")
+        print(f"odom timeout: {self._args.odom_timeout:.2f} s")
+        print(f"startup grace: {self._args.startup_grace:.2f} s")
         if self._latest_status is not None and self._latest_status.is_charging:
             print(f"robot is charging: yes, requested undock_distance={self._args.undock_distance:.2f} m")
         print(f"current params: {current_params.to_dict()}")
@@ -1077,7 +1198,8 @@ class DrivePidTuner(Node):
             "profile": self._args.profile,
             "hardware_node": self._args.hardware_node,
             "backup_file": str(self._backup_path),
-            "cmd_topic": self._args.cmd_topic,
+            "cmd_topic": self._cmd_topic,
+            "cmd_vel_topic": self._cmd_topic,
             "applied_live": applied_live,
             "requested_apply": bool(self._args.apply),
             "distance_m": float(self._args.distance),
@@ -1085,6 +1207,8 @@ class DrivePidTuner(Node):
             "test_speed_mps": self._args.test_speed,
             "segment_duration_s": float(self._args.duration),
             "passes": int(self._args.passes),
+            "odom_timeout_s": float(self._args.odom_timeout),
+            "startup_grace_s": float(self._args.startup_grace),
             "auto_turn": bool(self._args.auto_turn),
             "turn_direction": self._args.turn_direction,
             "current_params": current_params.to_dict(),
@@ -1126,6 +1250,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--passes must be >= 1.")
     if args.duration < 2.0:
         parser.error("--duration must be at least 2 seconds.")
+    if args.odom_timeout <= 0.0:
+        parser.error("--odom-timeout must be positive.")
+    if args.startup_grace < 0.0:
+        parser.error("--startup-grace must be >= 0.")
     if args.undock_distance < 0.0:
         parser.error("--undock-distance must be >= 0.")
     if args.undock_speed <= 0.0:
@@ -1134,7 +1262,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--turn-rate must be positive.")
     if args.rollback and args.apply:
         parser.error("--rollback and --apply are mutually exclusive.")
-    if args.mode == "pid" and args.cmd_topic != "/cmd_vel_teleop":
+    resolved_cmd_topic = args.cmd_topic if args.cmd_topic else ("/cmd_vel_teleop" if args.mode == "pid" else "/cmd_vel")
+    if args.mode == "pid" and resolved_cmd_topic != "/cmd_vel_teleop":
         parser.error("--mode pid requires --cmd-topic /cmd_vel_teleop.")
 
     rclpy.init(args=ros_args)

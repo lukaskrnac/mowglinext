@@ -216,8 +216,8 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
             notification.success({
                 message: "Odometry / feed-forward calibration started",
                 description: values.apply
-                    ? "The tool will apply the recommended values live and persist them only if the run completes successfully."
-                    : "This run is recommendation-only and will not persist any parameter.",
+                    ? "The calibration runs through /cmd_vel and will apply the recommended values live only if the run completes successfully."
+                    : "This run uses /cmd_vel in recommendation-only mode and will not persist any parameter.",
             });
         } catch (e: any) {
             if (e?.errorFields) {
@@ -311,6 +311,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
     const latestParsedReport = latestReport?.parsed;
     const latestReasons = latestParsedReport?.reasons ?? [];
     const latestTrials = latestParsedReport?.trials ?? [];
+    const latestCmdVelTopic = latestParsedReport?.cmd_vel_topic ?? latestParsedReport?.cmd_topic;
 
     return (
         <div>
@@ -353,7 +354,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                         type="info"
                         showIcon
                         message="Conservative motion profile"
-                        description="The assistants use soft ramps, publish cmd_vel = 0 between motion segments, and the PID autotune runs through /cmd_vel_teleop to avoid harsh braking on fragile gears."
+                        description="The assistants use soft ramps and publish cmd_vel = 0 between motion segments. Feed-forward publishes through /cmd_vel so hardware_bridge receives the straight-line command directly, while PID autotune stays on /cmd_vel_teleop to keep the gentler teleop path for fragile gears."
                     />
 
                     <Descriptions size="small" column={1} bordered>
@@ -542,7 +543,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                         type="info"
                         showIcon
                         message="Workflow"
-                        description="The robot runs straight passes, compares wheel odometry against RTK/GPS when available, refines ticks_per_meter and wheel_pid_pwm_per_mps, then writes recommendations to a YAML report. Apply is optional."
+                        description="The robot runs straight passes through /cmd_vel, compares wheel odometry against RTK/GPS when available, refines ticks_per_meter and wheel_pid_pwm_per_mps, then writes recommendations to a YAML report. Apply is optional."
                     />
                     <Form
                         form={ffForm}
@@ -723,6 +724,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                         <Descriptions size="small" column={1} bordered>
                             <Descriptions.Item label="Report mode">{latestReport.latest_report.mode.toUpperCase()}</Descriptions.Item>
                             <Descriptions.Item label="Generated at">{formatTimestamp(latestReport.latest_report.generated_at)}</Descriptions.Item>
+                            <Descriptions.Item label="cmd_vel topic">{latestCmdVelTopic ?? "Unknown"}</Descriptions.Item>
                             <Descriptions.Item label="Path">
                                 <Text code copyable>{latestReport.latest_report.report_path}</Text>
                             </Descriptions.Item>

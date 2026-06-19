@@ -46,6 +46,15 @@ from .drive_pid_math import (
 # The 8 W profile starts from the theoretical 1964 ticks/m value reduced to
 # one hall channel out of three. The motor's 4-pole construction is already
 # baked into the theoretical figure, so the live bridge still starts at 1964/3.
+_YARDFORCE_12W_1600_PRESET = DrivePidParams(
+    ticks_per_meter=533.0,
+    wheel_pid_kp=18.0,
+    wheel_pid_ki=700.0,
+    wheel_pid_kd=0.0,
+    wheel_pid_integral_limit=30.0,
+    wheel_pid_pwm_per_mps=550.0,
+)
+
 PROFILE_PRESETS: dict[str, DrivePidParams] = {
     "yardforce_8w_1964": DrivePidParams(
         ticks_per_meter=655.0,
@@ -55,14 +64,8 @@ PROFILE_PRESETS: dict[str, DrivePidParams] = {
         wheel_pid_integral_limit=40.0,
         wheel_pid_pwm_per_mps=450.0,
     ),
-    "yardforce_12w_1600": DrivePidParams(
-        ticks_per_meter=533.0,
-        wheel_pid_kp=18.0,
-        wheel_pid_ki=700.0,
-        wheel_pid_kd=0.0,
-        wheel_pid_integral_limit=30.0,
-        wheel_pid_pwm_per_mps=550.0,
-    ),
+    "yardforce_12w_1600": _YARDFORCE_12W_1600_PRESET,
+    "yardforce_1600_12w": _YARDFORCE_12W_1600_PRESET,
 }
 
 PARAMETER_NAMES = (
@@ -140,8 +143,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="Print the planned actions without moving the robot.")
     parser.add_argument("--mode", choices=("combined", "ff", "pid"), default="combined",
                         help="Run the legacy combined flow, feed-forward/odometry only, or PID-only auto-tune.")
-    parser.add_argument("--profile", choices=("yardforce_8w_1964", "yardforce_12w_1600", "custom"),
-                        default="yardforce_8w_1964", help="Starting profile applied before the tests.")
+    parser.add_argument("--profile", choices=("yardforce_8w_1964", "yardforce_12w_1600", "yardforce_1600_12w", "custom"),
+                        default="yardforce_8w_1964",
+                        help="Reference profile for logs/report. It is not applied before the first trial unless --reset-to-profile or --force-profile is set.")
+    parser.add_argument("--reset-to-profile", action="store_true",
+                        help="Apply the selected preset profile before the first trial instead of starting from the live hardware_bridge parameters.")
+    parser.add_argument("--force-profile", action="store_true",
+                        help="Alias for --reset-to-profile.")
     parser.add_argument("--max-speed", type=float, default=0.3,
                         help="Maximum forward test speed in m/s.")
     parser.add_argument("--test-speed", type=float, default=None,
@@ -345,9 +353,15 @@ class DrivePidTuner(Node):
         self._wait_for_initial_state()
         current_params = self._get_drive_pid_params()
         self._write_backup(current_params)
+        profile_reference_params = self._profile_reference_params()
         working_params = self._resolve_starting_params(current_params)
+        self._log_initial_baseline(
+            current_params=current_params,
+            starting_params=working_params,
+            profile_reference_params=profile_reference_params,
+        )
         if self._args.dry_run:
-            self._print_dry_run(current_params, working_params)
+            self._print_dry_run(current_params, working_params, profile_reference_params)
             self._write_result_file(
                 mode=self._args.mode,
                 current_params=current_params,
@@ -357,6 +371,7 @@ class DrivePidTuner(Node):
                 trials=[],
                 reasons=["Dry-run only."],
                 status_snapshot=self._build_status_snapshot(),
+                profile_reference_params=profile_reference_params,
             )
             return 0
 
@@ -375,7 +390,11 @@ class DrivePidTuner(Node):
             if self._latest_status is not None and self._latest_status.is_charging:
                 self._undock_if_requested()
 
-            self._apply_drive_pid_params(working_params)
+            if working_params != current_params:
+                self.get_logger().info(
+                    "Applying explicit initial tuning baseline before the first trial."
+                )
+                self._apply_drive_pid_params(working_params)
             if self._args.mode == "ff":
                 proposed_params, feedforward_trials, reasons = self._run_feedforward_session(working_params)
             elif self._args.mode == "pid":
@@ -390,8 +409,16 @@ class DrivePidTuner(Node):
             if self._args.apply:
                 self._apply_drive_pid_params(proposed_params)
                 keep_final_live = True
-            self._print_summary(current_params, working_params, proposed_params, feedforward_trials, response_trials,
-                                keep_final_live, reasons)
+            self._print_summary(
+                current_params,
+                working_params,
+                proposed_params,
+                feedforward_trials,
+                response_trials,
+                keep_final_live,
+                reasons,
+                profile_reference_params,
+            )
             return 0
         except Exception as exc:
             self._remember_failure(str(exc))
@@ -420,6 +447,7 @@ class DrivePidTuner(Node):
                     reasons=reasons,
                     failure_message=self._failure_message,
                     status_snapshot=self._failure_status_snapshot or self._build_status_snapshot(),
+                    profile_reference_params=profile_reference_params,
                 )
 
     # ------------------------------------------------------------------
@@ -478,11 +506,15 @@ class DrivePidTuner(Node):
                 "Robot is on the dock. Re-run with --undock-distance 2.0 (or another safe value)."
             )
 
-    def _resolve_starting_params(self, current_params: DrivePidParams) -> DrivePidParams:
+    def _should_reset_to_profile(self) -> bool:
+        return bool(self._args.reset_to_profile or self._args.force_profile)
+
+    def _profile_reference_params(self) -> DrivePidParams | None:
         if self._args.profile == "custom":
-            params = current_params
-        else:
-            params = PROFILE_PRESETS[self._args.profile]
+            return None
+        return PROFILE_PRESETS[self._args.profile]
+
+    def _custom_param_updates(self) -> dict[str, float]:
         updates: dict[str, float] = {}
         custom_fields = {
             "ticks_per_meter": self._args.custom_ticks_per_meter,
@@ -495,9 +527,83 @@ class DrivePidTuner(Node):
         for key, value in custom_fields.items():
             if value is not None:
                 updates[key] = float(value)
+        return updates
+
+    def _resolve_starting_params(self, current_params: DrivePidParams) -> DrivePidParams:
+        params = current_params
+        profile_reference = self._profile_reference_params()
+        if self._should_reset_to_profile() and profile_reference is not None:
+            params = profile_reference
+        updates = self._custom_param_updates()
         if updates:
             params = replace(params, **updates)
         return params
+
+    def _format_drive_params(self, params: DrivePidParams) -> str:
+        return (
+            f"ticks_per_meter={params.ticks_per_meter:.3f}, "
+            f"wheel_pid_pwm_per_mps={params.wheel_pid_pwm_per_mps:.3f}, "
+            f"wheel_pid_kp={params.wheel_pid_kp:.3f}, "
+            f"wheel_pid_ki={params.wheel_pid_ki:.3f}, "
+            f"wheel_pid_kd={params.wheel_pid_kd:.3f}, "
+            f"wheel_pid_integral_limit={params.wheel_pid_integral_limit:.3f}"
+        )
+
+    def _initial_baseline_source(
+        self,
+        *,
+        current_params: DrivePidParams,
+        starting_params: DrivePidParams,
+        profile_reference_params: DrivePidParams | None,
+    ) -> str:
+        if starting_params == current_params:
+            return "live_hardware_bridge"
+        if self._should_reset_to_profile() and profile_reference_params is not None:
+            if self._custom_param_updates():
+                return "profile_reset_plus_cli_overrides"
+            return "profile_reset"
+        return "live_plus_cli_overrides"
+
+    def _log_initial_baseline(
+        self,
+        *,
+        current_params: DrivePidParams,
+        starting_params: DrivePidParams,
+        profile_reference_params: DrivePidParams | None,
+    ) -> None:
+        self.get_logger().info("Using live hardware_bridge parameters as initial tuning baseline")
+        self.get_logger().info(f"initial ticks_per_meter={current_params.ticks_per_meter:.3f}")
+        self.get_logger().info(f"initial wheel_pid_pwm_per_mps={current_params.wheel_pid_pwm_per_mps:.3f}")
+        self.get_logger().info(f"initial wheel_pid_kp={current_params.wheel_pid_kp:.3f}")
+        self.get_logger().info(f"initial wheel_pid_ki={current_params.wheel_pid_ki:.3f}")
+        self.get_logger().info(f"initial wheel_pid_kd={current_params.wheel_pid_kd:.3f}")
+        self.get_logger().info(
+            f"initial wheel_pid_integral_limit={current_params.wheel_pid_integral_limit:.3f}"
+        )
+        if profile_reference_params is not None:
+            if self._should_reset_to_profile():
+                self.get_logger().info(
+                    f"Profile {self._args.profile} will be applied before pass 1 because "
+                    f"--reset-to-profile/--force-profile was requested: "
+                    f"{self._format_drive_params(profile_reference_params)}"
+                )
+            else:
+                self.get_logger().info(
+                    f"profile {self._args.profile} reference only, not applied before pass 1: "
+                    f"{self._format_drive_params(profile_reference_params)}"
+                )
+        else:
+            self.get_logger().info(
+                "profile custom/reference only, not applied before pass 1"
+            )
+        if starting_params == current_params:
+            self.get_logger().info(
+                "First trial will use the current live hardware_bridge parameters unchanged."
+            )
+            return
+        self.get_logger().info(
+            f"Initial trial params after explicit overrides: {self._format_drive_params(starting_params)}"
+        )
 
     def _phase_speeds(self) -> list[float]:
         candidates = [0.10, 0.20, 0.30, 0.50]
@@ -1269,10 +1375,16 @@ class DrivePidTuner(Node):
     # Reporting
     # ------------------------------------------------------------------
 
-    def _print_dry_run(self, current_params: DrivePidParams, working_params: DrivePidParams) -> None:
+    def _print_dry_run(
+        self,
+        current_params: DrivePidParams,
+        working_params: DrivePidParams,
+        profile_reference_params: DrivePidParams | None,
+    ) -> None:
         print("=== DRIVE PID TUNER DRY RUN ===")
         print(f"mode: {self._args.mode}")
         print(f"profile: {self._args.profile}")
+        print(f"profile reset before pass 1: {'yes' if self._should_reset_to_profile() else 'no'}")
         print(f"cmd topic: {self._cmd_topic}")
         print(f"backup file: {self._backup_path}")
         print(f"feedforward speeds: {[f'{s:.2f}' for s in self._phase_speeds()]}")
@@ -1281,6 +1393,8 @@ class DrivePidTuner(Node):
         if self._latest_status is not None and self._latest_status.is_charging:
             print(f"robot is charging: yes, requested undock_distance={self._args.undock_distance:.2f} m")
         print(f"current params: {current_params.to_dict()}")
+        if profile_reference_params is not None:
+            print(f"profile reference params: {profile_reference_params.to_dict()}")
         print(f"starting params: {working_params.to_dict()}")
 
     def _print_summary(
@@ -1292,12 +1406,16 @@ class DrivePidTuner(Node):
         response_trials: list[TrialMetrics],
         applied_live: bool,
         reasons: list[str],
+        profile_reference_params: DrivePidParams | None,
     ) -> None:
         print("\n=== DRIVE PID TUNER SUMMARY ===")
         print(f"mode: {self._args.mode}")
         print(f"profile: {self._args.profile}")
+        print(f"profile reset before pass 1: {'yes' if self._should_reset_to_profile() else 'no'}")
         print(f"backup file: {self._backup_path}")
         print(f"current params:  {current_params.to_dict()}")
+        if profile_reference_params is not None:
+            print(f"profile ref:    {profile_reference_params.to_dict()}")
         print(f"starting params: {starting_params.to_dict()}")
         print(f"proposed params: {proposed_params.to_dict()}")
         print(f"applied live: {'yes' if applied_live else 'no, original params restored'}")
@@ -1329,6 +1447,7 @@ class DrivePidTuner(Node):
         reasons: list[str],
         failure_message: str | None = None,
         status_snapshot: dict[str, Any] | None = None,
+        profile_reference_params: DrivePidParams | None = None,
     ) -> None:
         if not self._args.output:
             return
@@ -1344,6 +1463,12 @@ class DrivePidTuner(Node):
             "cmd_vel_topic": self._cmd_topic,
             "applied_live": applied_live,
             "requested_apply": bool(self._args.apply),
+            "profile_applied_initially": bool(self._should_reset_to_profile() and profile_reference_params is not None),
+            "initial_baseline_source": self._initial_baseline_source(
+                current_params=current_params,
+                starting_params=starting_params,
+                profile_reference_params=profile_reference_params,
+            ),
             "distance_m": float(self._args.distance),
             "max_speed_mps": float(self._args.max_speed),
             "test_speed_mps": self._args.test_speed,
@@ -1362,6 +1487,8 @@ class DrivePidTuner(Node):
             "reasons": reasons,
             "trials": [trial.to_dict() for trial in trials],
         }
+        if profile_reference_params is not None:
+            payload["profile_reference_params"] = profile_reference_params.to_dict()
         if failure_message is not None:
             payload["failure_message"] = failure_message
         output_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")

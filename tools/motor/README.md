@@ -9,7 +9,8 @@ packages.
 
 Drive-wheel PID assistant with:
 
-- profile presets for `yardforce_8w_1964` and `yardforce_12w_1600`
+- reference profiles for `yardforce_8w_1964` and `yardforce_12w_1600`
+  (`yardforce_1600_12w` is accepted as an alias)
 - automatic backup + rollback of the live `hardware_bridge` parameters
 - guarded speed trials with stop commands between segments
 - optional RTK-based validation from `/gps/status` + `/gps/absolute_pose`
@@ -22,7 +23,6 @@ Example, proposal only from the dock:
 
 ```bash
 ros2 run mowgli_tools tune_drive_pid -- \
-  --profile yardforce_8w_1964 \
   --max-speed 0.3 \
   --duration 5 \
   --undock-distance 2.0 \
@@ -33,11 +33,21 @@ Apply the recommended live parameters at the end of the session:
 
 ```bash
 ros2 run mowgli_tools tune_drive_pid -- \
-  --profile yardforce_8w_1964 \
   --max-speed 0.3 \
   --duration 5 \
   --undock-distance 2.0 \
   --apply \
+  --output /tmp/drive_pid_8w.yaml
+```
+
+Explicitly reset pass 1 to a preset before testing:
+
+```bash
+ros2 run mowgli_tools tune_drive_pid -- \
+  --profile yardforce_8w_1964 \
+  --reset-to-profile \
+  --max-speed 0.3 \
+  --duration 5 \
   --output /tmp/drive_pid_8w.yaml
 ```
 
@@ -53,6 +63,9 @@ Notes:
   persistent YAML config files.
 - Without `--apply`, the tool restores the original live parameters after the
   trials.
+- By default, pass 1 starts from the current live `hardware_bridge`
+  parameters. `--profile` is kept as reference metadata unless
+  `--reset-to-profile` or `--force-profile` is passed explicitly.
 - The `yardforce_8w_1964` preset starts from `1964 / 3 ~= 655 ticks/m` because
   the live bridge only sees one hall channel out of three. The motor being a
   4-pole inrunner is already reflected in the theoretical 1964 value, so it

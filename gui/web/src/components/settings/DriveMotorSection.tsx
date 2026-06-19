@@ -216,8 +216,8 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
             notification.success({
                 message: "Odometry / feed-forward calibration started",
                 description: values.apply
-                    ? "The calibration runs through the dedicated /cmd_vel_tuning lane, then applies the recommendation live only if the run completes successfully."
-                    : "This recommendation-only run uses the dedicated /cmd_vel_tuning -> twist_mux path and will not persist any parameter.",
+                    ? "The calibration starts from the current live hardware_bridge values on pass 1, runs through /cmd_vel_tuning, then applies the recommendation live only if the run completes successfully."
+                    : "This recommendation-only run starts from the current live hardware_bridge values on pass 1, uses /cmd_vel_tuning -> twist_mux, and will not persist any parameter.",
             });
         } catch (e: any) {
             if (e?.errorFields) {
@@ -248,8 +248,8 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
             notification.success({
                 message: "PID auto-tune started",
                 description: values.apply
-                    ? "The autotune runs through the dedicated /cmd_vel_tuning path and will persist the final recommendation only after a successful run."
-                    : "This run is recommendation-only and will restore the original live parameters afterwards.",
+                    ? "The autotune starts from the current live hardware_bridge values on pass 1, runs through /cmd_vel_tuning, and will persist the final recommendation only after a successful run."
+                    : "This run is recommendation-only, starts from the current live hardware_bridge values on pass 1, and restores the original live parameters afterwards.",
             });
         } catch (e: any) {
             if (e?.errorFields) {
@@ -356,7 +356,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                         type="info"
                         showIcon
                         message="Conservative motion profile"
-                        description="The assistants use a dedicated tuning lane: stamped Twist commands on /cmd_vel_tuning, routed through twist_mux to /cmd_vel, with soft ramps and cmd_vel = 0 between motion segments."
+                        description="The assistants use a dedicated tuning lane: stamped Twist commands on /cmd_vel_tuning, routed through twist_mux to /cmd_vel, with soft ramps and cmd_vel = 0 between motion segments. Pass 1 starts from the live hardware_bridge values unless an explicit reset-to-profile mode is enabled later."
                     />
 
                     <Descriptions size="small" column={1} bordered>
@@ -610,7 +610,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                             type="info"
                             showIcon
                             message="Recommendation-only mode"
-                            description="The assistant will generate a YAML report and restore the original live drive parameters afterwards."
+                            description="The assistant will generate a YAML report, use the current live hardware_bridge values for pass 1, and restore the original live drive parameters afterwards."
                         />
                     )}
                 </Space>
@@ -649,7 +649,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                         type="info"
                         showIcon
                         message="Teleop-based step response"
-                        description="This autotune follows the dedicated /cmd_vel_tuning -> twist_mux path, using conservative ramps: 0 → 0.2, 0.2 → 0.3, 0.3 → 0.1, 0.1 → 0. The backend monitors overshoot, settling, oscillation, integral saturation, and wheel imbalance."
+                        description="This autotune follows the dedicated /cmd_vel_tuning -> twist_mux path, starting from the live hardware_bridge values on pass 1 and using conservative ramps: 0 → 0.2, 0.2 → 0.3, 0.3 → 0.1, 0.1 → 0. The backend monitors overshoot, settling, oscillation, integral saturation, and wheel imbalance."
                     />
                     <Form
                         form={pidForm}
@@ -708,7 +708,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                             type="info"
                             showIcon
                             message="Recommendation-only mode"
-                            description="The assistant will restore the original live wheel PID gains after the report is generated."
+                            description="The assistant will start from the live hardware_bridge values on pass 1, then restore the original live wheel PID gains after the report is generated."
                         />
                     )}
                 </Space>

@@ -316,13 +316,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-websockets \
  && rm -rf /var/lib/apt/lists/*
 
-# Pull source-built GTSAM 4.3a1 into /opt/gtsam, register its lib
-# directory with ldconfig, and expose the CMake config dir so
-# find_package(GTSAM) resolves without extra hints. GTSAM's runtime
-# .so links against libboost-* and libmetis5, both already present.
+# Pull source-built GTSAM 4.3a1 into /opt/gtsam and register its lib
+# directory with ldconfig. The full workspace build re-exports the
+# external CMake prefixes explicitly before colcon so the overlay setup
+# scripts cannot drop them.
 COPY --from=gtsam-builder /opt/gtsam /opt/gtsam
 RUN echo '/opt/gtsam/lib' > /etc/ld.so.conf.d/gtsam.conf && ldconfig
-ENV CMAKE_PREFIX_PATH=/opt/gtsam:${CMAKE_PREFIX_PATH}
 
 # Coverage runs on Fields2Cover v3 (Phase 1b). Pull BOTH source-built trees in
 # but ldconfig ONLY v3 — they share the SONAME libFields2Cover.so, so exactly
@@ -455,10 +454,17 @@ RUN touch \
       src/opennav_coverage/opennav_coverage_navigator/COLCON_IGNORE \
       src/opennav_coverage/opennav_row_coverage/COLCON_IGNORE
 
+RUN /bin/bash -c "\
+    f2c_config=\$(find /opt/fields2cover-300 -type f \( -name 'Fields2CoverConfig.cmake' -o -name 'fields2cover-config.cmake' \) | head -n 1) && \
+    test -n \"\${f2c_config}\" && \
+    echo \"Fields2Cover config: \${f2c_config}\" \
+    "
+
 # Build all packages (mowgli_interfaces is already built and cached)
 RUN /bin/bash -c "\
     source /opt/ros/kilted/setup.bash && \
     source install/setup.bash && \
+    export CMAKE_PREFIX_PATH=/opt/fields2cover-300:/opt/gtsam:\${CMAKE_PREFIX_PATH:-} && \
     colcon build \
       --cmake-args -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTING=OFF \
       --parallel-workers \$(nproc) \

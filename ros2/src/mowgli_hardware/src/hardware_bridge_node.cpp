@@ -702,8 +702,8 @@ private:
       {
         // Lift recovery mode: blade off, wheels keep running, no emerg
         ency.
-        // Firmware may set its own emergency latch — auto-release it.
-        msg.active_emergency = false;
+            // Firmware may set its own emergency latch — auto-release it.
+            msg.active_emergency = false;
         msg.latched_emergency = false;
         msg.lift_warning = true;
 

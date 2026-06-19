@@ -15,8 +15,8 @@ Drive-wheel PID assistant with:
 - optional RTK-based validation from `/gps/status` + `/gps/absolute_pose`
 - optional undock reverse when the robot starts on the charger
 - YAML export of trial metrics and recommended parameters
-- the same teleop motion path used by IMU calibration:
-  `/cmd_vel_teleop -> twist_mux -> /cmd_vel`
+- a dedicated tuning motion path that does not share the IMU / teleop lane:
+  `/cmd_vel_tuning -> twist_mux -> /cmd_vel`
 
 Example, proposal only from the dock:
 
@@ -61,5 +61,5 @@ Notes:
   corrections are active, and horizontal accuracy is within the configured
   threshold.
 - `--cmd-topic` can still override the command topic manually, but the default
-  follows the proven IMU calibration path on `/cmd_vel_teleop`, which then
-  flows through `twist_mux` to `/cmd_vel`.
+  uses `/cmd_vel_tuning`, which flows through `twist_mux` to `/cmd_vel`
+  without sharing `/cmd_vel_teleop` with the WebSocket relay or IMU calibration.

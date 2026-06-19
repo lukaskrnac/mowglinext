@@ -487,8 +487,8 @@ ros2 run mowgli_tools tune_drive_pid --help
 
 the `tune_drive_pid` entrypoint should be available inside `mowgli-ros2`. The
 GUI Drive Motor assistant depends on that command path. Its movement path now
-matches the working IMU calibration flow: the tuner publishes `TwistStamped`
-commands on `/cmd_vel_teleop`, `twist_mux` forwards them to `/cmd_vel`, and
+uses a dedicated tuning lane: the tuner publishes `TwistStamped` commands on
+`/cmd_vel_tuning`, `twist_mux` forwards them to `/cmd_vel`, and
 `hardware_bridge` passes them to the STM32 once the BT is in `RECORDING`.
 | `dev` | `dev` | — | Interactive shell with bind-mounted source tree |
 

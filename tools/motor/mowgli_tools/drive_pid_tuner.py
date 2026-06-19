@@ -161,7 +161,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--backup-file", type=str, default=str(_default_backup_path()),
                         help="Path used to save and restore the live parameter backup.")
     parser.add_argument("--cmd-topic", type=str, default="",
-                        help="TwistStamped topic used for the test commands. Defaults to /cmd_vel_teleop like the IMU calibration tool.")
+                        help="TwistStamped topic used for the test commands. Defaults to /cmd_vel_tuning so drive tuning does not share /cmd_vel_teleop.")
     parser.add_argument("--hardware-node", type=str, default="hardware_bridge",
                         help="Node name used by the hardware parameter client.")
     parser.add_argument("--rtk-accuracy-threshold", type=float, default=0.05,
@@ -325,13 +325,17 @@ class DrivePidTuner(Node):
         self.get_logger().info(
             f"Using cmd_vel topic {self._cmd_topic} for mode {self._args.mode}."
         )
-        if self._cmd_topic == "/cmd_vel_teleop":
+        if self._cmd_topic == "/cmd_vel_tuning":
+            self.get_logger().info(
+                "Motion path uses the dedicated tuning lane: /cmd_vel_tuning -> twist_mux -> /cmd_vel."
+            )
+        elif self._cmd_topic == "/cmd_vel_teleop":
             self.get_logger().info(
                 "Motion path matches IMU calibration: /cmd_vel_teleop -> twist_mux -> /cmd_vel."
             )
         else:
             self.get_logger().warning(
-                "Overriding the proven IMU calibration motion path; commands will bypass /cmd_vel_teleop."
+                "Overriding the dedicated tuning lane; commands will bypass /cmd_vel_tuning."
             )
         self._failure_message = None
         self._failure_status_snapshot = None
@@ -425,7 +429,7 @@ class DrivePidTuner(Node):
     def _resolve_cmd_topic(self, args: argparse.Namespace) -> str:
         if args.cmd_topic:
             return str(args.cmd_topic)
-        return "/cmd_vel_teleop"
+        return "/cmd_vel_tuning"
 
     def _run_rollback(self) -> int:
         self._wait_for_initial_state()
@@ -801,7 +805,7 @@ class DrivePidTuner(Node):
             self._log_motion_gate_state("Already in RECORDING before movement")
             return
         self.get_logger().info(
-            "Entering RECORDING mode so twist_mux forwards the tuner's /cmd_vel_teleop commands."
+            f"Entering RECORDING mode so twist_mux forwards the tuner's {self._cmd_topic} commands."
         )
         if not self._call_high_level_control(HL_CMD_RECORD_AREA, "enter recording"):
             raise RuntimeError(
@@ -1405,7 +1409,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--turn-rate must be positive.")
     if args.rollback and args.apply:
         parser.error("--rollback and --apply are mutually exclusive.")
-    resolved_cmd_topic = args.cmd_topic if args.cmd_topic else "/cmd_vel_teleop"
+    resolved_cmd_topic = args.cmd_topic if args.cmd_topic else "/cmd_vel_tuning"
 
     rclpy.init(args=ros_args)
     node = DrivePidTuner(args)

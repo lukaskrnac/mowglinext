@@ -216,8 +216,8 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
             notification.success({
                 message: "Odometry / feed-forward calibration started",
                 description: values.apply
-                    ? "The calibration runs through /cmd_vel_teleop like the IMU calibration tool, then applies the recommendation live only if the run completes successfully."
-                    : "This recommendation-only run uses the same /cmd_vel_teleop -> twist_mux path as IMU calibration and will not persist any parameter.",
+                    ? "The calibration runs through the dedicated /cmd_vel_tuning lane, then applies the recommendation live only if the run completes successfully."
+                    : "This recommendation-only run uses the dedicated /cmd_vel_tuning -> twist_mux path and will not persist any parameter.",
             });
         } catch (e: any) {
             if (e?.errorFields) {
@@ -248,7 +248,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
             notification.success({
                 message: "PID auto-tune started",
                 description: values.apply
-                    ? "The autotune runs through the same /cmd_vel_teleop path as IMU calibration and will persist the final recommendation only after a successful run."
+                    ? "The autotune runs through the dedicated /cmd_vel_tuning path and will persist the final recommendation only after a successful run."
                     : "This run is recommendation-only and will restore the original live parameters afterwards.",
             });
         } catch (e: any) {
@@ -356,7 +356,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                         type="info"
                         showIcon
                         message="Conservative motion profile"
-                        description="The assistants reuse the IMU calibration motion path: stamped Twist commands on /cmd_vel_teleop, routed through twist_mux to /cmd_vel, with soft ramps and cmd_vel = 0 between motion segments."
+                        description="The assistants use a dedicated tuning lane: stamped Twist commands on /cmd_vel_tuning, routed through twist_mux to /cmd_vel, with soft ramps and cmd_vel = 0 between motion segments."
                     />
 
                     <Descriptions size="small" column={1} bordered>
@@ -649,7 +649,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                         type="info"
                         showIcon
                         message="Teleop-based step response"
-                        description="This autotune follows the same /cmd_vel_teleop -> twist_mux path as the IMU calibration tool, using conservative ramps: 0 → 0.2, 0.2 → 0.3, 0.3 → 0.1, 0.1 → 0. The backend monitors overshoot, settling, oscillation, integral saturation, and wheel imbalance."
+                        description="This autotune follows the dedicated /cmd_vel_tuning -> twist_mux path, using conservative ramps: 0 → 0.2, 0.2 → 0.3, 0.3 → 0.1, 0.1 → 0. The backend monitors overshoot, settling, oscillation, integral saturation, and wheel imbalance."
                     />
                     <Form
                         form={pidForm}

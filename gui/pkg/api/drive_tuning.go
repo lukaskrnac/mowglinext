@@ -732,7 +732,7 @@ func buildFeedForwardCommand(req driveFFCalibrationStartRequest) ([]string, stri
 	args := []string{
 		"--mode", "ff",
 		"--profile", "custom",
-		"--cmd-topic", "/cmd_vel_teleop",
+		"--cmd-topic", "/cmd_vel_tuning",
 		"--max-speed", formatFloat(req.TestSpeedMps),
 		"--test-speed", formatFloat(req.TestSpeedMps),
 		"--distance", formatFloat(req.DistanceMeters),
@@ -758,7 +758,7 @@ func buildPIDCommand(req drivePIDTuningStartRequest) ([]string, string) {
 	args := []string{
 		"--mode", "pid",
 		"--profile", "custom",
-		"--cmd-topic", "/cmd_vel_teleop",
+		"--cmd-topic", "/cmd_vel_tuning",
 		"--max-speed", formatFloat(req.MaxSpeedMps),
 		"--duration", formatFloat(req.SegmentDurationS),
 		"--passes", strconv.Itoa(req.Passes),

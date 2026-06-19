@@ -1,6 +1,7 @@
 import React from "react";
 import { Alert, Card, Col, Form, InputNumber, Row, Space, Typography } from "antd";
 import { DashboardOutlined } from "@ant-design/icons";
+import { useTranslation } from "react-i18next";
 
 const { Text, Paragraph } = Typography;
 
@@ -12,32 +13,31 @@ type Props = {
 // Firmware per-wheel velocity PID + feedforward. Ranges match the clamps the
 // STM32 applies on receipt (cpp_main.cpp on_set_drive_pid) and the schema.
 export const DriveMotorSection: React.FC<Props> = ({ values, onChange }) => {
+    const { t } = useTranslation();
     return (
         <div>
             <Alert
                 type="info"
                 showIcon
                 style={{ marginBottom: 16 }}
-                message="Saved and applied live"
-                description="Saving stores these in mowgli_robot.yaml and pushes them to the drive controller immediately — no ROS2 restart needed. They persist across reboots: on every boot the robot re-sends the saved values to the firmware. (The firmware itself has no storage, so it runs its built-in defaults only for the brief moment before the controller reconnects, then re-validates and clamps the values you saved.)"
+                message={t("settingsDriveMotor.savedLiveTitle")}
+                description={t("settingsDriveMotor.savedLiveDescription")}
             />
             <Card size="small" style={{ marginBottom: 16 }}>
                 <Space direction="vertical" size={12} style={{ width: "100%" }}>
                     <div>
                         <Text strong style={{ fontSize: 14 }}>
                             <DashboardOutlined style={{ marginRight: 6 }} />
-                            Wheel Velocity PID
+                            {t("settingsDriveMotor.wheelVelocityPid")}
                         </Text>
                         <Paragraph type="secondary" style={{ margin: "4px 0 0" }}>
-                            Closed-loop gains the STM32 firmware uses to track each wheel's commanded
-                            speed. Higher Kp/Ki give stiffer tracking; too high causes oscillation or
-                            overshoot. Kd is normally 0.
+                            {t("settingsDriveMotor.wheelVelocityPidDescription")}
                         </Paragraph>
                     </div>
                     <Form layout="vertical" size="small">
                         <Row gutter={[16, 0]}>
                             <Col xs={12} sm={8}>
-                                <Form.Item label="Kp" tooltip="Proportional gain (PWM per m/s)">
+                                <Form.Item label="Kp" tooltip={t("settingsDriveMotor.kpTooltip")}>
                                     <InputNumber
                                         value={values.wheel_pid_kp}
                                         onChange={(v) => onChange("wheel_pid_kp", v)}
@@ -47,7 +47,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange }) => {
                                 </Form.Item>
                             </Col>
                             <Col xs={12} sm={8}>
-                                <Form.Item label="Ki" tooltip="Integral gain (PWM per m/s·s) — bridges the static-friction deadband">
+                                <Form.Item label="Ki" tooltip={t("settingsDriveMotor.kiTooltip")}>
                                     <InputNumber
                                         value={values.wheel_pid_ki}
                                         onChange={(v) => onChange("wheel_pid_ki", v)}
@@ -57,7 +57,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange }) => {
                                 </Form.Item>
                             </Col>
                             <Col xs={12} sm={8}>
-                                <Form.Item label="Kd" tooltip="Derivative gain (PWM per m/s²) — 0 disables">
+                                <Form.Item label="Kd" tooltip={t("settingsDriveMotor.kdTooltip")}>
                                     <InputNumber
                                         value={values.wheel_pid_kd}
                                         onChange={(v) => onChange("wheel_pid_kd", v)}
@@ -67,7 +67,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange }) => {
                                 </Form.Item>
                             </Col>
                             <Col xs={12} sm={8}>
-                                <Form.Item label="Integral Limit" tooltip="Anti-windup clamp on the integral term (PWM, motor max 255)">
+                                <Form.Item label={t("settingsDriveMotor.integralLimit")} tooltip={t("settingsDriveMotor.integralLimitTooltip")}>
                                     <InputNumber
                                         value={values.wheel_pid_integral_limit}
                                         onChange={(v) => onChange("wheel_pid_integral_limit", v)}
@@ -81,13 +81,13 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange }) => {
                 </Space>
             </Card>
 
-            <Card size="small" title="Feedforward" style={{ marginBottom: 16 }}>
+            <Card size="small" title={t("settingsDriveMotor.feedforward")} style={{ marginBottom: 16 }}>
                 <Form layout="vertical" size="small">
                     <Row gutter={[16, 0]}>
                         <Col xs={12} sm={8}>
                             <Form.Item
-                                label="PWM per m/s"
-                                tooltip="Open-loop velocity→PWM feedforward scale. Dominant drive term; also sets the idle/deadband mapping. Change with care."
+                                label={t("settingsDriveMotor.pwmPerMps")}
+                                tooltip={t("settingsDriveMotor.pwmPerMpsTooltip")}
                             >
                                 <InputNumber
                                     value={values.wheel_pid_pwm_per_mps}

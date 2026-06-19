@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Alert, Badge, Button, Input, Spin, Typography } from "antd";
 import {
     ReloadOutlined,
@@ -31,6 +32,7 @@ import { SettingsPreview } from "../components/settings/SettingsPreview.tsx";
 const { Text } = Typography;
 
 export const SettingsPage = () => {
+    const { t } = useTranslation();
     const guiApi = useApi();
     const isMobile = useIsMobile();
     const { colors } = useThemeMode();
@@ -60,9 +62,9 @@ export const SettingsPage = () => {
     // Long-running: container restart + rosbridge reconnect. Disable button
     // until ROS2 is reachable again to avoid duplicate-click restart storms.
     const ros2Restart = useContainerRestart({
-        pendingLabel: "Redémarrage ROS2…",
-        successMessage: "ROS2 redémarré",
-        errorMessage: "Échec du redémarrage ROS2",
+        pendingLabel: t('settingsPage.ros2Restarting'),
+        successMessage: t('settingsPage.ros2Restarted'),
+        errorMessage: t('settingsPage.ros2RestartFailed'),
     });
     const handleRestartRos2 = useCallback(
         () => ros2Restart.run(() => restartRos2(guiApi)),
@@ -133,7 +135,7 @@ export const SettingsPage = () => {
                 <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
                     <Input
                         prefix={<SearchOutlined style={{ color: colors.muted }} />}
-                        placeholder="Rechercher un réglage…"
+                        placeholder={t('settingsPage.searchSettingPlaceholder')}
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         allowClear
@@ -213,12 +215,12 @@ export const SettingsPage = () => {
                             <div className="mn-display" style={{
                                 fontSize: 28, color: colors.text, lineHeight: 1.1, letterSpacing: '-0.01em',
                             }}>
-                                {currentSectionMeta.label}
+                                {t(currentSectionMeta.label)}
                             </div>
                             <div style={{
                                 fontSize: 12, color: colors.textDim, marginTop: 4,
                             }}>
-                                {currentSectionMeta.description}
+                                {t(currentSectionMeta.description)}
                             </div>
                         </div>
                     )}

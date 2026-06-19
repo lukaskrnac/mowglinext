@@ -1,6 +1,7 @@
 import React from "react";
 import { Card, Col, Form, InputNumber, Row, Switch, Typography } from "antd";
 import { AimOutlined, RadarChartOutlined } from "@ant-design/icons";
+import { useTranslation } from "react-i18next";
 import { RobotComponentEditor } from "../RobotComponentEditor.tsx";
 
 const { Text, Paragraph } = Typography;
@@ -11,6 +12,7 @@ type Props = {
 };
 
 export const SensorsSection: React.FC<Props> = ({ values, onChange }) => {
+    const { t } = useTranslation();
     // fusion_graph is the sole localizer and always runs (the use_fusion_graph
     // launch flag was removed), so the LiDAR toggle drives the scan-factor
     // gates that ARE consumed by fusion_graph.launch.py: use_scan_matching and
@@ -30,13 +32,12 @@ export const SensorsSection: React.FC<Props> = ({ values, onChange }) => {
                     <div>
                         <Text strong style={{ fontSize: 14 }}>
                             <RadarChartOutlined style={{ marginRight: 6 }} />
-                            LiDAR Sensor
+                            {t("settingsSensors.lidarSensor")}
                         </Text>
                         <Paragraph type="secondary" style={{ margin: "4px 0 0" }}>
-                            Enable if your robot has a LiDAR. Also flips
-                            {" "}<Text code>use_scan_matching</Text> and{" "}
-                            <Text code>use_loop_closure</Text> so the factor graph fuses LiDAR
-                            scans. Fine-tune those in the Localization tab.
+                            {t("settingsSensors.lidarDescriptionPart1")}
+                            {" "}<Text code>use_scan_matching</Text>{t("settingsSensors.lidarDescriptionAnd")}
+                            <Text code>use_loop_closure</Text>{t("settingsSensors.lidarDescriptionPart2")}
                         </Paragraph>
                     </div>
                     <Switch
@@ -53,17 +54,16 @@ export const SensorsSection: React.FC<Props> = ({ values, onChange }) => {
             <Card size="small" style={{ marginTop: 16 }} title={
                 <Text strong style={{ fontSize: 14 }}>
                     <AimOutlined style={{ marginRight: 6 }} />
-                    IMU bias calibration
+                    {t("settingsSensors.imuBiasCalibration")}
                 </Text>
             }>
                 <Paragraph type="secondary" style={{ margin: "0 0 12px", fontSize: 12 }}>
-                    The hardware bridge re-estimates IMU gyro/accel bias automatically while the
-                    robot is parked and stationary on the dock. These tune how it samples.
+                    {t("settingsSensors.imuBiasCalibrationDescription")}
                 </Paragraph>
                 <Form layout="vertical" size="small">
                     <Row gutter={[16, 0]}>
                         <Col xs={24} sm={8}>
-                            <Form.Item label="Calibration samples" tooltip="Number of stationary IMU samples averaged per bias calibration.">
+                            <Form.Item label={t("settingsSensors.calibrationSamples")} tooltip={t("settingsSensors.calibrationSamplesTooltip")}>
                                 <InputNumber
                                     value={values.imu_cal_samples}
                                     onChange={(v) => onChange("imu_cal_samples", v)}
@@ -73,7 +73,7 @@ export const SensorsSection: React.FC<Props> = ({ values, onChange }) => {
                             </Form.Item>
                         </Col>
                         <Col xs={24} sm={8}>
-                            <Form.Item label="Rest window before cal" tooltip="How long the robot must be detected stationary before a calibration starts.">
+                            <Form.Item label={t("settingsSensors.restWindowBeforeCal")} tooltip={t("settingsSensors.restWindowBeforeCalTooltip")}>
                                 <InputNumber
                                     value={values.imu_cal_auto_rest_sec}
                                     onChange={(v) => onChange("imu_cal_auto_rest_sec", v)}
@@ -83,7 +83,7 @@ export const SensorsSection: React.FC<Props> = ({ values, onChange }) => {
                             </Form.Item>
                         </Col>
                         <Col xs={24} sm={8}>
-                            <Form.Item label="Periodic recal interval" tooltip="Re-estimate the IMU bias every N seconds while docked. 0 disables periodic recal.">
+                            <Form.Item label={t("settingsSensors.periodicRecalInterval")} tooltip={t("settingsSensors.periodicRecalIntervalTooltip")}>
                                 <InputNumber
                                     value={values.imu_cal_periodic_recal_sec}
                                     onChange={(v) => onChange("imu_cal_periodic_recal_sec", v)}

@@ -67,6 +67,25 @@ func TestSetParams_UpdatesAndEchoes(t *testing.T) {
 	assert.Equal(t, 0.22, ros.SetParams[0][0].Value)
 }
 
+func TestSetParams_PreservesFractionalTicksPerMeter(t *testing.T) {
+	ros := types.NewMockRosProvider()
+	r := newParamsRouter(ros)
+
+	body, _ := json.Marshal(SetParamsRequest{Parameters: []types.RosParameter{
+		{Name: "hardware_bridge.ticks_per_meter", Value: 319.305},
+	}})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/params", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, ros.SetParams, 1)
+	require.Len(t, ros.SetParams[0], 1)
+	assert.Equal(t, "hardware_bridge.ticks_per_meter", ros.SetParams[0][0].Name)
+	assert.Equal(t, 319.305, ros.SetParams[0][0].Value)
+}
+
 func TestSetParams_RejectsEmpty(t *testing.T) {
 	ros := types.NewMockRosProvider()
 	r := newParamsRouter(ros)

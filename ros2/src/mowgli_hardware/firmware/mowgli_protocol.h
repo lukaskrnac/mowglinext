@@ -38,6 +38,7 @@
 #ifndef MOWGLI_PROTOCOL_H
 #define MOWGLI_PROTOCOL_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -47,9 +48,12 @@ extern "C"
 
   /* ---------------------------------------------------------------------------
    * Protocol version — increment when wire format changes incompatibly.
+   * v2 moves runtime drive tuning to packet 0x54 and adds ticks_per_meter to
+   * the payload so old firmware safely ignores the new packet instead of
+   * mis-parsing it as legacy PID-only data.
    * ---------------------------------------------------------------------------*/
 
-#define MOWGLI_PROTOCOL_VERSION 1u
+#define MOWGLI_PROTOCOL_VERSION 2u
 
 /* ---------------------------------------------------------------------------
  * Packet IDs
@@ -96,7 +100,7 @@ extern "C"
  *  retune the per-wheel velocity loop at runtime without reflashing. The
  *  firmware validates and clamps every field; its compile-time defaults remain
  *  the power-on fallback. */
-#define PKT_ID_SET_DRIVE_PID 0x53u
+#define PKT_ID_SET_DRIVE_PID 0x54u
 
 /* ---------------------------------------------------------------------------
  * status_bitmask bit definitions  (pkt_status_t::status_bitmask)
@@ -290,17 +294,19 @@ extern "C"
   } pkt_cmd_vel_t;
 
   /**
-   * @brief Drive-motor PID gains packet — Host -> Firmware (PKT_ID_SET_DRIVE_PID = 0x53).
+   * @brief Drive-motor runtime tuning packet — Host -> Firmware (PKT_ID_SET_DRIVE_PID = 0x54).
    *
-   * Retunes the per-wheel velocity loop (both wheels share the same gains). The
-   * firmware rejects the packet if any field is non-finite and clamps each field
-   * to a safe range before applying; the output limit stays fixed at 255 PWM.
+   * Retunes the per-wheel velocity loop (both wheels share the same gains) and
+   * the runtime ticks_per_meter scale used by the wheel PI and odometry math.
+   * The firmware rejects the packet if any field is non-finite and clamps each
+   * field to a safe range before applying; the output limit stays fixed at 255 PWM.
    *
-   * Wire size: 23 bytes (must match sizeof(LlSetDrivePid) in ll_datatypes.hpp).
+   * Wire size: 27 bytes (must match sizeof(LlSetDrivePid) in ll_datatypes.hpp).
    */
   typedef struct
   {
     uint8_t type; /**< PKT_ID_SET_DRIVE_PID */
+    float ticks_per_meter; /**< Runtime encoder scale [ticks / m] */
     float kp; /**< Proportional gain [PWM per m/s] */
     float ki; /**< Integral gain [PWM per (m/s·s)] */
     float kd; /**< Derivative gain [PWM per (m/s²)] */
@@ -357,7 +363,23 @@ extern "C"
   _Static_assert(sizeof(pkt_heartbeat_t) == 5u, "pkt_heartbeat_t layout unexpected");
   _Static_assert(sizeof(pkt_hl_state_t) == 5u, "pkt_hl_state_t layout unexpected");
   _Static_assert(sizeof(pkt_cmd_vel_t) == 11u, "pkt_cmd_vel_t layout unexpected");
-  _Static_assert(sizeof(pkt_set_drive_pid_t) == 23u, "pkt_set_drive_pid_t layout unexpected");
+  _Static_assert(sizeof(pkt_set_drive_pid_t) == 27u, "pkt_set_drive_pid_t layout unexpected");
+  _Static_assert(offsetof(pkt_set_drive_pid_t, type) == 0u,
+                 "pkt_set_drive_pid_t.type offset unexpected");
+  _Static_assert(offsetof(pkt_set_drive_pid_t, ticks_per_meter) == 1u,
+                 "pkt_set_drive_pid_t.ticks_per_meter offset unexpected");
+  _Static_assert(offsetof(pkt_set_drive_pid_t, kp) == 5u,
+                 "pkt_set_drive_pid_t.kp offset unexpected");
+  _Static_assert(offsetof(pkt_set_drive_pid_t, ki) == 9u,
+                 "pkt_set_drive_pid_t.ki offset unexpected");
+  _Static_assert(offsetof(pkt_set_drive_pid_t, kd) == 13u,
+                 "pkt_set_drive_pid_t.kd offset unexpected");
+  _Static_assert(offsetof(pkt_set_drive_pid_t, integral_limit) == 17u,
+                 "pkt_set_drive_pid_t.integral_limit offset unexpected");
+  _Static_assert(offsetof(pkt_set_drive_pid_t, pwm_per_mps) == 21u,
+                 "pkt_set_drive_pid_t.pwm_per_mps offset unexpected");
+  _Static_assert(offsetof(pkt_set_drive_pid_t, crc) == 25u,
+                 "pkt_set_drive_pid_t.crc offset unexpected");
 #endif
 
 #ifdef __cplusplus

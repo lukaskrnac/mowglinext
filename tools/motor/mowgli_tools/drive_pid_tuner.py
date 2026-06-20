@@ -253,7 +253,7 @@ class DrivePidTuner(Node):
         self._latest_gnss_status: GnssStatus | None = None
         self._latest_odom_time: float | None = None
         self._latest_wheel_tick_time: float | None = None
-        self._latest_wheel_tick_factor: int | None = None
+        self._latest_wheel_tick_factor: float | None = None
         self._latest_wheel_tick_stamp: str | None = None
         self._failure_message: str | None = None
         self._failure_status_snapshot: dict[str, Any] | None = None
@@ -319,7 +319,7 @@ class DrivePidTuner(Node):
 
     def _on_wheel_ticks(self, msg: WheelTick) -> None:
         self._latest_wheel_tick_time = time.monotonic()
-        self._latest_wheel_tick_factor = int(msg.wheel_tick_factor)
+        self._latest_wheel_tick_factor = float(msg.wheel_tick_factor)
         self._latest_wheel_tick_stamp = self._stamp_to_iso(msg.stamp)
         if self._active_trial is None:
             return

@@ -171,13 +171,13 @@ type driveTuningReport struct {
 }
 
 type driveTuningStatusReport struct {
-	ActiveEmergency        *bool  `json:"active_emergency,omitempty" yaml:"active_emergency"`
-	LatchedEmergency       *bool  `json:"latched_emergency,omitempty" yaml:"latched_emergency"`
-	IsCharging             *bool  `json:"is_charging,omitempty" yaml:"is_charging"`
-	MowerStatus            *int   `json:"mower_status,omitempty" yaml:"mower_status"`
-	EscPower               *bool  `json:"esc_power,omitempty" yaml:"esc_power"`
-	WheelTickFactor        *int   `json:"wheel_tick_factor,omitempty" yaml:"wheel_tick_factor"`
-	LastWheelTickTimestamp string `json:"last_wheel_tick_timestamp,omitempty" yaml:"last_wheel_tick_timestamp"`
+	ActiveEmergency        *bool    `json:"active_emergency,omitempty" yaml:"active_emergency"`
+	LatchedEmergency       *bool    `json:"latched_emergency,omitempty" yaml:"latched_emergency"`
+	IsCharging             *bool    `json:"is_charging,omitempty" yaml:"is_charging"`
+	MowerStatus            *int     `json:"mower_status,omitempty" yaml:"mower_status"`
+	EscPower               *bool    `json:"esc_power,omitempty" yaml:"esc_power"`
+	WheelTickFactor        *float64 `json:"wheel_tick_factor,omitempty" yaml:"wheel_tick_factor"`
+	LastWheelTickTimestamp string   `json:"last_wheel_tick_timestamp,omitempty" yaml:"last_wheel_tick_timestamp"`
 }
 
 type driveTuningDrivetrain struct {
@@ -1291,6 +1291,14 @@ func sanitizeDriveTuningDrivetrain(drivetrain *driveTuningDrivetrain) *driveTuni
 	return drivetrain
 }
 
+func sanitizeDriveTuningStatusReport(status *driveTuningStatusReport) *driveTuningStatusReport {
+	if status == nil {
+		return nil
+	}
+	status.WheelTickFactor = sanitizeFloat64Ptr(status.WheelTickFactor)
+	return status
+}
+
 func sanitizeDriveTuningReport(report *driveTuningReport) {
 	report.DistanceM = sanitizeFloat64Value(report.DistanceM)
 	report.MaxSpeedMps = sanitizeFloat64Value(report.MaxSpeedMps)
@@ -1298,6 +1306,7 @@ func sanitizeDriveTuningReport(report *driveTuningReport) {
 	report.OdomTimeoutS = sanitizeFloat64Value(report.OdomTimeoutS)
 	report.TestSpeedMps = sanitizeFloat64Ptr(report.TestSpeedMps)
 	report.RobotMassKg = sanitizeFloat64Ptr(report.RobotMassKg)
+	report.StatusSnapshot = sanitizeDriveTuningStatusReport(report.StatusSnapshot)
 	report.Drivetrain = sanitizeDriveTuningDrivetrain(report.Drivetrain)
 	report.CurrentParams = sanitizeFloat64Map(report.CurrentParams)
 	report.StartingParams = sanitizeFloat64Map(report.StartingParams)

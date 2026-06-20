@@ -356,7 +356,7 @@ export const useSettingsManager = () => {
             // restart). yamlCreate above persisted them to mowgli_robot.yaml
             // for the next boot; this sets the live ROS params too. The
             // hardware_bridge callback applies ticks_per_meter in-process and
-            // re-sends drive PID/feedforward to the STM32 firmware.
+            // re-sends the full drive runtime tuning packet to the STM32 firmware.
             if (hasDirtyChanges && liveHardwareDirty) {
                 const parameters = liveHardwareKeys
                     .filter((k) => dirtyKeys.has(k) && k in localValues)

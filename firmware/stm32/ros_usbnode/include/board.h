@@ -48,7 +48,7 @@ extern "C"
 
 #define MAX_MPS 0.5		  // Allow maximum speed of 1.0 m/s
 #define PWM_PER_MPS 300.0 // PWM value of 300 means 1 m/s bot speed so we divide by 4 to have correct robot speed but still progressive speed
-#define TICKS_PER_M 399.0 // Field-calibrated motor encoder ticks per meter
+#define TICKS_PER_M 399.0 // Power-on fallback encoder ticks per meter; ROS runtime tuning overrides this after host connection
 #define WHEEL_BASE  0.325		// The distance between the center of the wheels in meters
 
 #define OPTION_ULTRASONIC 0
@@ -69,7 +69,7 @@ extern "C"
 
 #define MAX_MPS 0.5		  // Allow maximum speed of 1.0 m/s
 #define PWM_PER_MPS 300.0 // PWM value of 300 means 1 m/s bot speed so we divide by 4 to have correct robot speed but still progressive speed
-#define TICKS_PER_M 300.0 // Motor Encoder ticks per meter
+#define TICKS_PER_M 300.0 // Power-on fallback encoder ticks per meter; ROS runtime tuning overrides this after host connection
 #define WHEEL_BASE  0.325		// The distance between the center of the wheels in meters
 
 #define OPTION_ULTRASONIC 0
@@ -87,7 +87,7 @@ extern "C"
 
 #define MAX_MPS 0.5		  // Allow maximum speed of 1.0 m/s
 #define PWM_PER_MPS 300.0 // PWM value of 300 means 1 m/s bot speed so we divide by 4 to have correct robot speed but still progressive speed
-#define TICKS_PER_M 300.0 // Motor Encoder ticks per meter
+#define TICKS_PER_M 300.0 // Power-on fallback encoder ticks per meter; ROS runtime tuning overrides this after host connection
 #define WHEEL_BASE 0.285   // The distance between the center of the wheels in meters
 
 #define BOARD_HAS_MASTER_USART 0

@@ -73,6 +73,18 @@ static constexpr uint8_t HL_MODE_IDLE = 1u;  ///< Docked or between missions
 static constexpr uint8_t HL_MODE_AUTONOMOUS = 2u;  ///< Autonomous mowing
 static constexpr uint8_t HL_MODE_RECORDING = 3u;  ///< Area recording
 static constexpr uint8_t HL_MODE_MANUAL_MOWING = 4u;  ///< Manual teleop with blade
+static constexpr double kMinRuntimeTicksPerMeter = 50.0;
+static constexpr double kMaxRuntimeTicksPerMeter = 5000.0;
+static constexpr double kMinRuntimePwmPerMps = 50.0;
+static constexpr double kMaxRuntimePwmPerMps = 600.0;
+static constexpr double kMinRuntimeWheelKp = 0.0;
+static constexpr double kMaxRuntimeWheelKp = 200.0;
+static constexpr double kMinRuntimeWheelKi = 0.0;
+static constexpr double kMaxRuntimeWheelKi = 20000.0;
+static constexpr double kMinRuntimeWheelKd = 0.0;
+static constexpr double kMaxRuntimeWheelKd = 500.0;
+static constexpr double kMinRuntimeWheelIntegralLimit = 0.0;
+static constexpr double kMaxRuntimeWheelIntegralLimit = 255.0;
 
 static const char* high_level_mode_name(const uint8_t mode)
 {
@@ -161,10 +173,9 @@ private:
     // Previously hardcoded as kWheelBase=0.325 / kTicksPerMeter=300.0; that
     // duplicated the URDF args and the firmware TICKS_PER_M, so any
     // re-calibration touched three places. wheel_track is the centre-to-
-    // centre drive-wheel distance; ticks_per_meter is what the STM32
-    // firmware advertises in board.h and uses when reporting cumulative
-    // tick deltas in the odom packet (so the conversion m = ticks /
-    // ticks_per_meter matches the firmware-side scaling).
+    // centre drive-wheel distance; ticks_per_meter is the runtime encoder
+    // scale used by this bridge for host-side odometry and re-sent to the
+    // STM32 so the firmware wheel PI / odom share the same tuned value.
     wheel_track_ = declare_parameter<double>("wheel_track", 0.325);
     ticks_per_meter_ = declare_parameter<double>("ticks_per_meter", 300.0);
     // Drive-motor wheel-velocity PID gains + feedforward. Pushed to the STM32
@@ -187,6 +198,27 @@ private:
           rcl_interfaces::msg::SetParametersResult result;
           result.successful = true;
           bool drive_pid_changed = false;
+          double next_min_linear_vel = min_linear_vel_;
+          double next_ticks_per_meter = ticks_per_meter_;
+          double next_wheel_pid_kp = wheel_pid_kp_;
+          double next_wheel_pid_ki = wheel_pid_ki_;
+          double next_wheel_pid_kd = wheel_pid_kd_;
+          double next_wheel_pid_integral_limit = wheel_pid_integral_limit_;
+          double next_wheel_pid_pwm_per_mps = wheel_pid_pwm_per_mps_;
+          auto reject_invalid_double = [&result](const std::string& name,
+                                                 const double value,
+                                                 const double lower,
+                                                 const double upper)
+          {
+            if (!std::isfinite(value) || value < lower || value > upper)
+            {
+              result.successful = false;
+              result.reason = name + " must be finite and within [" + std::to_string(lower) + ", " +
+                              std::to_string(upper) + "]";
+              return true;
+            }
+            return false;
+          };
           for (const auto& p : params)
           {
             if (p.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE)
@@ -196,38 +228,82 @@ private:
             const std::string& name = p.get_name();
             if (name == "min_linear_vel")
             {
-              min_linear_vel_ = p.as_double();
+              next_min_linear_vel = p.as_double();
             }
             else if (name == "ticks_per_meter")
             {
-              ticks_per_meter_ = p.as_double();
+              if (reject_invalid_double(
+                      name, p.as_double(), kMinRuntimeTicksPerMeter, kMaxRuntimeTicksPerMeter))
+              {
+                break;
+              }
+              next_ticks_per_meter = p.as_double();
+              drive_pid_changed = true;
             }
             else if (name == "wheel_pid_kp")
             {
-              wheel_pid_kp_ = p.as_double();
+              if (reject_invalid_double(
+                      name, p.as_double(), kMinRuntimeWheelKp, kMaxRuntimeWheelKp))
+              {
+                break;
+              }
+              next_wheel_pid_kp = p.as_double();
               drive_pid_changed = true;
             }
             else if (name == "wheel_pid_ki")
             {
-              wheel_pid_ki_ = p.as_double();
+              if (reject_invalid_double(
+                      name, p.as_double(), kMinRuntimeWheelKi, kMaxRuntimeWheelKi))
+              {
+                break;
+              }
+              next_wheel_pid_ki = p.as_double();
               drive_pid_changed = true;
             }
             else if (name == "wheel_pid_kd")
             {
-              wheel_pid_kd_ = p.as_double();
+              if (reject_invalid_double(
+                      name, p.as_double(), kMinRuntimeWheelKd, kMaxRuntimeWheelKd))
+              {
+                break;
+              }
+              next_wheel_pid_kd = p.as_double();
               drive_pid_changed = true;
             }
             else if (name == "wheel_pid_integral_limit")
             {
-              wheel_pid_integral_limit_ = p.as_double();
+              if (reject_invalid_double(name,
+                                        p.as_double(),
+                                        kMinRuntimeWheelIntegralLimit,
+                                        kMaxRuntimeWheelIntegralLimit))
+              {
+                break;
+              }
+              next_wheel_pid_integral_limit = p.as_double();
               drive_pid_changed = true;
             }
             else if (name == "wheel_pid_pwm_per_mps")
             {
-              wheel_pid_pwm_per_mps_ = p.as_double();
+              if (reject_invalid_double(
+                      name, p.as_double(), kMinRuntimePwmPerMps, kMaxRuntimePwmPerMps))
+              {
+                break;
+              }
+              next_wheel_pid_pwm_per_mps = p.as_double();
               drive_pid_changed = true;
             }
           }
+          if (!result.successful)
+          {
+            return result;
+          }
+          min_linear_vel_ = next_min_linear_vel;
+          ticks_per_meter_ = next_ticks_per_meter;
+          wheel_pid_kp_ = next_wheel_pid_kp;
+          wheel_pid_ki_ = next_wheel_pid_ki;
+          wheel_pid_kd_ = next_wheel_pid_kd;
+          wheel_pid_integral_limit_ = next_wheel_pid_integral_limit;
+          wheel_pid_pwm_per_mps_ = next_wheel_pid_pwm_per_mps;
           // Push the new gains to the firmware immediately (live apply, no
           // restart), and arm a couple of heartbeat resends in case this packet
           // is lost. The firmware re-clamps every value, so this callback does
@@ -1374,7 +1450,7 @@ private:
 
     mowgli_interfaces::msg::WheelTick wt{};
     wt.stamp = now();
-    wt.wheel_tick_factor = static_cast<uint32_t>(std::lround(ticks_per_meter_));
+    wt.wheel_tick_factor = static_cast<float>(ticks_per_meter_);
     wt.valid_wheels = mowgli_interfaces::msg::WheelTick::WHEEL_VALID_RL |
                       mowgli_interfaces::msg::WheelTick::WHEEL_VALID_RR;
     wt.wheel_direction_rl = wheel_dir_left_;
@@ -1546,8 +1622,8 @@ private:
     send_raw_packet(reinterpret_cast<const uint8_t*>(&pkt), sizeof(LlReboot) - sizeof(uint16_t));
   }
 
-  // Push the drive-motor PID gains + feedforward to the firmware. The board has
-  // no config persistence, so the bridge is the source of truth and re-sends
+  // Push the drive-motor runtime tuning to the firmware. The board has no
+  // config persistence, so the bridge is the source of truth and re-sends
   // these on every (re)connect (pid_resend_count_) and whenever a parameter
   // changes. The firmware validates/clamps every field on receipt.
   void send_drive_pid()
@@ -1562,6 +1638,7 @@ private:
     }
     LlSetDrivePid pkt{};
     pkt.type = PACKET_ID_LL_SET_DRIVE_PID;
+    pkt.ticks_per_meter = static_cast<float>(ticks_per_meter_);
     pkt.kp = static_cast<float>(wheel_pid_kp_);
     pkt.ki = static_cast<float>(wheel_pid_ki_);
     pkt.kd = static_cast<float>(wheel_pid_kd_);
@@ -1570,8 +1647,17 @@ private:
     if (send_raw_packet(reinterpret_cast<const uint8_t*>(&pkt),
                         sizeof(LlSetDrivePid) - sizeof(uint16_t)))
     {
+      RCLCPP_WARN_ONCE(
+          get_logger(),
+          "Drive runtime tuning now uses protocol v%u packet 0x%02X (27-byte payload with "
+          "ticks_per_meter). Older STM32 firmware that only understands the legacy 0x53 packet "
+          "will ignore live drive tuning until you flash the matching firmware.",
+          static_cast<unsigned>(kMowgliProtocolVersion),
+          static_cast<unsigned>(PACKET_ID_LL_SET_DRIVE_PID));
       RCLCPP_INFO(get_logger(),
-                  "Sent drive PID: kp=%.3f ki=%.3f kd=%.3f integral_limit=%.3f pwm_per_mps=%.3f",
+                  "Sent drive params: ticks_per_meter=%.3f kp=%.3f ki=%.3f kd=%.3f "
+                  "integral_limit=%.3f pwm_per_mps=%.3f",
+                  ticks_per_meter_,
                   wheel_pid_kp_,
                   wheel_pid_ki_,
                   wheel_pid_kd_,

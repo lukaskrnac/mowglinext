@@ -33,6 +33,11 @@
 namespace mowgli_hardware
 {
 
+// Protocol v2 moves runtime drive tuning to packet 0x54 and adds
+// ticks_per_meter to the payload so legacy firmware safely ignores the packet
+// rather than mis-parsing it as the old PID-only layout.
+static constexpr uint8_t kMowgliProtocolVersion = 2u;
+
 // ---------------------------------------------------------------------------
 // Packet type identifiers
 // ---------------------------------------------------------------------------
@@ -52,7 +57,8 @@ enum PacketId : uint8_t
   PACKET_ID_LL_BLADE_STATUS = 0x05,  ///< STM32 → Pi: blade motor status
   PACKET_ID_LL_CMD_BLADE = 0x51,  ///< Pi → STM32: blade motor control
   PACKET_ID_LL_REBOOT = 0x52,  ///< Pi → STM32: reboot the board (NVIC_SystemReset)
-  PACKET_ID_LL_SET_DRIVE_PID = 0x53,  ///< Pi → STM32: drive-motor PID/feedforward gains
+  PACKET_ID_LL_SET_DRIVE_PID =
+      0x54,  ///< Pi → STM32: drive-motor runtime tuning (PID/FF + ticks_per_meter)
 };
 
 /// Magic byte in LlReboot — a dedicated reboot packet plus this confirmation
@@ -220,15 +226,17 @@ struct LlReboot
 };
 
 /**
- * @brief Drive-motor PID gains packet sent by the Pi (PACKET_ID_LL_SET_DRIVE_PID = 0x53).
+ * @brief Drive-motor runtime tuning packet sent by the Pi (PACKET_ID_LL_SET_DRIVE_PID = 0x54).
  *
  * Retunes the firmware's per-wheel velocity loop (both wheels share the gains)
- * without reflashing. The firmware validates/clamps every field before applying
- * and keeps its compile-time defaults as the power-on fallback.
+ * and the runtime encoder scale without reflashing. The firmware
+ * validates/clamps every field before applying and keeps its compile-time
+ * defaults as the power-on fallback until the host reconnects.
  */
 struct LlSetDrivePid
 {
   uint8_t type;  ///< Must equal PACKET_ID_LL_SET_DRIVE_PID
+  float ticks_per_meter;  ///< Runtime encoder scale [ticks / m]
   float kp;  ///< Proportional gain [PWM per m/s]
   float ki;  ///< Integral gain [PWM per (m/s·s)]
   float kd;  ///< Derivative gain [PWM per (m/s²)]
@@ -236,6 +244,18 @@ struct LlSetDrivePid
   float pwm_per_mps;  ///< Open-loop feedforward velocity→PWM scale
   uint16_t crc;  ///< CRC-16 CCITT over all preceding bytes
 };
+
+static_assert(offsetof(LlSetDrivePid, type) == 0u, "LlSetDrivePid.type offset drifted");
+static_assert(offsetof(LlSetDrivePid, ticks_per_meter) == 1u,
+              "LlSetDrivePid.ticks_per_meter offset drifted");
+static_assert(offsetof(LlSetDrivePid, kp) == 5u, "LlSetDrivePid.kp offset drifted");
+static_assert(offsetof(LlSetDrivePid, ki) == 9u, "LlSetDrivePid.ki offset drifted");
+static_assert(offsetof(LlSetDrivePid, kd) == 13u, "LlSetDrivePid.kd offset drifted");
+static_assert(offsetof(LlSetDrivePid, integral_limit) == 17u,
+              "LlSetDrivePid.integral_limit offset drifted");
+static_assert(offsetof(LlSetDrivePid, pwm_per_mps) == 21u,
+              "LlSetDrivePid.pwm_per_mps offset drifted");
+static_assert(offsetof(LlSetDrivePid, crc) == 25u, "LlSetDrivePid.crc offset drifted");
 
 /**
  * @brief Blade motor status packet from STM32 (PACKET_ID_LL_BLADE_STATUS = 0x05).
@@ -266,6 +286,6 @@ static_assert(sizeof(LlHighLevelState) == 5u, "LlHighLevelState layout mismatch"
 static_assert(sizeof(LlCmdVel) == 11u, "LlCmdVel layout mismatch");
 static_assert(sizeof(LlCmdBlade) == 5u, "LlCmdBlade layout mismatch");
 static_assert(sizeof(LlBladeStatus) == 16u, "LlBladeStatus layout mismatch");
-static_assert(sizeof(LlSetDrivePid) == 23u, "LlSetDrivePid layout mismatch");
+static_assert(sizeof(LlSetDrivePid) == 27u, "LlSetDrivePid layout mismatch");
 
 }  // namespace mowgli_hardware

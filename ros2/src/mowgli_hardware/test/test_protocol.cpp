@@ -86,8 +86,9 @@ TEST(ProtocolSizes, RebootPacketSize)
 
 TEST(ProtocolSizes, SetDrivePidPacketSize)
 {
-  // type(1) + kp/ki/kd/integral_limit/pwm_per_mps(5*4=20) + crc(2) = 23.
-  EXPECT_EQ(sizeof(LlSetDrivePid), 23u);
+  // type(1) + ticks_per_meter/kp/ki/kd/integral_limit/pwm_per_mps(6*4=24)
+  // + crc(2) = 27.
+  EXPECT_EQ(sizeof(LlSetDrivePid), 27u);
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +108,7 @@ TEST(ProtocolIds, PacketIdValues)
   EXPECT_EQ(PACKET_ID_LL_CMD_VEL, 0x50);
   EXPECT_EQ(PACKET_ID_LL_CMD_BLADE, 0x51);
   EXPECT_EQ(PACKET_ID_LL_REBOOT, 0x52);
-  EXPECT_EQ(PACKET_ID_LL_SET_DRIVE_PID, 0x53);
+  EXPECT_EQ(PACKET_ID_LL_SET_DRIVE_PID, 0x54);
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +296,7 @@ TEST(ProtocolRoundtrip, SetDrivePidPacket)
 {
   LlSetDrivePid pkt{};
   pkt.type = PACKET_ID_LL_SET_DRIVE_PID;
+  pkt.ticks_per_meter = 319.305f;
   pkt.kp = 30.0f;
   pkt.ki = 5000.0f;
   pkt.kd = 0.0f;
@@ -302,6 +304,61 @@ TEST(ProtocolRoundtrip, SetDrivePidPacket)
   pkt.pwm_per_mps = 300.0f;
 
   roundtrip_struct(pkt);
+}
+
+TEST(SetDrivePidPacket, PreservesFractionalTicksPerMeter)
+{
+  LlSetDrivePid pkt{};
+  pkt.type = PACKET_ID_LL_SET_DRIVE_PID;
+  pkt.ticks_per_meter = 319.305f;
+  pkt.kp = 0.2f;
+  pkt.ki = 0.0f;
+  pkt.kd = 0.0f;
+  pkt.integral_limit = 0.0f;
+  pkt.pwm_per_mps = 261.035f;
+
+  const uint8_t* raw = reinterpret_cast<const uint8_t*>(&pkt);
+  float decoded_ticks = 0.0f;
+  std::memcpy(&decoded_ticks, raw + 1, sizeof(decoded_ticks));
+  EXPECT_FLOAT_EQ(decoded_ticks, 319.305f);
+
+  float decoded_ff = 0.0f;
+  std::memcpy(&decoded_ff, raw + 21, sizeof(decoded_ff));
+  EXPECT_FLOAT_EQ(decoded_ff, 261.035f);
+}
+
+TEST(SetDrivePidPacket, FieldOffsetsAreCorrect)
+{
+  LlSetDrivePid pkt{};
+  pkt.type = PACKET_ID_LL_SET_DRIVE_PID;
+  pkt.ticks_per_meter = 319.305f;
+  pkt.kp = 0.2f;
+  pkt.ki = 0.3f;
+  pkt.kd = 0.4f;
+  pkt.integral_limit = 10.0f;
+  pkt.pwm_per_mps = 261.035f;
+  pkt.crc = 0xABCD;
+
+  const uint8_t* raw = reinterpret_cast<const uint8_t*>(&pkt);
+  EXPECT_EQ(raw[0], PACKET_ID_LL_SET_DRIVE_PID);
+
+  float value = 0.0f;
+  std::memcpy(&value, raw + 1, sizeof(value));
+  EXPECT_FLOAT_EQ(value, 319.305f);
+  std::memcpy(&value, raw + 5, sizeof(value));
+  EXPECT_FLOAT_EQ(value, 0.2f);
+  std::memcpy(&value, raw + 9, sizeof(value));
+  EXPECT_FLOAT_EQ(value, 0.3f);
+  std::memcpy(&value, raw + 13, sizeof(value));
+  EXPECT_FLOAT_EQ(value, 0.4f);
+  std::memcpy(&value, raw + 17, sizeof(value));
+  EXPECT_FLOAT_EQ(value, 10.0f);
+  std::memcpy(&value, raw + 21, sizeof(value));
+  EXPECT_FLOAT_EQ(value, 261.035f);
+
+  uint16_t crc = 0u;
+  std::memcpy(&crc, raw + 25, sizeof(crc));
+  EXPECT_EQ(crc, 0xABCD);
 }
 
 // ---------------------------------------------------------------------------

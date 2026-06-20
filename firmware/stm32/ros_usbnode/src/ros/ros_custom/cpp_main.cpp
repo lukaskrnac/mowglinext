@@ -111,12 +111,10 @@ static int16_t right_pwm_signed = 0;
 #define WHEEL_PI_KP_PWM_PER_MPS 30.0f /* proportional gain */
 #define WHEEL_PI_KI_PWM_PER_MPS_S                                              \
   5000.0f /* integral gain (50 PWM in ~0.2 s when err=0.05 m/s) */
-#define WHEEL_PI_INT_MAX_PWM 100.0f /* anti-windup clamp on the integral term  \
-                                     */
+#define WHEEL_PI_INT_MAX_PWM                                                   \
+  100.0f /* anti-windup clamp on the integral term                             \
+          */
 #define WHEEL_PI_DT_S (MOTORS_NBT_TIME_MS / 1000.0f)
-#define WHEEL_PI_TICKS_PER_M                                                   \
-  ((float)TICKS_PER_M) /* single source of truth from board.h */
-
 /* Per-wheel velocity PI — battle-tested PX4 PID core (pid.hpp). Gains/limits
  * set once in init_ROS(). The integrator (kept inside the PID object) is what
  * bridges the static-friction deadband; output is the closed-loop PWM trim
@@ -261,13 +259,15 @@ static void on_set_drive_pid(const uint8_t *data, size_t len) {
    * bad host value can never make the wheel loop diverge. Both wheels share
    * the gains; the output limit stays fixed at 255 PWM (motor controller max).
    * pid_constrain() comes from pid.hpp. */
-  if (!std::isfinite(pkt->kp) || !std::isfinite(pkt->ki) ||
-      !std::isfinite(pkt->kd) || !std::isfinite(pkt->integral_limit) ||
-      !std::isfinite(pkt->pwm_per_mps)) {
+  if (!std::isfinite(pkt->ticks_per_meter) || !std::isfinite(pkt->kp) ||
+      !std::isfinite(pkt->ki) || !std::isfinite(pkt->kd) ||
+      !std::isfinite(pkt->integral_limit) || !std::isfinite(pkt->pwm_per_mps)) {
     debug_printf("set_drive_pid rejected: non-finite field\r\n");
     return;
   }
 
+  const float ticks_per_meter =
+      pid_constrain(pkt->ticks_per_meter, 50.0f, 5000.0f);
   const float kp = pid_constrain(pkt->kp, 0.0f, 200.0f);
   const float ki = pid_constrain(pkt->ki, 0.0f, 20000.0f);
   const float kd = pid_constrain(pkt->kd, 0.0f, 500.0f);
@@ -288,11 +288,13 @@ static void on_set_drive_pid(const uint8_t *data, size_t len) {
   right_wheel_pid.setGains(kp, ki, kd);
   right_wheel_pid.setIntegralLimit(ilim);
   right_wheel_pid.setOutputLimit(255.0f);
+  DRIVEMOTOR_SetTicksPerMeter(ticks_per_meter);
   g_pwm_per_mps = ff;
   __enable_irq();
 
-  debug_printf("set_drive_pid: kp=%.3f ki=%.3f kd=%.3f ilim=%.3f ff=%.3f\r\n",
-               kp, ki, kd, ilim, ff);
+  debug_printf(
+      "set_drive_pid: ticks=%.3f kp=%.3f ki=%.3f kd=%.3f ilim=%.3f ff=%.3f\r\n",
+      ticks_per_meter, kp, ki, kd, ilim, ff);
 }
 
 static void on_hl_state(const uint8_t *data, size_t len) {
@@ -439,6 +441,7 @@ extern "C" void motors_handler() {
     uint8_t snap_target_blade = target_blade_on_off;
     uint32_t snap_heartbeat = last_heartbeat_tick;
     uint32_t snap_cmd_vel = last_cmd_vel_tick;
+    float snap_ticks_per_meter = DRIVEMOTOR_GetTicksPerMeter();
     __enable_irq();
 
     blade_on_off = snap_target_blade;
@@ -501,9 +504,9 @@ extern "C" void motors_handler() {
     prev_right_ticks_signed_pi = cur_right_ticks;
 
     const float l_actual_mps =
-        ((float)dleft_ticks) / WHEEL_PI_TICKS_PER_M / WHEEL_PI_DT_S;
+        ((float)dleft_ticks) / snap_ticks_per_meter / WHEEL_PI_DT_S;
     const float r_actual_mps =
-        ((float)dright_ticks) / WHEEL_PI_TICKS_PER_M / WHEEL_PI_DT_S;
+        ((float)dright_ticks) / snap_ticks_per_meter / WHEEL_PI_DT_S;
 
     /* Reset the integrator on direction reversal / stop-to-go / hard-stop.
      * Without this the integral built up while decelerating would drive the
@@ -667,16 +670,18 @@ wheelTicks_handler(int32_t p_s32LeftTicksSigned, int32_t p_s32RightTicksSigned,
   prev_left_ticks = p_s32LeftTicksSigned;
   prev_right_ticks = p_s32RightTicksSigned;
 
-  /* Velocity: mm/s = (delta_ticks / TICKS_PER_M) * (1000 / dt_ms) * 1000
-   *                = delta_ticks * 1e6 / (TICKS_PER_M * dt_ms).
-   * TICKS_PER_M comes from board.h, so odom + wheel PI share the same
-   * encoder scale. Cast to int64 for the multiply to stay safe.         */
+  /* Velocity: mm/s = (delta_ticks / ticks_per_meter) * (1000 / dt_ms) * 1000
+   *                = delta_ticks * 1e6 / (ticks_per_meter * dt_ms).
+   * ticks_per_meter starts from board.h TICKS_PER_M, then the ROS host can
+   * override it at runtime. Use float math here so fractional tuning values
+   * (e.g. 319.305) survive end-to-end. */
   int16_t left_v_mm_s = 0;
   int16_t right_v_mm_s = 0;
   if (dt_ms > 0) {
-    const int64_t denom = (int64_t)TICKS_PER_M * (int64_t)dt_ms;
-    int64_t v_l = ((int64_t)delta_left * 1000000LL) / denom;
-    int64_t v_r = ((int64_t)delta_right * 1000000LL) / denom;
+    const float ticks_per_meter = DRIVEMOTOR_GetTicksPerMeter();
+    const float scale = 1000000.0f / (ticks_per_meter * (float)dt_ms);
+    int32_t v_l = (int32_t)((float)delta_left * scale);
+    int32_t v_r = (int32_t)((float)delta_right * scale);
     if (v_l > 32767)
       v_l = 32767;
     if (v_l < -32768)

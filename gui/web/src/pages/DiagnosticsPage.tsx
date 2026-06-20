@@ -1443,7 +1443,7 @@ export const DiagnosticsPage = () => {
                     </Row>
                     {wheelTicks.wheel_tick_factor != null && (
                         <Typography.Paragraph type="secondary" style={{fontSize: 11, marginTop: 12, marginBottom: 0}}>
-                            Tick factor: <Typography.Text code>{wheelTicks.wheel_tick_factor.toFixed(2)}</Typography.Text> ticks/m at the wheel.
+                            Tick factor: <Typography.Text code>{wheelTicks.wheel_tick_factor.toFixed(3)}</Typography.Text> ticks/m at the wheel.
                             Body omega from L/R diff: <Typography.Text code>{wheelRpm.bodyOmega.toFixed(3)}</Typography.Text> rad/s.
                             <br/>
                             Per-wheel motor temperatures + currents are not exposed by the firmware; only the blade motor reports those (see Hardware Status below).

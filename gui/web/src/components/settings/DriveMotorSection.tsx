@@ -806,7 +806,9 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                                     {latestStatusSnapshot.esc_power == null ? "Unknown" : String(latestStatusSnapshot.esc_power)}
                                 </Descriptions.Item>
                                 <Descriptions.Item label="wheel_tick_factor">
-                                    {latestStatusSnapshot.wheel_tick_factor == null ? "Unknown" : latestStatusSnapshot.wheel_tick_factor}
+                                    {latestStatusSnapshot.wheel_tick_factor == null
+                                        ? "Unknown"
+                                        : formatReportNumber(latestStatusSnapshot.wheel_tick_factor, 3)}
                                 </Descriptions.Item>
                                 <Descriptions.Item label="last_wheel_tick_timestamp" span={2}>
                                     {latestStatusSnapshot.last_wheel_tick_timestamp

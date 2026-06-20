@@ -139,6 +139,9 @@ func TestSanitizeDriveTuningReportRemovesNonFiniteValues(t *testing.T) {
 	report := &driveTuningReport{
 		RobotMassKg:  float64Ptr(math.NaN()),
 		TestSpeedMps: float64Ptr(math.Inf(1)),
+		StatusSnapshot: &driveTuningStatusReport{
+			WheelTickFactor: float64Ptr(math.NaN()),
+		},
 		CurrentParams: map[string]float64{
 			"wheel_pid_kp": math.NaN(),
 			"wheel_pid_ki": 0.25,
@@ -165,6 +168,8 @@ func TestSanitizeDriveTuningReportRemovesNonFiniteValues(t *testing.T) {
 
 	assert.Nil(t, report.RobotMassKg)
 	assert.Nil(t, report.TestSpeedMps)
+	require.NotNil(t, report.StatusSnapshot)
+	assert.Nil(t, report.StatusSnapshot.WheelTickFactor)
 	assert.Equal(t, map[string]float64{"wheel_pid_ki": 0.25}, report.CurrentParams)
 	require.NotNil(t, report.Drivetrain)
 	assert.Nil(t, report.Drivetrain.WheelRadiusM)

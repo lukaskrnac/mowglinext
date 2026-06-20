@@ -1,11 +1,18 @@
+import json
+
+import yaml
+
 from mowgli_tools.drive_pid_math import (
     DrivePidParams,
     SpeedSample,
+    TrialMetrics,
     compute_settling_time,
     compute_trial_metrics,
     detect_oscillation,
+    finite_or_none,
     recommend_drive_pid_params,
     recommend_pid_only_params,
+    sanitize_finite_data,
 )
 
 
@@ -28,6 +35,52 @@ def _early_pid_params(kp: float = 0.0) -> DrivePidParams:
         wheel_pid_kd=0.0,
         wheel_pid_integral_limit=0.0,
         wheel_pid_pwm_per_mps=550.0,
+    )
+
+
+def _trial(
+    *,
+    params: DrivePidParams,
+    name: str,
+    target_speed: float,
+    measured_speed_mean: float,
+    overshoot: float,
+    error_mean: float,
+    oscillation_detected: bool = False,
+    live_oscillation_detected: bool = False,
+    integral_saturation_suspected: bool = False,
+    trial_quality: str = "ok",
+    warnings: tuple[str, ...] = (),
+    left_right_tick_imbalance: float | None = 0.006,
+    settling_time: float | None = 1.2,
+) -> TrialMetrics:
+    return TrialMetrics(
+        name=name,
+        phase="pid",
+        target_speed=target_speed,
+        measured_speed_mean=measured_speed_mean,
+        measured_speed_rms=measured_speed_mean,
+        error_mean=error_mean,
+        error_rms=abs(error_mean),
+        overshoot=overshoot,
+        settling_time=settling_time,
+        ticks_seen=120,
+        left_ticks_seen=118,
+        right_ticks_seen=122,
+        stall_detected=False,
+        oscillation_detected=oscillation_detected,
+        integral_saturation_suspected=integral_saturation_suspected,
+        params_used=params.to_dict(),
+        live_oscillation_detected=live_oscillation_detected,
+        trial_quality=trial_quality,
+        warnings=warnings,
+        ground_speed_mean=None,
+        ground_error_mean=None,
+        odom_distance_m=0.9,
+        rtk_distance_m=None,
+        rtk_accepted=False,
+        left_right_tick_imbalance=left_right_tick_imbalance,
+        notes=(),
     )
 
 
@@ -182,6 +235,78 @@ def test_compute_trial_metrics_does_not_flag_integral_saturation_with_integral_d
     assert not trial.integral_saturation_suspected
 
 
+def test_compute_trial_metrics_does_not_flag_integral_saturation_for_mild_overspeed() -> None:
+    params = DrivePidParams(
+        ticks_per_meter=533.0,
+        wheel_pid_kp=0.2,
+        wheel_pid_ki=0.4,
+        wheel_pid_kd=0.0,
+        wheel_pid_integral_limit=5.0,
+        wheel_pid_pwm_per_mps=345.0,
+    )
+    trial = compute_trial_metrics(
+        name="pid_step",
+        phase="pid",
+        target_speed=0.30,
+        speed_samples=[
+            SpeedSample(0.0, 0.29),
+            SpeedSample(0.4, 0.31),
+            SpeedSample(0.8, 0.312),
+            SpeedSample(1.2, 0.311),
+            SpeedSample(1.6, 0.309),
+            SpeedSample(2.0, 0.310),
+        ],
+        response_samples=None,
+        ticks_seen=120,
+        left_ticks_seen=119,
+        right_ticks_seen=121,
+        params_used=params,
+        ground_speed_mean=None,
+        odom_distance_m=0.9,
+        rtk_distance_m=None,
+        notes=(),
+    )
+
+    assert not trial.integral_saturation_suspected
+
+
+def test_compute_trial_metrics_stop_trial_warns_on_residual_motion_without_flagging_stall() -> None:
+    params = DrivePidParams(
+        ticks_per_meter=345.0,
+        wheel_pid_kp=0.2,
+        wheel_pid_ki=0.25,
+        wheel_pid_kd=0.0,
+        wheel_pid_integral_limit=5.0,
+        wheel_pid_pwm_per_mps=345.0,
+    )
+    trial = compute_trial_metrics(
+        name="pid_stop",
+        phase="pid",
+        target_speed=0.0,
+        speed_samples=[
+            SpeedSample(0.0, 0.09),
+            SpeedSample(0.5, 0.07),
+            SpeedSample(1.0, 0.06),
+            SpeedSample(1.5, 0.04),
+            SpeedSample(2.0, 0.03),
+            SpeedSample(2.5, 0.03),
+        ],
+        response_samples=None,
+        ticks_seen=120,
+        left_ticks_seen=118,
+        right_ticks_seen=122,
+        params_used=params,
+        ground_speed_mean=None,
+        odom_distance_m=0.2,
+        rtk_distance_m=None,
+        notes=(),
+    )
+
+    assert not trial.stall_detected
+    assert trial.trial_quality == "warning"
+    assert any("Stop behavior warning:" in warning for warning in trial.warnings)
+
+
 def test_recommend_pid_only_params_keeps_early_pid_conservative_after_good_ff() -> None:
     base_params = _early_pid_params()
     response_trial = compute_trial_metrics(
@@ -315,3 +440,260 @@ def test_recommend_pid_only_params_flags_imbalance_without_forcing_derivative() 
 
     assert recommended.wheel_pid_kd == base_params.wheel_pid_kd
     assert any("Left/right wheel response diverged" in reason for reason in reasons)
+
+
+def test_recommend_pid_only_params_uses_post_analysis_oscillation_without_blocking_light_robot() -> None:
+    base_params = DrivePidParams(
+        ticks_per_meter=345.0,
+        wheel_pid_kp=0.2,
+        wheel_pid_ki=0.25,
+        wheel_pid_kd=0.0,
+        wheel_pid_integral_limit=5.0,
+        wheel_pid_pwm_per_mps=345.0,
+    )
+    low_speed_trial = _trial(
+        params=base_params,
+        name="pid_step_1",
+        target_speed=0.20,
+        measured_speed_mean=0.218,
+        overshoot=0.018,
+        error_mean=-0.018,
+    )
+    step_trial = _trial(
+        params=base_params,
+        name="pid_step_2",
+        target_speed=0.30,
+        measured_speed_mean=0.312,
+        overshoot=0.020,
+        error_mean=-0.012,
+        oscillation_detected=True,
+        trial_quality="warning",
+        warnings=("Post-trial oscillation signature detected in the recorded speed response.",),
+    )
+    stop_trial = _trial(
+        params=base_params,
+        name="pid_step_stop",
+        target_speed=0.0,
+        measured_speed_mean=0.0,
+        overshoot=0.0,
+        error_mean=0.0,
+        trial_quality="warning",
+        warnings=("Stop behavior captured for diagnostics only.",),
+        settling_time=0.4,
+    )
+
+    recommended, reasons = recommend_pid_only_params(
+        base_params,
+        [low_speed_trial, step_trial, stop_trial],
+        robot_mass_kg=10.0,
+    )
+
+    assert recommended.wheel_pid_ki < base_params.wheel_pid_ki
+    assert recommended.wheel_pid_kp == base_params.wheel_pid_kp
+    assert recommended.wheel_pid_kd == 0.0
+    assert any("Post-analysis oscillation detected but no live oscillation observed" in reason for reason in reasons)
+    assert any("Zero-speed stop trial excluded" in reason for reason in reasons)
+    assert any("Low-speed tracking indicates possible excessive integral action" in reason for reason in reasons)
+    assert any("Drivetrain symmetry is good." in reason for reason in reasons)
+    assert any("Left/right tick balance is within expected limits." in reason for reason in reasons)
+
+
+def test_recommend_pid_only_params_exposes_stop_warning_even_when_motion_trial_looks_valid() -> None:
+    base_params = DrivePidParams(
+        ticks_per_meter=345.0,
+        wheel_pid_kp=0.2,
+        wheel_pid_ki=0.25,
+        wheel_pid_kd=0.0,
+        wheel_pid_integral_limit=5.0,
+        wheel_pid_pwm_per_mps=345.0,
+    )
+    motion_trial = _trial(
+        params=base_params,
+        name="pid_step_motion",
+        target_speed=0.30,
+        measured_speed_mean=0.300,
+        overshoot=0.010,
+        error_mean=0.000,
+    )
+    stop_trial = _trial(
+        params=base_params,
+        name="pid_step_stop",
+        target_speed=0.0,
+        measured_speed_mean=0.07,
+        overshoot=0.11,
+        error_mean=-0.07,
+        trial_quality="warning",
+        warnings=("Stop behavior warning: residual motion detected after zero-speed command.",),
+        settling_time=1.5,
+    )
+
+    recommended, reasons = recommend_pid_only_params(
+        base_params,
+        [motion_trial, stop_trial],
+        robot_mass_kg=10.0,
+    )
+
+    assert recommended == base_params
+    assert any("Zero-speed stop trial excluded" in reason for reason in reasons)
+    assert any("Stop behavior warning: residual motion detected after zero-speed command." in reason for reason in reasons)
+
+
+def test_recommend_pid_only_params_does_not_ignore_one_dangerous_overshoot_when_median_is_calm() -> None:
+    base_params = DrivePidParams(
+        ticks_per_meter=345.0,
+        wheel_pid_kp=0.2,
+        wheel_pid_ki=0.25,
+        wheel_pid_kd=0.0,
+        wheel_pid_integral_limit=5.0,
+        wheel_pid_pwm_per_mps=345.0,
+    )
+    trials = [
+        _trial(
+            params=base_params,
+            name="pid_step_1",
+            target_speed=0.20,
+            measured_speed_mean=0.20,
+            overshoot=0.005,
+            error_mean=0.0,
+        ),
+        _trial(
+            params=base_params,
+            name="pid_step_2",
+            target_speed=0.30,
+            measured_speed_mean=0.305,
+            overshoot=0.090,
+            error_mean=-0.005,
+        ),
+        _trial(
+            params=base_params,
+            name="pid_step_3",
+            target_speed=0.10,
+            measured_speed_mean=0.10,
+            overshoot=0.000,
+            error_mean=0.0,
+        ),
+    ]
+
+    recommended, reasons = recommend_pid_only_params(
+        base_params,
+        trials,
+        robot_mass_kg=10.0,
+    )
+
+    assert recommended.wheel_pid_ki < base_params.wheel_pid_ki
+    assert any("Worst-step overshoot reached" in reason for reason in reasons)
+
+
+def test_finite_or_none_rejects_nan_and_inf_values() -> None:
+    assert finite_or_none(float("nan")) is None
+    assert finite_or_none(float("inf")) is None
+    assert finite_or_none(float("-inf")) is None
+    assert finite_or_none(8.76, positive=True) == 8.76
+
+
+def test_drive_pid_params_from_mapping_rejects_non_finite_values() -> None:
+    try:
+        DrivePidParams.from_mapping(
+            {
+                "ticks_per_meter": float("nan"),
+                "wheel_pid_kp": 0.2,
+                "wheel_pid_ki": 0.0,
+                "wheel_pid_kd": 0.0,
+                "wheel_pid_integral_limit": 0.0,
+                "wheel_pid_pwm_per_mps": 345.0,
+            }
+        )
+    except ValueError as exc:
+        assert "ticks_per_meter" in str(exc)
+    else:
+        raise AssertionError("Expected non-finite drive parameters to be rejected")
+
+
+def test_sanitize_finite_data_replaces_non_finite_values_before_yaml_or_json_serialization() -> None:
+    sanitized = sanitize_finite_data(
+        {
+            "robot_mass_kg": float("nan"),
+            "drivetrain_diagnostics": {
+                "wheel_radius_m": float("inf"),
+                "configured_ticks_per_revolution": 1964.0 / 3.0,
+            },
+            "trials": [
+                {
+                    "overshoot": float("-inf"),
+                    "warnings": ["Stop behavior warning: residual motion detected after zero-speed command."],
+                }
+            ],
+        }
+    )
+
+    assert sanitized["robot_mass_kg"] is None
+    assert sanitized["drivetrain_diagnostics"]["wheel_radius_m"] is None
+    assert sanitized["trials"][0]["overshoot"] is None
+    yaml_text = yaml.safe_dump(sanitized, sort_keys=False)
+    assert "nan" not in yaml_text.lower()
+    assert "inf" not in yaml_text.lower()
+    json.dumps(sanitized, allow_nan=False)
+
+
+def test_recommend_pid_only_params_uses_mass_tier_aware_worst_overshoot_threshold() -> None:
+    base_params = DrivePidParams(
+        ticks_per_meter=345.0,
+        wheel_pid_kp=0.2,
+        wheel_pid_ki=0.25,
+        wheel_pid_kd=0.0,
+        wheel_pid_integral_limit=5.0,
+        wheel_pid_pwm_per_mps=345.0,
+    )
+    borderline_trial = _trial(
+        params=base_params,
+        name="pid_step_borderline",
+        target_speed=0.30,
+        measured_speed_mean=0.304,
+        overshoot=0.045,
+        error_mean=-0.004,
+    )
+
+    _, light_reasons = recommend_pid_only_params(
+        base_params,
+        [borderline_trial],
+        robot_mass_kg=10.0,
+    )
+    _, heavy_reasons = recommend_pid_only_params(
+        base_params,
+        [borderline_trial],
+        robot_mass_kg=45.0,
+    )
+
+    assert not any("Worst-step overshoot reached" in reason for reason in light_reasons)
+    assert any("Worst-step overshoot reached" in reason for reason in heavy_reasons)
+
+
+def test_recommend_pid_only_params_uses_smaller_kp_steps_for_heavy_robot() -> None:
+    base_params = _early_pid_params(kp=0.2)
+    lagging_trial = _trial(
+        params=base_params,
+        name="pid_step",
+        target_speed=0.30,
+        measured_speed_mean=0.255,
+        overshoot=0.008,
+        error_mean=0.045,
+        settling_time=3.2,
+        left_right_tick_imbalance=0.004,
+    )
+
+    recommended_light, _ = recommend_pid_only_params(
+        base_params,
+        [lagging_trial],
+        robot_mass_kg=8.0,
+    )
+    recommended_heavy, _ = recommend_pid_only_params(
+        base_params,
+        [lagging_trial],
+        robot_mass_kg=45.0,
+    )
+
+    assert recommended_light.wheel_pid_kp > base_params.wheel_pid_kp
+    assert recommended_heavy.wheel_pid_kp > base_params.wheel_pid_kp
+    assert (recommended_light.wheel_pid_kp - base_params.wheel_pid_kp) > (
+        recommended_heavy.wheel_pid_kp - base_params.wheel_pid_kp
+    )

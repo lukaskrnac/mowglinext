@@ -38,9 +38,12 @@ from .drive_pid_math import (
     TrialMetrics,
     clamp,
     compute_trial_metrics,
+    finite_or_none,
     integrate_distance,
     recommend_drive_pid_params,
     recommend_pid_only_params,
+    resolve_robot_tuning_tier,
+    sanitize_finite_data,
 )
 
 
@@ -109,6 +112,14 @@ class TickSample:
     time_s: float
     left_ticks: int
     right_ticks: int
+
+
+@dataclass(frozen=True)
+class RobotHardwareConfig:
+    source_path: str | None = None
+    chassis_mass_kg: float | None = None
+    wheel_radius_m: float | None = None
+    ticks_per_revolution: float | None = None
 
 
 @dataclass
@@ -229,6 +240,10 @@ class DrivePidTuner(Node):
         self._args = args
         self._cmd_topic = self._resolve_cmd_topic(args)
         self._backup_path = Path(args.backup_file).expanduser()
+        self._robot_hardware_config = self._load_robot_hardware_config()
+        self._tuning_tier = resolve_robot_tuning_tier(
+            self._robot_hardware_config.chassis_mass_kg
+        )
         self._active_trial: TrialRecorder | None = None
         self._entered_recording = False
 
@@ -365,6 +380,20 @@ class DrivePidTuner(Node):
             self.get_logger().warning(
                 "Overriding the dedicated tuning lane; commands will bypass /cmd_vel_tuning."
             )
+        if self._robot_hardware_config.chassis_mass_kg is not None:
+            self.get_logger().info(
+                "Robot mass read from hardware configuration: "
+                f"{self._robot_hardware_config.chassis_mass_kg:.2f} kg"
+            )
+        else:
+            self.get_logger().warning(
+                "Robot mass is unavailable in the hardware configuration; using the medium internal tuning tier."
+            )
+        self.get_logger().info(
+            f"Internal tuning tier: {self._tuning_tier.report_label}"
+        )
+        if self._tuning_tier.manual_validation_note is not None:
+            self.get_logger().warning(self._tuning_tier.manual_validation_note)
         self._failure_message = None
         self._failure_status_snapshot = None
         if self._args.rollback:
@@ -625,6 +654,100 @@ class DrivePidTuner(Node):
             f"Initial trial params after explicit overrides: {self._format_drive_params(starting_params)}"
         )
 
+    def _robot_config_candidates(self) -> list[Path]:
+        candidates = [
+            Path("/ros2_ws/src/mowglinext/ros2/src/mowgli_bringup/config/mowgli_robot.yaml"),
+            Path("/ros2_ws/src/mowgli_bringup/config/mowgli_robot.yaml"),
+        ]
+        for parent in Path(__file__).resolve().parents:
+            candidates.append(parent / "ros2/src/mowgli_bringup/config/mowgli_robot.yaml")
+            candidates.append(parent / "src/mowgli_bringup/config/mowgli_robot.yaml")
+        unique: list[Path] = []
+        seen: set[Path] = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            unique.append(candidate)
+        return unique
+
+    def _load_robot_hardware_config(self) -> RobotHardwareConfig:
+        for candidate in self._robot_config_candidates():
+            if not candidate.is_file():
+                continue
+            try:
+                payload = yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}
+            except Exception as exc:
+                self.get_logger().warning(
+                    f"Failed to read hardware configuration from {candidate}: {exc}"
+                )
+                continue
+            params = payload.get("mowgli", {}).get("ros__parameters", {})
+            if not isinstance(params, dict):
+                continue
+            return RobotHardwareConfig(
+                source_path=str(candidate),
+                chassis_mass_kg=finite_or_none(params.get("chassis_mass_kg"), positive=True),
+                wheel_radius_m=finite_or_none(params.get("wheel_radius"), positive=True),
+                ticks_per_revolution=finite_or_none(
+                    params.get("ticks_per_revolution"),
+                    positive=True,
+                ),
+            )
+        return RobotHardwareConfig()
+
+    def _build_drivetrain_diagnostics(
+        self,
+        proposed_params: DrivePidParams,
+    ) -> dict[str, Any]:
+        diagnostics: dict[str, Any] = {}
+        notes: list[str] = []
+        wheel_radius = finite_or_none(
+            self._robot_hardware_config.wheel_radius_m,
+            positive=True,
+        )
+        ticks_per_meter = finite_or_none(
+            proposed_params.ticks_per_meter,
+            positive=True,
+        )
+        if wheel_radius is not None and ticks_per_meter is not None:
+            wheel_circumference = 2.0 * math.pi * wheel_radius
+            diagnostics["wheel_radius_m"] = wheel_radius
+            diagnostics["wheel_circumference_m"] = wheel_circumference
+            diagnostics["estimated_wheel_revolutions_per_meter"] = 1.0 / wheel_circumference
+            diagnostics["estimated_encoder_counts_per_wheel_revolution"] = (
+                ticks_per_meter * wheel_circumference
+            )
+        else:
+            notes.append(
+                "Wheel radius or ticks_per_meter is unavailable/invalid, so wheel-based drivetrain estimates are incomplete."
+            )
+        if self._robot_hardware_config.ticks_per_revolution is not None:
+            diagnostics["configured_ticks_per_revolution"] = (
+                self._robot_hardware_config.ticks_per_revolution
+            )
+        notes.append(
+            "Estimated gearbox ratio is unavailable because encoder counts per motor revolution are not stored in the hardware configuration."
+        )
+        diagnostics["notes"] = notes
+        return diagnostics
+
+    def _report_reasons(self, reasons: list[str]) -> list[str]:
+        prefix: list[str] = []
+        if self._robot_hardware_config.chassis_mass_kg is not None:
+            prefix.append(
+                "Robot mass read from hardware configuration: "
+                f"{self._robot_hardware_config.chassis_mass_kg:.2f} kg"
+            )
+        else:
+            prefix.append(
+                "Robot mass was not available in the hardware configuration; medium internal tuning tier was used."
+            )
+        prefix.append(f"Internal tuning tier: {self._tuning_tier.report_label}")
+        if self._tuning_tier.manual_validation_note is not None:
+            prefix.append(self._tuning_tier.manual_validation_note)
+        return list(dict.fromkeys([*prefix, *reasons]))
+
     def _phase_speeds(self) -> list[float]:
         candidates = [0.10, 0.20, 0.30, 0.50]
         return [speed for speed in candidates if speed <= self._args.max_speed + 1e-6]
@@ -686,6 +809,7 @@ class DrivePidTuner(Node):
             working_params,
             feedforward_trials,
             [],
+            robot_mass_kg=self._robot_hardware_config.chassis_mass_kg,
         )
         reasons.extend(provisional_reasons)
         self._apply_drive_pid_params(provisional_params)
@@ -714,6 +838,7 @@ class DrivePidTuner(Node):
             working_params,
             feedforward_trials,
             response_trials,
+            robot_mass_kg=self._robot_hardware_config.chassis_mass_kg,
         )
         reasons.extend(final_reasons)
         return proposed_params, feedforward_trials, response_trials, reasons
@@ -847,7 +972,11 @@ class DrivePidTuner(Node):
                     raise
             trials.extend(pass_trials)
 
-            params, pass_reasons = recommend_pid_only_params(params, pass_trials)
+            params, pass_reasons = recommend_pid_only_params(
+                params,
+                pass_trials,
+                robot_mass_kg=self._robot_hardware_config.chassis_mass_kg,
+            )
             reasons.extend(f"Pass {pass_index + 1}: {reason}" for reason in pass_reasons)
             if pass_index < self._args.passes - 1:
                 self._apply_drive_pid_params(params)
@@ -1412,9 +1541,6 @@ class DrivePidTuner(Node):
     # Trial post-processing
     # ------------------------------------------------------------------
 
-    def _finalize_trial(self, recorder: TrialRecorder) -> TrialMetrics:
-        return self._finalize_trial_with_options(recorder, allow_incomplete=False, additional_notes=())
-
     def _finalize_trial_with_options(
         self,
         recorder: TrialRecorder,
@@ -1658,6 +1784,7 @@ class DrivePidTuner(Node):
             return
         output_path = Path(self._args.output).expanduser()
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        report_reasons = self._report_reasons(reasons)
         payload = {
             "generated_at": _now_iso(),
             "mode": mode,
@@ -1683,20 +1810,27 @@ class DrivePidTuner(Node):
             "startup_grace_s": float(self._args.startup_grace),
             "auto_turn": bool(self._args.auto_turn),
             "turn_direction": self._args.turn_direction,
+            "robot_mass_kg": self._robot_hardware_config.chassis_mass_kg,
+            "internal_tuning_tier": self._tuning_tier.report_label,
+            "hardware_config_path": self._robot_hardware_config.source_path,
+            "drivetrain_diagnostics": self._build_drivetrain_diagnostics(proposed_params),
             "current_params": current_params.to_dict(),
             "starting_params": starting_params.to_dict(),
             "proposed_params": proposed_params.to_dict(),
             "status_snapshot": (
                 status_snapshot if status_snapshot is not None else self._build_status_snapshot()
             ),
-            "reasons": reasons,
+            "reasons": report_reasons,
             "trials": [trial.to_dict() for trial in trials],
         }
         if profile_reference_params is not None:
             payload["profile_reference_params"] = profile_reference_params.to_dict()
         if failure_message is not None:
             payload["failure_message"] = failure_message
-        output_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+        output_path.write_text(
+            yaml.safe_dump(sanitize_finite_data(payload), sort_keys=False),
+            encoding="utf-8",
+        )
         self.get_logger().info(f"Saved tuning result to {output_path}")
 
     # ------------------------------------------------------------------

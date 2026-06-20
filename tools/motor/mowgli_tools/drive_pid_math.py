@@ -28,10 +28,43 @@ def _median(values: Sequence[float]) -> float:
     return statistics.median(values) if values else 0.0
 
 
-def _adaptive_kp_step(current_kp: float, *, aggressive: bool) -> float:
+def finite_or_none(value: Any, *, positive: bool = False) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    if positive and number <= 0.0:
+        return None
+    return number
+
+
+def _require_finite_float(name: str, value: Any) -> float:
+    number = finite_or_none(value)
+    if number is None:
+        raise ValueError(f"{name} must be a finite float, got {value!r}")
+    return number
+
+
+def sanitize_finite_data(value: Any) -> Any:
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: sanitize_finite_data(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [sanitize_finite_data(item) for item in value]
+    return value
+
+
+def _adaptive_kp_step(current_kp: float, *, aggressive: bool, max_step: float) -> float:
     magnitude = max(abs(current_kp), 0.02)
     step = magnitude if aggressive else magnitude * 0.5
-    return clamp(step, 0.005, 0.1)
+    return clamp(step, 0.005, max_step)
 
 
 @dataclass(frozen=True)
@@ -45,24 +78,106 @@ class DrivePidParams:
 
     def to_dict(self) -> dict[str, float]:
         return {
-            "ticks_per_meter": float(self.ticks_per_meter),
-            "wheel_pid_kp": float(self.wheel_pid_kp),
-            "wheel_pid_ki": float(self.wheel_pid_ki),
-            "wheel_pid_kd": float(self.wheel_pid_kd),
-            "wheel_pid_integral_limit": float(self.wheel_pid_integral_limit),
-            "wheel_pid_pwm_per_mps": float(self.wheel_pid_pwm_per_mps),
+            "ticks_per_meter": _require_finite_float("ticks_per_meter", self.ticks_per_meter),
+            "wheel_pid_kp": _require_finite_float("wheel_pid_kp", self.wheel_pid_kp),
+            "wheel_pid_ki": _require_finite_float("wheel_pid_ki", self.wheel_pid_ki),
+            "wheel_pid_kd": _require_finite_float("wheel_pid_kd", self.wheel_pid_kd),
+            "wheel_pid_integral_limit": _require_finite_float(
+                "wheel_pid_integral_limit",
+                self.wheel_pid_integral_limit,
+            ),
+            "wheel_pid_pwm_per_mps": _require_finite_float(
+                "wheel_pid_pwm_per_mps",
+                self.wheel_pid_pwm_per_mps,
+            ),
         }
 
     @classmethod
     def from_mapping(cls, mapping: dict[str, Any]) -> "DrivePidParams":
         return cls(
-            ticks_per_meter=float(mapping["ticks_per_meter"]),
-            wheel_pid_kp=float(mapping["wheel_pid_kp"]),
-            wheel_pid_ki=float(mapping["wheel_pid_ki"]),
-            wheel_pid_kd=float(mapping["wheel_pid_kd"]),
-            wheel_pid_integral_limit=float(mapping["wheel_pid_integral_limit"]),
-            wheel_pid_pwm_per_mps=float(mapping["wheel_pid_pwm_per_mps"]),
+            ticks_per_meter=_require_finite_float("ticks_per_meter", mapping["ticks_per_meter"]),
+            wheel_pid_kp=_require_finite_float("wheel_pid_kp", mapping["wheel_pid_kp"]),
+            wheel_pid_ki=_require_finite_float("wheel_pid_ki", mapping["wheel_pid_ki"]),
+            wheel_pid_kd=_require_finite_float("wheel_pid_kd", mapping["wheel_pid_kd"]),
+            wheel_pid_integral_limit=_require_finite_float(
+                "wheel_pid_integral_limit",
+                mapping["wheel_pid_integral_limit"],
+            ),
+            wheel_pid_pwm_per_mps=_require_finite_float(
+                "wheel_pid_pwm_per_mps",
+                mapping["wheel_pid_pwm_per_mps"],
+            ),
         )
+
+
+@dataclass(frozen=True)
+class RobotTuningTier:
+    report_label: str
+    acceptable_overshoot_ratio: float
+    severe_overshoot_ratio: float
+    low_tracking_error_ratio: float
+    max_kp_step_per_pass: float
+    post_oscillation_repeat_limit: int
+    prefer_ki_trim_before_kp: bool
+    manual_validation_note: str | None = None
+
+
+def resolve_robot_tuning_tier(robot_mass_kg: float | None) -> RobotTuningTier:
+    # Light mowers tolerate a bit more transient overshoot and can absorb
+    # slightly larger exploratory gain steps. Heavy platforms carry more
+    # inertia, so the tuner automatically tightens overshoot expectations
+    # and shrinks per-pass gain changes as mass increases.
+    mass = finite_or_none(robot_mass_kg, positive=True)
+    if mass is None:
+        return RobotTuningTier(
+            report_label="medium",
+            acceptable_overshoot_ratio=0.08,
+            severe_overshoot_ratio=0.14,
+            low_tracking_error_ratio=0.05,
+            max_kp_step_per_pass=0.10,
+            post_oscillation_repeat_limit=2,
+            prefer_ki_trim_before_kp=True,
+        )
+    if mass <= 12.0:
+        return RobotTuningTier(
+            report_label="lightweight",
+            acceptable_overshoot_ratio=0.10,
+            severe_overshoot_ratio=0.16,
+            low_tracking_error_ratio=0.05,
+            max_kp_step_per_pass=0.12,
+            post_oscillation_repeat_limit=3,
+            prefer_ki_trim_before_kp=True,
+        )
+    if mass <= 30.0:
+        return RobotTuningTier(
+            report_label="medium",
+            acceptable_overshoot_ratio=0.08,
+            severe_overshoot_ratio=0.14,
+            low_tracking_error_ratio=0.045,
+            max_kp_step_per_pass=0.10,
+            post_oscillation_repeat_limit=2,
+            prefer_ki_trim_before_kp=True,
+        )
+    if mass <= 60.0:
+        return RobotTuningTier(
+            report_label="heavy",
+            acceptable_overshoot_ratio=0.06,
+            severe_overshoot_ratio=0.10,
+            low_tracking_error_ratio=0.04,
+            max_kp_step_per_pass=0.05,
+            post_oscillation_repeat_limit=2,
+            prefer_ki_trim_before_kp=True,
+        )
+    return RobotTuningTier(
+        report_label="extra-heavy",
+        acceptable_overshoot_ratio=0.05,
+        severe_overshoot_ratio=0.08,
+        low_tracking_error_ratio=0.035,
+        max_kp_step_per_pass=0.03,
+        post_oscillation_repeat_limit=1,
+        prefer_ki_trim_before_kp=True,
+        manual_validation_note="Extra-heavy robot mass detected; manual validation is strongly recommended.",
+    )
 
 
 @dataclass(frozen=True)
@@ -204,7 +319,9 @@ def compute_trial_metrics(
     error_mean = _mean(errors)
     error_rms = _rms(errors)
     response = list(response_samples) if response_samples else list(speed_samples)
+    is_stop_trial = abs(target_speed) < 0.05
     overshoot = max(0.0, max((sample.speed_mps - target_speed) for sample in response)) if response else 0.0
+    response_peak_abs_speed = max((abs(sample.speed_mps) for sample in response), default=0.0)
     settling_time = compute_settling_time(
         response,
         target_speed=target_speed,
@@ -213,9 +330,11 @@ def compute_trial_metrics(
     )
     oscillation_detected = detect_oscillation(response, target_speed)
     speed_floor = max(0.02, 0.3 * abs(target_speed))
-    stall_detected = ticks_seen <= 2 or measured_speed_mean < speed_floor
-    if ground_speed_mean is not None and ground_speed_mean < speed_floor:
-        stall_detected = True
+    stall_detected = False
+    if not is_stop_trial:
+        stall_detected = ticks_seen <= 2 or measured_speed_mean < speed_floor
+        if ground_speed_mean is not None and ground_speed_mean < speed_floor:
+            stall_detected = True
     ground_error_mean = None
     if ground_speed_mean is not None:
         ground_error_mean = target_speed - ground_speed_mean
@@ -226,25 +345,61 @@ def compute_trial_metrics(
     integral_enabled = (
         params_used.wheel_pid_ki > 0.0 and params_used.wheel_pid_integral_limit > 0.0
     )
+    # Treat integral saturation as a sustained underspeed problem only. Mild
+    # overshoot or a still-settling but otherwise responsive trial should not
+    # poison bring-up calibration before the tuner has enough data to improve it.
+    persistent_lag_threshold = max(0.03, 0.12 * abs(target_speed))
+    severe_underspeed_threshold = max(0.02, 0.88 * abs(target_speed))
+    never_settled_under_load = settling_time is None and abs(target_speed) >= 0.20
+    persistent_underspeed = measured_speed_mean < severe_underspeed_threshold
+    positive_steady_state_error = error_mean > persistent_lag_threshold
     integral_saturation_suspected = (
         integral_enabled
         and (
             stall_detected
-            or (settling_time is None and abs(target_speed) >= 0.15)
             or (
-                measured_speed_mean < max(0.02, 0.85 * abs(target_speed))
-                and params_used.wheel_pid_integral_limit <= 100.0
+                never_settled_under_load
+                and persistent_underspeed
+                and positive_steady_state_error
+            )
+            or (
+                abs(target_speed) >= 0.25
+                and measured_speed_mean < max(0.02, 0.75 * abs(target_speed))
+                and positive_steady_state_error
             )
         )
     )
     warning_list = list(dict.fromkeys(warnings))
+    stop_behavior_warning = (
+        is_stop_trial
+        and (
+            abs(measured_speed_mean) > 0.03
+            or response_peak_abs_speed > 0.05
+        )
+    )
+    stop_behavior_severe = (
+        is_stop_trial
+        and (
+            abs(measured_speed_mean) > 0.06
+            or response_peak_abs_speed > 0.10
+        )
+    )
+    if stop_behavior_warning:
+        warning_list.append("Stop behavior warning: residual motion detected after zero-speed command.")
+        notes = [
+            *notes,
+            (
+                "Residual motion after stop command: "
+                f"mean={abs(measured_speed_mean):.3f} m/s, peak={response_peak_abs_speed:.3f} m/s."
+            ),
+        ]
     if oscillation_detected:
         warning_list.append("Post-trial oscillation signature detected in the recorded speed response.")
     if live_oscillation_detected:
         warning_list.append("Live oscillation suspected during calibration; trial continued.")
     warning_list = list(dict.fromkeys(warning_list))
     trial_quality = "ok"
-    if stall_detected:
+    if stall_detected or stop_behavior_severe:
         trial_quality = "poor"
     elif warning_list or oscillation_detected or integral_saturation_suspected:
         trial_quality = "warning"
@@ -357,10 +512,23 @@ def recommend_feedforward_params(
 def recommend_pid_only_params(
     base_params: DrivePidParams,
     response_trials: Sequence[TrialMetrics],
+    *,
+    robot_mass_kg: float | None = None,
 ) -> tuple[DrivePidParams, list[str]]:
     reasons: list[str] = []
     params = replace(base_params)
+    tier = resolve_robot_tuning_tier(robot_mass_kg)
+    stop_trials = [trial for trial in response_trials if abs(trial.target_speed) < 0.05]
     usable_trials = [trial for trial in response_trials if abs(trial.target_speed) >= 0.05]
+    if stop_trials:
+        reasons.append(
+            "Zero-speed stop trial excluded from PID gain selection; it is kept only as a stop behavior diagnostic."
+        )
+    if any(
+        any("Stop behavior warning:" in warning for warning in trial.warnings)
+        for trial in stop_trials
+    ):
+        reasons.append("Stop behavior warning: residual motion detected after zero-speed command.")
     if not usable_trials:
         reasons.append("No response trials available, keeping KP/KI/integral limit unchanged.")
         return params, reasons
@@ -369,10 +537,16 @@ def recommend_pid_only_params(
     median_error = _median([trial.error_mean for trial in usable_trials])
     median_abs_error = _median([abs(trial.error_mean) for trial in usable_trials])
     median_overshoot = _median([trial.overshoot for trial in usable_trials])
-    oscillation_count = sum(
+    max_overshoot = max((trial.overshoot for trial in usable_trials), default=0.0)
+    live_oscillation_count = sum(
         1
         for trial in usable_trials
-        if trial.oscillation_detected or trial.live_oscillation_detected
+        if trial.live_oscillation_detected
+    )
+    post_analysis_oscillation_count = sum(
+        1
+        for trial in usable_trials
+        if trial.oscillation_detected and not trial.live_oscillation_detected
     )
     slow_count = sum(
         1
@@ -385,24 +559,94 @@ def recommend_pid_only_params(
         for trial in usable_trials
         if trial.left_right_tick_imbalance is not None and trial.left_right_tick_imbalance > 0.12
     )
+    imbalance_samples = [
+        trial.left_right_tick_imbalance
+        for trial in usable_trials
+        if trial.left_right_tick_imbalance is not None
+    ]
+    max_imbalance = max(imbalance_samples, default=0.0)
     integral_sat_count = sum(1 for trial in usable_trials if trial.integral_saturation_suspected)
-    warning_count = sum(1 for trial in usable_trials if trial.trial_quality != "ok" or trial.warnings)
-
-    overshoot_warning_threshold = max(0.03, 0.12 * max_target)
-    severe_overshoot_threshold = max(0.05, 0.20 * max_target)
-    steady_state_error_threshold = max(0.02, 0.10 * max_target)
-    lag_error_threshold = max(0.03, 0.15 * max_target)
-    good_ff_tracking = median_abs_error <= max(0.02, 0.08 * max_target) and stall_count == 0
-    oscillation_or_overshoot_warning = (
-        oscillation_count > 0 or median_overshoot > overshoot_warning_threshold
+    overshoot_warning_threshold = max(0.02, tier.acceptable_overshoot_ratio * max_target)
+    severe_overshoot_threshold = max(0.04, tier.severe_overshoot_ratio * max_target)
+    low_tracking_error_threshold = max(0.015, tier.low_tracking_error_ratio * max_target)
+    steady_state_error_threshold = max(0.02, max(0.08, tier.low_tracking_error_ratio * 1.7) * max_target)
+    lag_error_threshold = max(0.03, max(0.12, tier.low_tracking_error_ratio * 2.2) * max_target)
+    overspeed_threshold = max(0.015, 0.5 * overshoot_warning_threshold)
+    good_ff_tracking = median_abs_error <= low_tracking_error_threshold and stall_count == 0
+    dangerous_overshoot = max_overshoot > severe_overshoot_threshold
+    overshoot_warning_present = (
+        max_overshoot > overshoot_warning_threshold
+        or median_overshoot > overshoot_warning_threshold
+    )
+    severe_post_analysis_oscillation = sum(
+        1
+        for trial in usable_trials
+        if trial.oscillation_detected
+        and not trial.live_oscillation_detected
+        and (
+            trial.overshoot > severe_overshoot_threshold
+            or abs(trial.error_mean) > steady_state_error_threshold
+        )
+    )
+    repeated_post_analysis_oscillation = (
+        post_analysis_oscillation_count >= tier.post_oscillation_repeat_limit
+    )
+    severe_oscillation = (
+        live_oscillation_count > 0
+        or repeated_post_analysis_oscillation
+        or severe_post_analysis_oscillation > 0
+    )
+    mild_post_analysis_oscillation = (
+        post_analysis_oscillation_count > 0 and not severe_oscillation
+    )
+    if mild_post_analysis_oscillation:
+        reasons.append(
+            "Post-analysis oscillation detected but no live oscillation observed; the response remains usable for conservative tuning."
+        )
+    if dangerous_overshoot:
+        reasons.append(
+            f"Worst-step overshoot reached {(max_overshoot / max(max_target, 1e-6)) * 100.0:.1f}% of target speed, so the recommendation stays conservative."
+        )
+    warning_count = sum(
+        1
+        for trial in usable_trials
+        if trial.trial_quality == "poor"
+        or trial.live_oscillation_detected
+        or trial.integral_saturation_suspected
+        or (
+            trial.oscillation_detected
+            and not trial.live_oscillation_detected
+            and severe_oscillation
+        )
+        or dangerous_overshoot
     )
     fine_gain_mode = base_params.wheel_pid_kp <= 1.0
     fine_gain_cap = 0.5 if base_params.wheel_pid_kp <= 0.2 else 1.0
+    low_speed_trials = [
+        trial
+        for trial in usable_trials
+        if abs(trial.target_speed) <= min(max_target, 0.20)
+    ]
+    overspeed_trials = [
+        trial
+        for trial in low_speed_trials
+        if (trial.measured_speed_mean - trial.target_speed) > overspeed_threshold
+    ]
+    consistent_low_speed_overspeed = (
+        bool(low_speed_trials)
+        and len(overspeed_trials) >= max(1, math.ceil(len(low_speed_trials) / 2.0))
+    )
 
     recommended_kp = params.wheel_pid_kp
     recommended_ki = params.wheel_pid_ki
     recommended_kd = params.wheel_pid_kd
     recommended_integral_limit = params.wheel_pid_integral_limit
+
+    if tier.manual_validation_note is not None:
+        reasons.append(tier.manual_validation_note)
+    if imbalance_samples and max_imbalance <= 0.01:
+        reasons.append("Drivetrain symmetry is good.")
+        reasons.append("Left/right tick balance is within expected limits.")
 
     if fine_gain_mode:
         if params.wheel_pid_kp < 0.02:
@@ -410,14 +654,40 @@ def recommend_pid_only_params(
             reasons.append("Starting KP is near zero; seeding a conservative low-gain P-only baseline at 0.020.")
 
         step_reference = max(recommended_kp, params.wheel_pid_kp, 0.02)
-        mild_kp_step = _adaptive_kp_step(step_reference, aggressive=False)
+        mild_kp_step = _adaptive_kp_step(
+            step_reference,
+            aggressive=False,
+            max_step=tier.max_kp_step_per_pass,
+        )
         strong_kp_step = _adaptive_kp_step(
             step_reference,
             aggressive=(median_error > lag_error_threshold or slow_count > 1),
+            max_step=tier.max_kp_step_per_pass,
         )
 
-        if oscillation_or_overshoot_warning or warning_count > 0:
-            recommended_kp = min(max(recommended_kp, params.wheel_pid_kp), fine_gain_cap)
+        if consistent_low_speed_overspeed and params.wheel_pid_ki > 0.0:
+            recommended_ki = params.wheel_pid_ki * 0.90
+            if params.wheel_pid_integral_limit > 0.0:
+                recommended_integral_limit = params.wheel_pid_integral_limit * 0.95
+            reasons.append(
+                "Low-speed tracking indicates possible excessive integral action, so KI is trimmed before touching KP."
+            )
+        elif integral_sat_count > 0 and params.wheel_pid_ki > 0.0:
+            recommended_ki = params.wheel_pid_ki * 0.88
+            if params.wheel_pid_integral_limit > 0.0:
+                recommended_integral_limit = params.wheel_pid_integral_limit * 0.90
+            reasons.append(
+                "True integral saturation is suspected, so KI and the integral limit are trimmed conservatively."
+            )
+        elif severe_oscillation or dangerous_overshoot or warning_count > 0:
+            if params.wheel_pid_ki > 0.0 and tier.prefer_ki_trim_before_kp:
+                recommended_ki = params.wheel_pid_ki * 0.92
+                reasons.append(
+                    "Live or repeated oscillation was observed, so integral action is softened before any stronger KP move."
+                )
+            else:
+                recommended_kp = max(0.0, recommended_kp - mild_kp_step)
+            recommended_kp = min(max(recommended_kp, 0.0), fine_gain_cap)
             reasons.append(
                 "Oscillation or overshoot warnings were present, so low-gain PID tuning keeps KP conservative and avoids adding I/D terms."
             )
@@ -442,7 +712,15 @@ def recommend_pid_only_params(
         kd_scale = 1.0
         integral_scale = 1.0
 
-        if oscillation_count > 0 or median_overshoot > severe_overshoot_threshold:
+        if consistent_low_speed_overspeed and params.wheel_pid_ki > 0.0:
+            ki_scale *= 0.90
+            integral_scale *= 0.95
+            reasons.append("Low-speed tracking indicates possible excessive integral action, trimming KI before KP.")
+        elif integral_sat_count > 0 and params.wheel_pid_ki > 0.0:
+            ki_scale *= 0.88
+            integral_scale *= 0.90
+            reasons.append("True integral saturation is suspected, reducing KI and integral support.")
+        elif severe_oscillation or dangerous_overshoot:
             kp_scale *= 0.92
             ki_scale *= 0.90
             integral_scale *= 0.92
@@ -459,12 +737,7 @@ def recommend_pid_only_params(
                 ki_scale *= 1.08
                 reasons.append("Slow settling or steady-state lag detected, nudging KI upward.")
 
-            if stall_count > 0 or integral_sat_count > 0:
-                ki_scale *= 1.05
-                integral_scale *= 1.10
-                reasons.append("Stall behaviour observed, widening integral support modestly.")
-
-            if median_overshoot > overshoot_warning_threshold:
+            if overshoot_warning_present:
                 kp_scale *= 0.97
                 ki_scale *= 0.97
                 if params.wheel_pid_kd > 0.0:
@@ -485,7 +758,7 @@ def recommend_pid_only_params(
 
     if params.wheel_pid_ki <= 0.0:
         recommended_ki = 0.0
-        if good_ff_tracking and (oscillation_or_overshoot_warning or warning_count > 0):
+        if good_ff_tracking and ((mild_post_analysis_oscillation or overshoot_warning_present) or warning_count > 0):
             reasons.append(
                 "Feed-forward already tracks target speed reasonably well, and oscillation/overshoot warnings were present; keeping KI at 0.0 for this low-gain PID proposal."
             )
@@ -523,7 +796,13 @@ def recommend_drive_pid_params(
     base_params: DrivePidParams,
     feedforward_trials: Sequence[TrialMetrics],
     response_trials: Sequence[TrialMetrics],
+    *,
+    robot_mass_kg: float | None = None,
 ) -> tuple[DrivePidParams, list[str]]:
     ff_params, ff_reasons = recommend_feedforward_params(base_params, feedforward_trials)
-    pid_params, pid_reasons = recommend_pid_only_params(ff_params, response_trials)
+    pid_params, pid_reasons = recommend_pid_only_params(
+        ff_params,
+        response_trials,
+        robot_mass_kg=robot_mass_kg,
+    )
     return pid_params, [*ff_reasons, *pid_reasons]

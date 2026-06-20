@@ -48,6 +48,17 @@ const formatDriveParamValue = (key: string, value: unknown) => {
     return String(value);
 };
 
+const formatReportNumber = (value?: number | null, digits = 3) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        return "Unknown";
+    }
+    return value.toFixed(digits);
+};
+
+const hasFiniteNumber = (value?: number | null): value is number => (
+    typeof value === "number" && Number.isFinite(value)
+);
+
 const statusTag = (status: "not_validated" | "validated" | "warning") => {
     if (status === "validated") {
         return <Tag color="success">validated</Tag>;
@@ -324,6 +335,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
     const latestCmdVelTopic = latestParsedReport?.cmd_vel_topic ?? latestParsedReport?.cmd_topic;
     const latestFailureMessage = latestParsedReport?.failure_message;
     const latestStatusSnapshot = latestParsedReport?.status_snapshot;
+    const latestDrivetrain = latestParsedReport?.drivetrain_diagnostics;
 
     return (
         <div>
@@ -748,6 +760,20 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                             <Descriptions.Item label="Report mode">{latestReport.latest_report.mode.toUpperCase()}</Descriptions.Item>
                             <Descriptions.Item label="Generated at">{formatTimestamp(latestReport.latest_report.generated_at)}</Descriptions.Item>
                             <Descriptions.Item label="cmd_vel topic">{latestCmdVelTopic ?? "Unknown"}</Descriptions.Item>
+                            <Descriptions.Item label="Robot mass">
+                                {formatReportNumber(latestParsedReport?.robot_mass_kg, 2)}
+                                {hasFiniteNumber(latestParsedReport?.robot_mass_kg) ? " kg" : ""}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="Internal tuning tier">
+                                {latestParsedReport?.internal_tuning_tier ?? "Unknown"}
+                            </Descriptions.Item>
+                            <Descriptions.Item label="Hardware config path">
+                                {latestParsedReport?.hardware_config_path ? (
+                                    <Text code copyable>{latestParsedReport.hardware_config_path}</Text>
+                                ) : (
+                                    "Unavailable"
+                                )}
+                            </Descriptions.Item>
                             <Descriptions.Item label="Path">
                                 <Text code copyable>{latestReport.latest_report.report_path}</Text>
                             </Descriptions.Item>
@@ -787,6 +813,34 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                                         ? formatTimestamp(latestStatusSnapshot.last_wheel_tick_timestamp)
                                         : "Unknown"}
                                 </Descriptions.Item>
+                            </Descriptions>
+                        )}
+
+                        {latestDrivetrain && (
+                            <Descriptions size="small" column={2} bordered title="Drivetrain diagnostics">
+                                <Descriptions.Item label="wheel_radius_m">
+                                    {formatReportNumber(latestDrivetrain.wheel_radius_m)}
+                                </Descriptions.Item>
+                                <Descriptions.Item label="wheel_circumference_m">
+                                    {formatReportNumber(latestDrivetrain.wheel_circumference_m)}
+                                </Descriptions.Item>
+                                <Descriptions.Item label="wheel_rev_per_meter">
+                                    {formatReportNumber(latestDrivetrain.estimated_wheel_revolutions_per_meter)}
+                                </Descriptions.Item>
+                                <Descriptions.Item label="encoder_counts_per_wheel_rev">
+                                    {formatReportNumber(latestDrivetrain.estimated_encoder_counts_per_wheel_revolution)}
+                                </Descriptions.Item>
+                                <Descriptions.Item label="configured_ticks_per_revolution">
+                                    {formatReportNumber(latestDrivetrain.configured_ticks_per_revolution)}
+                                </Descriptions.Item>
+                                <Descriptions.Item label="gearbox_ratio">
+                                    Derived estimate unavailable
+                                </Descriptions.Item>
+                                {!!latestDrivetrain.notes?.length && (
+                                    <Descriptions.Item label="Notes" span={2}>
+                                        {latestDrivetrain.notes.join(" | ")}
+                                    </Descriptions.Item>
+                                )}
                             </Descriptions>
                         )}
 

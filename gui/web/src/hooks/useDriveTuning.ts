@@ -70,6 +70,15 @@ export interface DriveTuningStatusSnapshot {
     last_wheel_tick_timestamp?: string | null;
 }
 
+export interface DriveTuningDrivetrainDiagnostics {
+    wheel_radius_m?: number | null;
+    wheel_circumference_m?: number | null;
+    estimated_wheel_revolutions_per_meter?: number | null;
+    estimated_encoder_counts_per_wheel_revolution?: number | null;
+    configured_ticks_per_revolution?: number | null;
+    notes?: string[];
+}
+
 export interface DriveTuningReport {
     generated_at: string;
     mode: string;
@@ -87,6 +96,10 @@ export interface DriveTuningReport {
     passes: number;
     auto_turn: boolean;
     turn_direction: string;
+    robot_mass_kg?: number | null;
+    internal_tuning_tier?: string;
+    hardware_config_path?: string;
+    drivetrain_diagnostics?: DriveTuningDrivetrainDiagnostics;
     current_params: Record<string, number>;
     starting_params: Record<string, number>;
     proposed_params: Record<string, number>;

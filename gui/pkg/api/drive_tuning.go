@@ -23,6 +23,7 @@ import (
 const (
 	driveTuningRos2ContainerName = "mowgli-ros2"
 	driveTuningContainerDir      = "/ros2_ws/config/drive_tuning"
+	driveTuningRobotConfigPath   = "/ros2_ws/config/mowgli_robot.yaml"
 	driveTuningBackupFile        = driveTuningContainerDir + "/drive_pid_last_backup.yaml"
 	driveTuningYamlHeader        = "# Mowgli Robot Configuration — managed by mowglinext-gui\n# This file is the single source of truth for robot parameters.\n# Changes made here are picked up on container restart.\n\n"
 	maxDriveTuningLogBytes       = 128 * 1024
@@ -758,6 +759,7 @@ func buildFeedForwardCommand(req driveFFCalibrationStartRequest) ([]string, stri
 	args := []string{
 		"--mode", "ff",
 		"--profile", "custom",
+		"--hardware-config", driveTuningRobotConfigPath,
 		"--cmd-topic", "/cmd_vel_tuning",
 		"--max-speed", formatFloat(req.TestSpeedMps),
 		"--test-speed", formatFloat(req.TestSpeedMps),
@@ -785,6 +787,7 @@ func buildPIDCommand(req drivePIDTuningStartRequest) ([]string, string) {
 	args := []string{
 		"--mode", "pid",
 		"--profile", "custom",
+		"--hardware-config", driveTuningRobotConfigPath,
 		"--cmd-topic", "/cmd_vel_tuning",
 		"--max-speed", formatFloat(req.MaxSpeedMps),
 		"--duration", formatFloat(req.SegmentDurationS),

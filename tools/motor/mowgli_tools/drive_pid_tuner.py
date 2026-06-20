@@ -45,6 +45,7 @@ from .drive_pid_math import (
     resolve_robot_tuning_tier,
     sanitize_finite_data,
 )
+from .robot_hardware_config import RobotHardwareConfig, extract_robot_hardware_config
 
 
 # The 8 W profile starts from the theoretical 1964 ticks/m value reduced to
@@ -112,14 +113,6 @@ class TickSample:
     time_s: float
     left_ticks: int
     right_ticks: int
-
-
-@dataclass(frozen=True)
-class RobotHardwareConfig:
-    source_path: str | None = None
-    chassis_mass_kg: float | None = None
-    wheel_radius_m: float | None = None
-    ticks_per_revolution: float | None = None
 
 
 @dataclass
@@ -194,6 +187,8 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Optional YAML output path for results and metrics.")
     parser.add_argument("--backup-file", type=str, default=str(_default_backup_path()),
                         help="Path used to save and restore the live parameter backup.")
+    parser.add_argument("--hardware-config", type=str, default="",
+                        help="Optional explicit path to the persisted mowgli_robot.yaml used for robot mass and drivetrain metadata.")
     parser.add_argument("--cmd-topic", type=str, default="",
                         help="TwistStamped topic used for the test commands. Defaults to /cmd_vel_tuning so drive tuning does not share /cmd_vel_teleop.")
     parser.add_argument("--hardware-node", type=str, default="hardware_bridge",
@@ -655,10 +650,15 @@ class DrivePidTuner(Node):
         )
 
     def _robot_config_candidates(self) -> list[Path]:
-        candidates = [
+        candidates: list[Path] = []
+        explicit = str(getattr(self._args, "hardware_config", "") or "").strip()
+        if explicit:
+            candidates.append(Path(explicit).expanduser())
+        candidates.extend([
+            Path("/ros2_ws/config/mowgli_robot.yaml"),
             Path("/ros2_ws/src/mowglinext/ros2/src/mowgli_bringup/config/mowgli_robot.yaml"),
             Path("/ros2_ws/src/mowgli_bringup/config/mowgli_robot.yaml"),
-        ]
+        ])
         for parent in Path(__file__).resolve().parents:
             candidates.append(parent / "ros2/src/mowgli_bringup/config/mowgli_robot.yaml")
             candidates.append(parent / "src/mowgli_bringup/config/mowgli_robot.yaml")
@@ -682,18 +682,7 @@ class DrivePidTuner(Node):
                     f"Failed to read hardware configuration from {candidate}: {exc}"
                 )
                 continue
-            params = payload.get("mowgli", {}).get("ros__parameters", {})
-            if not isinstance(params, dict):
-                continue
-            return RobotHardwareConfig(
-                source_path=str(candidate),
-                chassis_mass_kg=finite_or_none(params.get("chassis_mass_kg"), positive=True),
-                wheel_radius_m=finite_or_none(params.get("wheel_radius"), positive=True),
-                ticks_per_revolution=finite_or_none(
-                    params.get("ticks_per_revolution"),
-                    positive=True,
-                ),
-            )
+            return extract_robot_hardware_config(payload, str(candidate))
         return RobotHardwareConfig()
 
     def _build_drivetrain_diagnostics(

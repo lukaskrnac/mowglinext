@@ -377,6 +377,9 @@ void FusionGraphNode::SetupCommunications(double node_period_s)
         // to get a rate. A spike on any of these is
         // worth surfacing — see PR notes.
         add("gps_rejects_wrongfix", std::to_string(stats.gps_rejects_wrongfix));
+        // 180° yaw-flip recoveries (OnCogHeading) — localises a yaw corruption
+        // to the COG-flip path (from dev / #303).
+        add("cog_flip_recoveries", std::to_string(cog_flip_recoveries_));
         add("gps_downweights", std::to_string(gps_downweights_wrongfix_mobile_));
         add("gps_downweights_wrongfix_mobile", std::to_string(gps_downweights_wrongfix_mobile_));
         add("icp_rejects_rmse", std::to_string(stats.icp_rejects_rmse));

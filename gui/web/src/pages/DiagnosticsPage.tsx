@@ -1445,10 +1445,15 @@ export const DiagnosticsPage = () => {
                         })}
                     </Row>
                     {wheelTicks.wheel_tick_factor != null && (
-                        <Typography.Paragraph type="secondary" style={{fontSize: 11, marginTop: 12, marginBottom: 0}}>
-                            {t('diagnosticsPage.tickFactorLabel')} <Typography.Text code>{wheelTicks.wheel_tick_factor.toFixed(2)}</Typography.Text> {t('diagnosticsPage.tickFactorUnit')}
-                            {t('diagnosticsPage.bodyOmegaLabel')} <Typography.Text code>{wheelRpm.bodyOmega.toFixed(3)}</Typography.Text> rad/s.
-                            <br/>
+                    <Typography.Paragraph type="secondary" style={{fontSize: 11, marginTop: 12, marginBottom: 0}}>
+                        {t('diagnosticsPage.tickFactorLabel')}{" "}
+                        <Typography.Text code>{wheelTicks.wheel_tick_factor.toFixed(3)}</Typography.Text>{" "}
+                        {t('diagnosticsPage.tickFactorUnit')}
+                        {" "}
+                        {t('diagnosticsPage.bodyOmegaLabel')}{" "}
+                        <Typography.Text code>{wheelRpm.bodyOmega.toFixed(3)}</Typography.Text>{" "}
+                        rad/s.
+                        <br/>
                             {t('diagnosticsPage.perWheelTempNote')}
                         </Typography.Paragraph>
                     )}

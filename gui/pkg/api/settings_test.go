@@ -514,16 +514,16 @@ func TestPostSettingsYAML_NewFile(t *testing.T) {
 	router := setupSettingsRouter(db)
 
 	payload := map[string]any{
-		"datum_lat":             48.999,
-		"ntrip_enabled":         true,
-		"gnss_receiver_family":  "unicore",
-		"gnss_serial_device":    "/dev/serial/by-id/usb-gnss",
-		"gnss_serial_baud":      921600,
-		"gnss_config_baud":      460800,
-		"gnss_profile":          "rover_high_precision",
-		"gnss_signal_profile":   "all_signals",
-		"gnss_profile_rate_hz":  5,
-		"gnss_signal_group":     "3 6",
+		"datum_lat":                  48.999,
+		"ntrip_enabled":              true,
+		"gnss_receiver_family":       "unicore",
+		"gnss_serial_device":         "/dev/serial/by-id/usb-gnss",
+		"gnss_serial_baud":           921600,
+		"gnss_config_baud":           460800,
+		"gnss_profile":               "rover_high_precision",
+		"gnss_signal_profile":        "all_signals",
+		"gnss_profile_rate_hz":       5,
+		"gnss_signal_group":          "3 6",
 		"gnss_unicore_pvt_algorithm": "MULTI",
 	}
 	body, _ := json.Marshal(payload)
@@ -607,17 +607,47 @@ func TestPostSettingsYAML_MergesExisting(t *testing.T) {
 	assert.Contains(t, string(content), "gnss_serial_baud: 115200")
 }
 
+func TestPostSettingsYAML_PreservesFractionalTicksPerMeter(t *testing.T) {
+	yamlFile := createTempYAMLFile(t, `mowgli:
+  ros__parameters:
+    ticks_per_meter: 300.0
+`)
+	envFile := createTempConfigFile(t, "")
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+	db.Set("system.mower.runtimeEnvFile", []byte(envFile))
+
+	router := setupSettingsRouter(db)
+
+	payload := map[string]any{
+		"ticks_per_meter": 319.305,
+	}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings/yaml", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	content, err := os.ReadFile(yamlFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "ticks_per_meter: 319.305")
+}
+
 func TestApplyUniversalGnssCompatibility_NormalizesProfileKeys(t *testing.T) {
 	flat := map[string]any{
-		"gnss_receiver_family":  "unicore",
-		"gnss_serial_device":    "/dev/ttyUSB0",
-		"gnss_serial_baud":      460800,
-		"gnss_profile":          "debug",
-		"gnss_signal_profile":   "ppp-optimized",
-		"gnss_rate_hz":          7,
-		"gnss_signal_group":     "  3   6  ",
-		"ntrip_enabled":         true,
-		"ntrip_mountpoint":      "NEAR",
+		"gnss_receiver_family": "unicore",
+		"gnss_serial_device":   "/dev/ttyUSB0",
+		"gnss_serial_baud":     460800,
+		"gnss_profile":         "debug",
+		"gnss_signal_profile":  "ppp-optimized",
+		"gnss_rate_hz":         7,
+		"gnss_signal_group":    "  3   6  ",
+		"ntrip_enabled":        true,
+		"ntrip_mountpoint":     "NEAR",
 	}
 
 	compat := applyUniversalGnssCompatibility(flat)

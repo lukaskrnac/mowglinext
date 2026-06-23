@@ -19,6 +19,9 @@
 #     vendored ros2/src/external/universal-gnss submodule is used; the legacy
 #     /workspaces/universal-gnss mount remains a fallback for local GNSS
 #     development outside this monorepo.
+#   The sidecar tools/motor package is also linked into the workspace as the
+#   ROS 2 package mowgli_tools so operator utilities are available via
+#   `ros2 run mowgli_tools ...`.
 # =============================================================================
 set -euo pipefail
 
@@ -154,6 +157,10 @@ fi
 
 if [ -d "${MONOREPO_ROOT}/ros2/src/fusion_graph" ]; then
     link_workspace_package "${MONOREPO_ROOT}/ros2/src/fusion_graph" "fusion_graph"
+fi
+
+if [ -f "${MONOREPO_ROOT}/tools/motor/package.xml" ]; then
+    link_workspace_package "${MONOREPO_ROOT}/tools/motor" "mowgli_tools"
 fi
 
 if universal_gnss_repo="$(find_universal_gnss_repo)"; then

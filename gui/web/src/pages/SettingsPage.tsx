@@ -55,6 +55,7 @@ export const SettingsPage = () => {
         save,
         savePartialValues,
         saveAndRestartGps,
+        acceptPersistedValues,
         revert,
         gpsRestarting,
     } = useSettingsManager();
@@ -76,7 +77,13 @@ export const SettingsPage = () => {
             case "hardware":
                 return <HardwareSection values={values} onChange={handleChange} onBulkChange={handleBulkChange} />;
             case "drive_motor":
-                return <DriveMotorSection values={values} onChange={handleChange} />;
+                return (
+                    <DriveMotorSection
+                        values={values}
+                        onChange={handleChange}
+                        acceptPersistedValues={acceptPersistedValues}
+                    />
+                );
             case "ntrip":
                 return <NtripSection values={values} onChange={handleChange} />;
             case "positioning":

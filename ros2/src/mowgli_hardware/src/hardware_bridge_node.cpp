@@ -59,11 +59,11 @@
 
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
+#include "mowgli_hardware/angular_rate_controller.hpp"
 #include "mowgli_hardware/clock_fit.hpp"
 #include "mowgli_hardware/ll_datatypes.hpp"
 #include "mowgli_hardware/packet_handler.hpp"
 #include "mowgli_hardware/serial_port.hpp"
-#include "mowgli_hardware/angular_rate_controller.hpp"
 
 // High-level mode constants — must match HighLevelStatus.msg and the
 // HL_MODE_* defines in firmware/mowgli_protocol.h. Declared locally to
@@ -73,6 +73,37 @@ static constexpr uint8_t HL_MODE_IDLE = 1u;  ///< Docked or between missions
 static constexpr uint8_t HL_MODE_AUTONOMOUS = 2u;  ///< Autonomous mowing
 static constexpr uint8_t HL_MODE_RECORDING = 3u;  ///< Area recording
 static constexpr uint8_t HL_MODE_MANUAL_MOWING = 4u;  ///< Manual teleop with blade
+static constexpr double kMinRuntimeTicksPerMeter = 50.0;
+static constexpr double kMaxRuntimeTicksPerMeter = 5000.0;
+static constexpr double kMinRuntimePwmPerMps = 50.0;
+static constexpr double kMaxRuntimePwmPerMps = 600.0;
+static constexpr double kMinRuntimeWheelKp = 0.0;
+static constexpr double kMaxRuntimeWheelKp = 200.0;
+static constexpr double kMinRuntimeWheelKi = 0.0;
+static constexpr double kMaxRuntimeWheelKi = 20000.0;
+static constexpr double kMinRuntimeWheelKd = 0.0;
+static constexpr double kMaxRuntimeWheelKd = 500.0;
+static constexpr double kMinRuntimeWheelIntegralLimit = 0.0;
+static constexpr double kMaxRuntimeWheelIntegralLimit = 255.0;
+
+static const char* high_level_mode_name(const uint8_t mode)
+{
+  switch (mode)
+  {
+    case HL_MODE_NULL:
+      return "NULL";
+    case HL_MODE_IDLE:
+      return "IDLE";
+    case HL_MODE_AUTONOMOUS:
+      return "AUTONOMOUS";
+    case HL_MODE_RECORDING:
+      return "RECORDING";
+    case HL_MODE_MANUAL_MOWING:
+      return "MANUAL_MOWING";
+    default:
+      return "UNKNOWN";
+  }
+}
 #include "mowgli_interfaces/msg/emergency.hpp"
 #include "mowgli_interfaces/msg/high_level_status.hpp"
 #include "mowgli_interfaces/msg/power.hpp"
@@ -142,10 +173,9 @@ private:
     // Previously hardcoded as kWheelBase=0.325 / kTicksPerMeter=300.0; that
     // duplicated the URDF args and the firmware TICKS_PER_M, so any
     // re-calibration touched three places. wheel_track is the centre-to-
-    // centre drive-wheel distance; ticks_per_meter is what the STM32
-    // firmware advertises in board.h and uses when reporting cumulative
-    // tick deltas in the odom packet (so the conversion m = ticks /
-    // ticks_per_meter matches the firmware-side scaling).
+    // centre drive-wheel distance; ticks_per_meter is the runtime encoder
+    // scale used by this bridge for host-side odometry and re-sent to the
+    // STM32 so the firmware wheel PI / odom share the same tuned value.
     wheel_track_ = declare_parameter<double>("wheel_track", 0.325);
     ticks_per_meter_ = declare_parameter<double>("ticks_per_meter", 300.0);
     // Drive-motor wheel-velocity PID gains + feedforward. Pushed to the STM32
@@ -168,6 +198,27 @@ private:
           rcl_interfaces::msg::SetParametersResult result;
           result.successful = true;
           bool drive_pid_changed = false;
+          double next_min_linear_vel = min_linear_vel_;
+          double next_ticks_per_meter = ticks_per_meter_;
+          double next_wheel_pid_kp = wheel_pid_kp_;
+          double next_wheel_pid_ki = wheel_pid_ki_;
+          double next_wheel_pid_kd = wheel_pid_kd_;
+          double next_wheel_pid_integral_limit = wheel_pid_integral_limit_;
+          double next_wheel_pid_pwm_per_mps = wheel_pid_pwm_per_mps_;
+          auto reject_invalid_double = [&result](const std::string& name,
+                                                 const double value,
+                                                 const double lower,
+                                                 const double upper)
+          {
+            if (!std::isfinite(value) || value < lower || value > upper)
+            {
+              result.successful = false;
+              result.reason = name + " must be finite and within [" + std::to_string(lower) + ", " +
+                              std::to_string(upper) + "]";
+              return true;
+            }
+            return false;
+          };
           for (const auto& p : params)
           {
             if (p.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE)
@@ -177,34 +228,82 @@ private:
             const std::string& name = p.get_name();
             if (name == "min_linear_vel")
             {
-              min_linear_vel_ = p.as_double();
+              next_min_linear_vel = p.as_double();
+            }
+            else if (name == "ticks_per_meter")
+            {
+              if (reject_invalid_double(
+                      name, p.as_double(), kMinRuntimeTicksPerMeter, kMaxRuntimeTicksPerMeter))
+              {
+                break;
+              }
+              next_ticks_per_meter = p.as_double();
+              drive_pid_changed = true;
             }
             else if (name == "wheel_pid_kp")
             {
-              wheel_pid_kp_ = p.as_double();
+              if (reject_invalid_double(
+                      name, p.as_double(), kMinRuntimeWheelKp, kMaxRuntimeWheelKp))
+              {
+                break;
+              }
+              next_wheel_pid_kp = p.as_double();
               drive_pid_changed = true;
             }
             else if (name == "wheel_pid_ki")
             {
-              wheel_pid_ki_ = p.as_double();
+              if (reject_invalid_double(
+                      name, p.as_double(), kMinRuntimeWheelKi, kMaxRuntimeWheelKi))
+              {
+                break;
+              }
+              next_wheel_pid_ki = p.as_double();
               drive_pid_changed = true;
             }
             else if (name == "wheel_pid_kd")
             {
-              wheel_pid_kd_ = p.as_double();
+              if (reject_invalid_double(
+                      name, p.as_double(), kMinRuntimeWheelKd, kMaxRuntimeWheelKd))
+              {
+                break;
+              }
+              next_wheel_pid_kd = p.as_double();
               drive_pid_changed = true;
             }
             else if (name == "wheel_pid_integral_limit")
             {
-              wheel_pid_integral_limit_ = p.as_double();
+              if (reject_invalid_double(name,
+                                        p.as_double(),
+                                        kMinRuntimeWheelIntegralLimit,
+                                        kMaxRuntimeWheelIntegralLimit))
+              {
+                break;
+              }
+              next_wheel_pid_integral_limit = p.as_double();
               drive_pid_changed = true;
             }
             else if (name == "wheel_pid_pwm_per_mps")
             {
-              wheel_pid_pwm_per_mps_ = p.as_double();
+              if (reject_invalid_double(
+                      name, p.as_double(), kMinRuntimePwmPerMps, kMaxRuntimePwmPerMps))
+              {
+                break;
+              }
+              next_wheel_pid_pwm_per_mps = p.as_double();
               drive_pid_changed = true;
             }
           }
+          if (!result.successful)
+          {
+            return result;
+          }
+          min_linear_vel_ = next_min_linear_vel;
+          ticks_per_meter_ = next_ticks_per_meter;
+          wheel_pid_kp_ = next_wheel_pid_kp;
+          wheel_pid_ki_ = next_wheel_pid_ki;
+          wheel_pid_kd_ = next_wheel_pid_kd;
+          wheel_pid_integral_limit_ = next_wheel_pid_integral_limit;
+          wheel_pid_pwm_per_mps_ = next_wheel_pid_pwm_per_mps;
           // Push the new gains to the firmware immediately (live apply, no
           // restart), and arm a couple of heartbeat resends in case this packet
           // is lost. The firmware re-clamps every value, so this callback does
@@ -224,8 +323,7 @@ private:
     angular_rate_params_.kp = declare_parameter<double>("angular_rate_kp", 0.4);
     angular_rate_params_.ki = declare_parameter<double>("angular_rate_ki", 2.0);
     angular_rate_params_.max_cmd = declare_parameter<double>("angular_rate_max_cmd", 1.5);
-    angular_rate_params_.integral_max =
-        declare_parameter<double>("angular_rate_integral_max", 1.5);
+    angular_rate_params_.integral_max = declare_parameter<double>("angular_rate_integral_max", 1.5);
     angular_rate_params_.target_lp_tau =
         declare_parameter<double>("angular_rate_target_lp_tau", 0.2);
 
@@ -332,7 +430,19 @@ private:
         rclcpp::QoS(10),
         [this](mowgli_interfaces::msg::HighLevelStatus::ConstSharedPtr msg)
         {
+          const uint8_t previous_mode = current_mode_;
+          const std::string previous_state_name = current_mode_state_name_;
           current_mode_ = msg->state;
+          current_mode_state_name_ = msg->state_name;
+          if (previous_mode != current_mode_ || previous_state_name != current_mode_state_name_)
+          {
+            RCLCPP_INFO(get_logger(),
+                        "hardware_bridge received HighLevelStatus: state=%u (%s), state_name='%s'",
+                        current_mode_,
+                        high_level_mode_name(current_mode_),
+                        current_mode_state_name_.c_str());
+            send_high_level_state();
+          }
           RCLCPP_DEBUG(get_logger(),
                        "High-level mode updated to %u (%s)",
                        msg->state,
@@ -637,9 +747,13 @@ private:
       msg.sound_module_available = (pkt.status_bitmask & STATUS_BIT_SOUND_AVAIL) != 0u;
       msg.sound_module_busy = (pkt.status_bitmask & STATUS_BIT_SOUND_BUSY) != 0u;
       msg.ui_board_available = (pkt.status_bitmask & STATUS_BIT_UI_AVAIL) != 0u;
+      // Legacy field: kept for backward compatibility with existing GUI /
+      // diagnostics expectations. It reflects blade-controller activity, not a
+      // traction PAC5210 power/arm state (the STM32 status packet does not
+      // currently report that signal).
+      msg.esc_power = mow_enabled_ || blade_active_;
       // Blade motor fields from live telemetry
       msg.mow_enabled = mow_enabled_;
-      msg.esc_power = mow_enabled_ || blade_active_;
       msg.mower_esc_status = blade_active_ ? 1u : 0u;
       msg.mower_motor_rpm = blade_rpm_;
       msg.mower_motor_temperature = blade_temperature_;
@@ -1336,7 +1450,7 @@ private:
 
     mowgli_interfaces::msg::WheelTick wt{};
     wt.stamp = now();
-    wt.wheel_tick_factor = static_cast<uint32_t>(std::lround(ticks_per_meter_));
+    wt.wheel_tick_factor = static_cast<float>(ticks_per_meter_);
     wt.valid_wheels = mowgli_interfaces::msg::WheelTick::WHEEL_VALID_RL |
                       mowgli_interfaces::msg::WheelTick::WHEEL_VALID_RR;
     wt.wheel_direction_rl = wheel_dir_left_;
@@ -1473,6 +1587,19 @@ private:
     pkt.current_mode = current_mode_;
     pkt.gps_quality = gps_quality_;
 
+    if (last_sent_mode_ != current_mode_ || last_sent_mode_state_name_ != current_mode_state_name_)
+    {
+      RCLCPP_INFO(get_logger(),
+                  "hardware_bridge forwarding HL state to STM32: mode=%u (%s), state_name='%s', "
+                  "gps_quality=%u",
+                  current_mode_,
+                  high_level_mode_name(current_mode_),
+                  current_mode_state_name_.c_str(),
+                  gps_quality_);
+      last_sent_mode_ = current_mode_;
+      last_sent_mode_state_name_ = current_mode_state_name_;
+    }
+
     send_raw_packet(reinterpret_cast<const uint8_t*>(&pkt),
                     sizeof(LlHighLevelState) - sizeof(uint16_t));
   }
@@ -1495,8 +1622,8 @@ private:
     send_raw_packet(reinterpret_cast<const uint8_t*>(&pkt), sizeof(LlReboot) - sizeof(uint16_t));
   }
 
-  // Push the drive-motor PID gains + feedforward to the firmware. The board has
-  // no config persistence, so the bridge is the source of truth and re-sends
+  // Push the drive-motor runtime tuning to the firmware. The board has no
+  // config persistence, so the bridge is the source of truth and re-sends
   // these on every (re)connect (pid_resend_count_) and whenever a parameter
   // changes. The firmware validates/clamps every field on receipt.
   void send_drive_pid()
@@ -1511,6 +1638,7 @@ private:
     }
     LlSetDrivePid pkt{};
     pkt.type = PACKET_ID_LL_SET_DRIVE_PID;
+    pkt.ticks_per_meter = static_cast<float>(ticks_per_meter_);
     pkt.kp = static_cast<float>(wheel_pid_kp_);
     pkt.ki = static_cast<float>(wheel_pid_ki_);
     pkt.kd = static_cast<float>(wheel_pid_kd_);
@@ -1519,8 +1647,17 @@ private:
     if (send_raw_packet(reinterpret_cast<const uint8_t*>(&pkt),
                         sizeof(LlSetDrivePid) - sizeof(uint16_t)))
     {
+      RCLCPP_WARN_ONCE(
+          get_logger(),
+          "Drive runtime tuning now uses protocol v%u packet 0x%02X (27-byte payload with "
+          "ticks_per_meter). Older STM32 firmware that only understands the legacy 0x53 packet "
+          "will ignore live drive tuning until you flash the matching firmware.",
+          static_cast<unsigned>(kMowgliProtocolVersion),
+          static_cast<unsigned>(PACKET_ID_LL_SET_DRIVE_PID));
       RCLCPP_INFO(get_logger(),
-                  "Sent drive PID: kp=%.2f ki=%.2f kd=%.2f integral_limit=%.1f pwm_per_mps=%.1f",
+                  "Sent drive params: ticks_per_meter=%.3f kp=%.3f ki=%.3f kd=%.3f "
+                  "integral_limit=%.3f pwm_per_mps=%.3f",
+                  ticks_per_meter_,
                   wheel_pid_kp_,
                   wheel_pid_ki_,
                   wheel_pid_kd_,
@@ -1574,10 +1711,17 @@ private:
     double wz = msg->twist.angular.z;
 
     // The firmware ignores cmd_vel when mode is IDLE.  When velocity commands
-    // arrive (from Nav2 or teleop), ensure the firmware is in AUTONOMOUS mode.
-    if (current_mode_ == 0u && (vx != 0.0 || wz != 0.0))
+    // arrive before the BT publishes any high-level state, ensure the firmware
+    // is not left in NULL/transition mode.
+    if (current_mode_ == HL_MODE_NULL && (vx != 0.0 || wz != 0.0))
     {
-      current_mode_ = 1u;  // AUTONOMOUS
+      current_mode_ = HL_MODE_AUTONOMOUS;
+      current_mode_state_name_ = "AUTONOMOUS_CMD_VEL_FALLBACK";
+      RCLCPP_WARN(get_logger(),
+                  "Received non-zero cmd_vel before BT high-level state propagation; "
+                  "forcing STM32 mode to %u (%s).",
+                  current_mode_,
+                  high_level_mode_name(current_mode_));
       send_high_level_state();
     }
 
@@ -1633,9 +1777,8 @@ private:
     if (angular_rate_loop_enabled_)
     {
       const rclcpp::Time now = this->now();
-      const double dt = last_cmd_vel_time_.nanoseconds() > 0
-                            ? (now - last_cmd_vel_time_).seconds()
-                            : 0.0;
+      const double dt =
+          last_cmd_vel_time_.nanoseconds() > 0 ? (now - last_cmd_vel_time_).seconds() : 0.0;
       last_cmd_vel_time_ = now;
       wz = mowgli_hardware::compute_angular_rate_cmd(
           wz, latest_gyro_z_, dt, angular_rate_params_, angular_rate_state_);
@@ -1789,6 +1932,9 @@ private:
   bool mow_enabled_{false};
   bool is_charging_{false};
   uint8_t current_mode_{0};
+  std::string current_mode_state_name_{"UNSET"};
+  uint8_t last_sent_mode_{255};
+  std::string last_sent_mode_state_name_{"UNSET"};
   uint8_t gps_quality_{0};
 
   // Dock heading anchor: on is_charging false→true transition, publish

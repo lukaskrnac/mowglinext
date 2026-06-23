@@ -33,15 +33,19 @@ find_package(ortools_vendor QUIET)
 find_package(ortools CONFIG REQUIRED)
 
 # Fields2Cover v3 (3.0.0) is built and installed at /opt/fields2cover-300 by
-# the project Dockerfile. Pin the find_package PATHS so we resolve v3 and not
-# the v2 tree still on disk at /opt/fields2cover-200 (kept as a revert
-# fallback, NOT ldconfig'd). v3 brings native headland routing
-# (rp::RoutePlannerBase::genRoute) and the one API break we adapt to in
-# coverage_server.cpp: generateHeadlandSwaths now returns
-# vector<F2CMultiLineString> (was vector<F2CCells>).
-find_package(Fields2Cover 3.0.0 REQUIRED
+# the project Dockerfile. Keep that prefix first and probe the common config
+# subdirs explicitly because the upstream install layout has varied between
+# lib/cmake and share/*/cmake across revisions. We intentionally do NOT force
+# NO_DEFAULT_PATH here: the Docker build exports /opt/fields2cover-300 onto
+# CMAKE_PREFIX_PATH ahead of everything else, and the version pin already
+# rejects the retained v2 fallback tree at /opt/fields2cover-200.
+find_package(Fields2Cover 3.0.0 CONFIG REQUIRED
   PATHS /opt/fields2cover-300
-  NO_DEFAULT_PATH)
+  PATH_SUFFIXES
+    lib/cmake/Fields2Cover
+    lib64/cmake/Fields2Cover
+    share/Fields2Cover/cmake
+    share/fields2cover/cmake)
 
 add_library(${PROJECT_NAME}_core SHARED
   src/coverage_server.cpp

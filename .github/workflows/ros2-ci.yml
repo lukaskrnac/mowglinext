@@ -5,11 +5,13 @@ on:
     branches: [main, dev, 'feat/**', 'fix/**', 'refactor/**', 'chore/**', 'perf/**']
     paths:
       - 'ros2/**'
+      - 'tools/motor/**'
       - '.github/workflows/ros2-ci.yml'
   pull_request:
     branches: [main]
     paths:
       - 'ros2/**'
+      - 'tools/motor/**'
       - '.github/workflows/ros2-ci.yml'
 
 concurrency:
@@ -49,6 +51,16 @@ jobs:
           # already checks out submodules; this CI didn't — so tests never ran.)
           submodules: recursive
 
+      - name: Link sidecar ROS2 tools package into workspace
+        working-directory: ros2
+        run: |
+          mkdir -p src
+          rm -rf src/mowgli_tools
+          ln -s ../../tools/motor src/mowgli_tools
+          ls -la src
+          ls -la src/mowgli_tools
+          test -f src/mowgli_tools/package.xml
+
       - name: Preinstall ROS apt source package
         working-directory: .
         run: |
@@ -61,6 +73,12 @@ jobs:
         uses: ros-tooling/setup-ros@v0.7
         with:
           required-ros-distributions: ${{ matrix.ros_distro }}
+
+      - name: Validate mowgli_tools package discovery
+        run: |
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          colcon list --base-paths src | tee /tmp/colcon-list.txt
+          grep -E '^mowgli_tools\s' /tmp/colcon-list.txt
 
       # GTSAM 4.3a1 is required by fusion_graph (find_package(GTSAM CONFIG
       # REQUIRED) in its CMakeLists). The Ubuntu apt package ships 4.2 with
@@ -175,7 +193,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ros/rosdep
-          key: rosdep-${{ matrix.ros_distro }}-${{ hashFiles('ros2/src/**/package.xml') }}
+          key: rosdep-${{ matrix.ros_distro }}-${{ hashFiles('ros2/src/**/package.xml', 'tools/motor/package.xml') }}
           restore-keys: |
             rosdep-${{ matrix.ros_distro }}-
 
@@ -213,7 +231,7 @@ jobs:
             ros2/build
             ros2/install
             ros2/log
-          key: colcon-v2-${{ matrix.ros_distro }}-${{ hashFiles('ros2/src/**/CMakeLists.txt', 'ros2/src/**/package.xml', 'ros2/src/**/*.cpp', 'ros2/src/**/*.hpp') }}
+          key: colcon-v2-${{ matrix.ros_distro }}-${{ hashFiles('ros2/src/**/CMakeLists.txt', 'ros2/src/**/package.xml', 'ros2/src/**/*.cpp', 'ros2/src/**/*.hpp', 'tools/motor/**') }}
           restore-keys: |
             colcon-v2-${{ matrix.ros_distro }}-
 
@@ -233,6 +251,14 @@ jobs:
             --return-code-on-test-failure \
             --event-handlers console_cohesion+
           colcon test-result --verbose
+
+      - name: Validate mowgli_tools package entrypoint
+        run: |
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          source install/setup.bash
+          ros2 pkg prefix mowgli_tools
+          ros2 run mowgli_tools tune_drive_pid --help | tee /tmp/mowgli_tools_help.txt
+          grep -q "Controlled drive PID tuning" /tmp/mowgli_tools_help.txt
 
       - name: Validate external GNSS launch contract
         working-directory: .

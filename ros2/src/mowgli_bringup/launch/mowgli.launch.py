@@ -198,9 +198,10 @@ def generate_launch_description() -> LaunchDescription:
             {"dock_pose_yaw": float(robot_params.get("dock_pose_yaw", 0.0))},
             {"imu_yaw": float(robot_params.get("imu_yaw", 0.0))},
             # Wheel odometry kinematics — single source of truth in
-            # mowgli_robot.yaml. Hardware bridge previously hardcoded
-            # 0.325 m / 300 ticks/m which silently diverged from the
-            # YAML and the URDF (also from the firmware's TICKS_PER_M).
+            # mowgli_robot.yaml. hardware_bridge uses ticks_per_meter for
+            # host-side odometry and also re-sends it to the STM32 so the
+            # wheel PI / firmware odom leave board.h TICKS_PER_M as a
+            # startup-only fallback.
             {"wheel_track": float(robot_params.get("wheel_track", 0.325))},
             {"ticks_per_meter": float(robot_params.get("ticks_per_meter", 300.0))},
             # Drive-motor wheel-velocity PID + feedforward, pushed to the STM32

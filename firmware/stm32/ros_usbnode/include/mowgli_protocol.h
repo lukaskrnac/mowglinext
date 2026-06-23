@@ -23,6 +23,7 @@
 #ifndef MOWGLI_PROTOCOL_H
 #define MOWGLI_PROTOCOL_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -31,9 +32,12 @@ extern "C" {
 
 /* ---------------------------------------------------------------------------
  * Protocol version — increment when wire format changes incompatibly.
+ * v2 moves runtime drive tuning to packet 0x54 and adds ticks_per_meter to
+ * the payload so old firmware safely ignores the new packet instead of
+ * mis-parsing it as legacy PID-only data.
  * ---------------------------------------------------------------------------*/
 
-#define MOWGLI_PROTOCOL_VERSION  1u
+#define MOWGLI_PROTOCOL_VERSION 2u
 
 /* ---------------------------------------------------------------------------
  * Packet IDs
@@ -41,22 +45,22 @@ extern "C" {
  * ---------------------------------------------------------------------------*/
 
 /** System status packet (LlStatus / pkt_status_t). */
-#define PKT_ID_STATUS      0x01u
+#define PKT_ID_STATUS 0x01u
 
 /** IMU data packet (LlImu / pkt_imu_t). */
-#define PKT_ID_IMU         0x02u
+#define PKT_ID_IMU 0x02u
 
 /** UI button event packet (LlUiEvent / pkt_ui_event_t). */
-#define PKT_ID_UI_EVENT    0x03u
+#define PKT_ID_UI_EVENT 0x03u
 
 /** Wheel odometry packet (LlOdometry / pkt_odometry_t). */
-#define PKT_ID_ODOMETRY    0x04u
+#define PKT_ID_ODOMETRY 0x04u
 
 /** Blade motor status packet (pkt_blade_status_t). */
 #define PKT_ID_BLADE_STATUS 0x05u
 
 /** High-level config response packet. */
-#define PKT_ID_CONFIG_RSP  0x12u
+#define PKT_ID_CONFIG_RSP 0x12u
 
 /* ---------------------------------------------------------------------------
  * Packet IDs
@@ -64,82 +68,82 @@ extern "C" {
  * ---------------------------------------------------------------------------*/
 
 /** High-level config request packet. */
-#define PKT_ID_CONFIG_REQ  0x11u
+#define PKT_ID_CONFIG_REQ 0x11u
 
 /**
  * Heartbeat packet.
  * Must be sent at regular intervals (~250 ms). STM32 declares an emergency
  * stop if the heartbeat is absent for more than its timeout window.
  */
-#define PKT_ID_HEARTBEAT   0x42u
+#define PKT_ID_HEARTBEAT 0x42u
 
 /** High-level state packet (mode + GPS quality). */
-#define PKT_ID_HL_STATE    0x43u
+#define PKT_ID_HL_STATE 0x43u
 
 /** Velocity command packet (forward + angular velocity). */
-#define PKT_ID_CMD_VEL     0x50u
+#define PKT_ID_CMD_VEL 0x50u
 
 /** Blade motor control packet (on/off + direction). */
-#define PKT_ID_CMD_BLADE   0x51u
+#define PKT_ID_CMD_BLADE 0x51u
 
 /** Reboot request (Host -> Firmware). Triggers NVIC_SystemReset when the
  *  payload magic byte matches PKT_REBOOT_MAGIC — recovers a wedged board
  *  (e.g. IMU emitting NaN) without a manual power-cycle. */
-#define PKT_ID_REBOOT      0x52u
-#define PKT_REBOOT_MAGIC   0xB0u
+#define PKT_ID_REBOOT 0x52u
+#define PKT_REBOOT_MAGIC 0xB0u
 
 /** Drive-motor PID/feedforward gains (Host -> Firmware). Lets the ROS 2 host
  *  retune the per-wheel velocity loop at runtime without reflashing. The
  *  firmware validates and clamps every field; its compile-time defaults remain
  *  the power-on fallback. */
-#define PKT_ID_SET_DRIVE_PID 0x53u
+#define PKT_ID_SET_DRIVE_PID 0x54u
 
 /* ---------------------------------------------------------------------------
  * status_bitmask bit definitions  (pkt_status_t::status_bitmask)
  * ---------------------------------------------------------------------------*/
 
 /** Firmware has completed its initialisation sequence. */
-#define STATUS_BIT_INITIALIZED  (1u << 0u)
+#define STATUS_BIT_INITIALIZED (1u << 0u)
 
 /** Raspberry Pi power rail is active. */
-#define STATUS_BIT_RASPI_POWER  (1u << 1u)
+#define STATUS_BIT_RASPI_POWER (1u << 1u)
 
 /** Charging is currently active. */
-#define STATUS_BIT_CHARGING     (1u << 2u)
+#define STATUS_BIT_CHARGING (1u << 2u)
 
 /* Bit 3 is reserved. */
 
 /** Rain sensor has detected moisture. */
-#define STATUS_BIT_RAIN         (1u << 4u)
+#define STATUS_BIT_RAIN (1u << 4u)
 
 /** Sound hardware is present and available. */
-#define STATUS_BIT_SOUND_AVAIL  (1u << 5u)
+#define STATUS_BIT_SOUND_AVAIL (1u << 5u)
 
 /** Sound hardware is currently playing audio. */
-#define STATUS_BIT_SOUND_BUSY   (1u << 6u)
+#define STATUS_BIT_SOUND_BUSY (1u << 6u)
 
 /** UI panel hardware is present and available. */
-#define STATUS_BIT_UI_AVAIL     (1u << 7u)
+#define STATUS_BIT_UI_AVAIL (1u << 7u)
 
 /* ---------------------------------------------------------------------------
  * emergency_bitmask bit definitions  (pkt_status_t::emergency_bitmask)
  * ---------------------------------------------------------------------------*/
 
 /** Emergency condition is latched (requires explicit release). */
-#define EMERGENCY_BIT_LATCH  (1u << 0u)
+#define EMERGENCY_BIT_LATCH (1u << 0u)
 
 /** Stop-button emergency is active. */
-#define EMERGENCY_BIT_STOP   (1u << 1u)
+#define EMERGENCY_BIT_STOP (1u << 1u)
 
 /** Wheel-lift emergency is active. */
-#define EMERGENCY_BIT_LIFT   (1u << 2u)
+#define EMERGENCY_BIT_LIFT (1u << 2u)
 
 /* ---------------------------------------------------------------------------
  * USS sensor count
  * ---------------------------------------------------------------------------*/
 
 /** Number of ultrasonic range sensors reported in pkt_status_t. */
-#define MOWGLI_USS_COUNT  5u
+#define MOWGLI_USS_COUNT 5u
 
 /* ---------------------------------------------------------------------------
  * Packed wire-format structs
@@ -161,15 +165,15 @@ extern "C" {
  * Wire size: 36 bytes (must match sizeof(LlStatus) in ll_datatypes.hpp).
  */
 typedef struct {
-    uint8_t  type;                          /**< PKT_ID_STATUS */
-    uint8_t  status_bitmask;                /**< See STATUS_BIT_* defines */
-    float    uss_ranges_m[MOWGLI_USS_COUNT];/**< Ultrasonic ranges [m] */
-    uint8_t  emergency_bitmask;             /**< See EMERGENCY_BIT_* defines */
-    float    v_charge;                      /**< Charge input voltage [V] */
-    float    v_system;                      /**< Battery / system voltage [V] */
-    float    charging_current;              /**< Charging current [A] */
-    uint8_t  batt_percentage;               /**< Battery state of charge [0-100] */
-    uint16_t crc;                           /**< CRC-16 CCITT over preceding bytes */
+  uint8_t type;                         /**< PKT_ID_STATUS */
+  uint8_t status_bitmask;               /**< See STATUS_BIT_* defines */
+  float uss_ranges_m[MOWGLI_USS_COUNT]; /**< Ultrasonic ranges [m] */
+  uint8_t emergency_bitmask;            /**< See EMERGENCY_BIT_* defines */
+  float v_charge;                       /**< Charge input voltage [V] */
+  float v_system;                       /**< Battery / system voltage [V] */
+  float charging_current;               /**< Charging current [A] */
+  uint8_t batt_percentage;              /**< Battery state of charge [0-100] */
+  uint16_t crc; /**< CRC-16 CCITT over preceding bytes */
 } pkt_status_t;
 
 /**
@@ -180,12 +184,12 @@ typedef struct {
  * Wire size: 40 bytes (must match sizeof(LlImu) in ll_datatypes.hpp).
  */
 typedef struct {
-    uint8_t  type;                  /**< PKT_ID_IMU */
-    uint16_t dt_millis;             /**< Time delta since previous packet [ms] */
-    float    acceleration_mss[3];   /**< Linear acceleration x/y/z [m/s^2] */
-    float    gyro_rads[3];          /**< Angular velocity x/y/z [rad/s] */
-    float    mag_uT[3];             /**< Magnetic field x/y/z [uT] */
-    uint16_t crc;                   /**< CRC-16 CCITT over preceding bytes */
+  uint8_t type;              /**< PKT_ID_IMU */
+  uint16_t dt_millis;        /**< Time delta since previous packet [ms] */
+  float acceleration_mss[3]; /**< Linear acceleration x/y/z [m/s^2] */
+  float gyro_rads[3];        /**< Angular velocity x/y/z [rad/s] */
+  float mag_uT[3];           /**< Magnetic field x/y/z [uT] */
+  uint16_t crc;              /**< CRC-16 CCITT over preceding bytes */
 } pkt_imu_t;
 
 /**
@@ -196,10 +200,10 @@ typedef struct {
  * Wire size: 5 bytes (must match sizeof(LlUiEvent) in ll_datatypes.hpp).
  */
 typedef struct {
-    uint8_t  type;           /**< PKT_ID_UI_EVENT */
-    uint8_t  button_id;      /**< Panel button identifier */
-    uint8_t  press_duration; /**< 0 = short, 1 = long, 2 = very long */
-    uint16_t crc;            /**< CRC-16 CCITT over preceding bytes */
+  uint8_t type;           /**< PKT_ID_UI_EVENT */
+  uint8_t button_id;      /**< Panel button identifier */
+  uint8_t press_duration; /**< 0 = short, 1 = long, 2 = very long */
+  uint16_t crc;           /**< CRC-16 CCITT over preceding bytes */
 } pkt_ui_event_t;
 
 /**
@@ -215,13 +219,13 @@ typedef struct {
  * Wire size: 17 bytes (must match sizeof(LlOdometry) in ll_datatypes.hpp).
  */
 typedef struct {
-    uint8_t  type;                 /**< PKT_ID_ODOMETRY */
-    uint16_t dt_millis;            /**< Firmware-measured interval since last packet [ms] */
-    int32_t  left_ticks;           /**< Signed cumulative left encoder ticks */
-    int32_t  right_ticks;          /**< Signed cumulative right encoder ticks */
-    int16_t  left_velocity_mm_s;   /**< Signed left wheel velocity [mm/s] */
-    int16_t  right_velocity_mm_s;  /**< Signed right wheel velocity [mm/s] */
-    uint16_t crc;                  /**< CRC-16 CCITT over preceding bytes */
+  uint8_t type;        /**< PKT_ID_ODOMETRY */
+  uint16_t dt_millis;  /**< Firmware-measured interval since last packet [ms] */
+  int32_t left_ticks;  /**< Signed cumulative left encoder ticks */
+  int32_t right_ticks; /**< Signed cumulative right encoder ticks */
+  int16_t left_velocity_mm_s;  /**< Signed left wheel velocity [mm/s] */
+  int16_t right_velocity_mm_s; /**< Signed right wheel velocity [mm/s] */
+  uint16_t crc;                /**< CRC-16 CCITT over preceding bytes */
 } pkt_odometry_t;
 
 /**
@@ -235,10 +239,11 @@ typedef struct {
  * Wire size: 5 bytes (must match sizeof(LlHeartbeat) in ll_datatypes.hpp).
  */
 typedef struct {
-    uint8_t  type;                        /**< PKT_ID_HEARTBEAT */
-    uint8_t  emergency_requested;         /**< Non-zero: assert emergency stop */
-    uint8_t  emergency_release_requested; /**< Non-zero: release latched emergency */
-    uint16_t crc;                         /**< CRC-16 CCITT over preceding bytes */
+  uint8_t type;                /**< PKT_ID_HEARTBEAT */
+  uint8_t emergency_requested; /**< Non-zero: assert emergency stop */
+  uint8_t
+      emergency_release_requested; /**< Non-zero: release latched emergency */
+  uint16_t crc;                    /**< CRC-16 CCITT over preceding bytes */
 } pkt_heartbeat_t;
 
 /**
@@ -253,17 +258,17 @@ typedef struct {
  * High-level operating modes sent by the ROS 2 host.
  * These MUST match the constants in mowgli_interfaces/msg/HighLevelStatus.msg.
  */
-#define HL_MODE_NULL             0u   /**< Emergency or transitional */
-#define HL_MODE_IDLE             1u   /**< Idle, docked, charging */
-#define HL_MODE_AUTONOMOUS       2u   /**< Autonomous mowing */
-#define HL_MODE_RECORDING        3u   /**< Area boundary recording */
-#define HL_MODE_MANUAL_MOWING    4u   /**< Manual teleop with blade */
+#define HL_MODE_NULL 0u          /**< Emergency or transitional */
+#define HL_MODE_IDLE 1u          /**< Idle, docked, charging */
+#define HL_MODE_AUTONOMOUS 2u    /**< Autonomous mowing */
+#define HL_MODE_RECORDING 3u     /**< Area boundary recording */
+#define HL_MODE_MANUAL_MOWING 4u /**< Manual teleop with blade */
 
 typedef struct {
-    uint8_t  type;         /**< PKT_ID_HL_STATE */
-    uint8_t  current_mode; /**< High-level operating mode (HL_MODE_*) */
-    uint8_t  gps_quality;  /**< GPS fix quality [0-100] */
-    uint16_t crc;          /**< CRC-16 CCITT over preceding bytes */
+  uint8_t type;         /**< PKT_ID_HL_STATE */
+  uint8_t current_mode; /**< High-level operating mode (HL_MODE_*) */
+  uint8_t gps_quality;  /**< GPS fix quality [0-100] */
+  uint16_t crc;         /**< CRC-16 CCITT over preceding bytes */
 } pkt_hl_state_t;
 
 /**
@@ -275,24 +280,25 @@ typedef struct {
  * Wire size: 11 bytes (must match sizeof(LlCmdVel) in ll_datatypes.hpp).
  */
 typedef struct {
-    uint8_t  type;      /**< PKT_ID_CMD_VEL */
-    float    linear_x;  /**< Forward velocity [m/s] */
-    float    angular_z; /**< Yaw (angular) velocity [rad/s] */
-    uint16_t crc;       /**< CRC-16 CCITT over preceding bytes */
+  uint8_t type;    /**< PKT_ID_CMD_VEL */
+  float linear_x;  /**< Forward velocity [m/s] */
+  float angular_z; /**< Yaw (angular) velocity [rad/s] */
+  uint16_t crc;    /**< CRC-16 CCITT over preceding bytes */
 } pkt_cmd_vel_t;
 
 /**
- * @brief Blade motor control packet — Host -> Firmware (PKT_ID_CMD_BLADE = 0x51).
+ * @brief Blade motor control packet — Host -> Firmware (PKT_ID_CMD_BLADE =
+ * 0x51).
  *
  * Commands the blade motor on/off and direction.
  *
  * Wire size: 5 bytes.
  */
 typedef struct {
-    uint8_t  type;      /**< PKT_ID_CMD_BLADE */
-    uint8_t  blade_on;  /**< 1=start blade, 0=stop blade */
-    uint8_t  blade_dir; /**< 0=normal, 1=reverse */
-    uint16_t crc;       /**< CRC-16 CCITT over preceding bytes */
+  uint8_t type;      /**< PKT_ID_CMD_BLADE */
+  uint8_t blade_on;  /**< 1=start blade, 0=stop blade */
+  uint8_t blade_dir; /**< 0=normal, 1=reverse */
+  uint16_t crc;      /**< CRC-16 CCITT over preceding bytes */
 } pkt_cmd_blade_t;
 
 /**
@@ -304,45 +310,50 @@ typedef struct {
  * Wire size: 4 bytes.
  */
 typedef struct {
-    uint8_t  type;   /**< PKT_ID_REBOOT */
-    uint8_t  magic;  /**< Must equal PKT_REBOOT_MAGIC (0xB0) */
-    uint16_t crc;    /**< CRC-16 CCITT over preceding bytes */
+  uint8_t type;  /**< PKT_ID_REBOOT */
+  uint8_t magic; /**< Must equal PKT_REBOOT_MAGIC (0xB0) */
+  uint16_t crc;  /**< CRC-16 CCITT over preceding bytes */
 } pkt_reboot_t;
 
 /**
- * @brief Drive-motor PID gains packet — Host -> Firmware (PKT_ID_SET_DRIVE_PID = 0x53).
+ * @brief Drive-motor runtime tuning packet — Host -> Firmware
+ * (PKT_ID_SET_DRIVE_PID = 0x54).
  *
- * Retunes the per-wheel velocity loop (both wheels share the same gains). The
- * firmware rejects the packet if any field is non-finite and clamps each field
- * to a safe range before applying; the output limit stays fixed at 255 PWM.
+ * Retunes the per-wheel velocity loop (both wheels share the same gains) and
+ * the runtime ticks_per_meter scale used by the wheel PI and odometry math.
+ * The firmware rejects the packet if any field is non-finite and clamps each
+ * field to a safe range before applying; the output limit stays fixed at 255
+ * PWM.
  *
- * Wire size: 23 bytes (must match sizeof(LlSetDrivePid) in ll_datatypes.hpp).
+ * Wire size: 27 bytes (must match sizeof(LlSetDrivePid) in ll_datatypes.hpp).
  */
 typedef struct {
-    uint8_t  type;            /**< PKT_ID_SET_DRIVE_PID */
-    float    kp;              /**< Proportional gain [PWM per m/s] */
-    float    ki;              /**< Integral gain [PWM per (m/s·s)] */
-    float    kd;              /**< Derivative gain [PWM per (m/s²)] */
-    float    integral_limit;  /**< Anti-windup clamp on the integral term [PWM] */
-    float    pwm_per_mps;     /**< Open-loop feedforward velocity->PWM scale */
-    uint16_t crc;             /**< CRC-16 CCITT over preceding bytes */
+  uint8_t type;          /**< PKT_ID_SET_DRIVE_PID */
+  float ticks_per_meter; /**< Runtime encoder scale [ticks / m] */
+  float kp;              /**< Proportional gain [PWM per m/s] */
+  float ki;              /**< Integral gain [PWM per (m/s·s)] */
+  float kd;              /**< Derivative gain [PWM per (m/s²)] */
+  float integral_limit;  /**< Anti-windup clamp on the integral term [PWM] */
+  float pwm_per_mps;     /**< Open-loop feedforward velocity->PWM scale */
+  uint16_t crc;          /**< CRC-16 CCITT over preceding bytes */
 } pkt_set_drive_pid_t;
 
 /**
- * @brief Blade motor status packet — Firmware -> Host (PKT_ID_BLADE_STATUS = 0x05).
+ * @brief Blade motor status packet — Firmware -> Host (PKT_ID_BLADE_STATUS =
+ * 0x05).
  *
  * Sent periodically (~4 Hz) with blade motor telemetry.
  *
  * Wire size: 16 bytes.
  */
 typedef struct {
-    uint8_t  type;           /**< PKT_ID_BLADE_STATUS */
-    uint8_t  is_active;      /**< 1=running, 0=stopped */
-    uint16_t rpm;            /**< Blade motor RPM */
-    uint16_t power_watts;    /**< Power consumption [W] */
-    float    temperature;    /**< Blade/motor temperature [C] */
-    uint32_t error_count;    /**< Cumulative error counter */
-    uint16_t crc;            /**< CRC-16 CCITT over preceding bytes */
+  uint8_t type;         /**< PKT_ID_BLADE_STATUS */
+  uint8_t is_active;    /**< 1=running, 0=stopped */
+  uint16_t rpm;         /**< Blade motor RPM */
+  uint16_t power_watts; /**< Power consumption [W] */
+  float temperature;    /**< Blade/motor temperature [C] */
+  uint32_t error_count; /**< Cumulative error counter */
+  uint16_t crc;         /**< CRC-16 CCITT over preceding bytes */
 } pkt_blade_status_t;
 
 #pragma pack(pop)
@@ -386,14 +397,35 @@ typedef struct {
  * ---------------------------------------------------------------------------*/
 
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
-_Static_assert(sizeof(pkt_status_t)    == 38u, "pkt_status_t layout unexpected");
-_Static_assert(sizeof(pkt_imu_t)       == 41u, "pkt_imu_t layout unexpected");
-_Static_assert(sizeof(pkt_ui_event_t)  ==  5u, "pkt_ui_event_t layout unexpected");
-_Static_assert(sizeof(pkt_odometry_t)  == 17u, "pkt_odometry_t layout unexpected");
-_Static_assert(sizeof(pkt_heartbeat_t) ==  5u, "pkt_heartbeat_t layout unexpected");
-_Static_assert(sizeof(pkt_hl_state_t)  ==  5u, "pkt_hl_state_t layout unexpected");
-_Static_assert(sizeof(pkt_cmd_vel_t)   == 11u, "pkt_cmd_vel_t layout unexpected");
-_Static_assert(sizeof(pkt_set_drive_pid_t) == 23u, "pkt_set_drive_pid_t layout unexpected");
+_Static_assert(sizeof(pkt_status_t) == 38u, "pkt_status_t layout unexpected");
+_Static_assert(sizeof(pkt_imu_t) == 41u, "pkt_imu_t layout unexpected");
+_Static_assert(sizeof(pkt_ui_event_t) == 5u,
+               "pkt_ui_event_t layout unexpected");
+_Static_assert(sizeof(pkt_odometry_t) == 17u,
+               "pkt_odometry_t layout unexpected");
+_Static_assert(sizeof(pkt_heartbeat_t) == 5u,
+               "pkt_heartbeat_t layout unexpected");
+_Static_assert(sizeof(pkt_hl_state_t) == 5u,
+               "pkt_hl_state_t layout unexpected");
+_Static_assert(sizeof(pkt_cmd_vel_t) == 11u, "pkt_cmd_vel_t layout unexpected");
+_Static_assert(sizeof(pkt_set_drive_pid_t) == 27u,
+               "pkt_set_drive_pid_t layout unexpected");
+_Static_assert(offsetof(pkt_set_drive_pid_t, type) == 0u,
+               "pkt_set_drive_pid_t.type offset unexpected");
+_Static_assert(offsetof(pkt_set_drive_pid_t, ticks_per_meter) == 1u,
+               "pkt_set_drive_pid_t.ticks_per_meter offset unexpected");
+_Static_assert(offsetof(pkt_set_drive_pid_t, kp) == 5u,
+               "pkt_set_drive_pid_t.kp offset unexpected");
+_Static_assert(offsetof(pkt_set_drive_pid_t, ki) == 9u,
+               "pkt_set_drive_pid_t.ki offset unexpected");
+_Static_assert(offsetof(pkt_set_drive_pid_t, kd) == 13u,
+               "pkt_set_drive_pid_t.kd offset unexpected");
+_Static_assert(offsetof(pkt_set_drive_pid_t, integral_limit) == 17u,
+               "pkt_set_drive_pid_t.integral_limit offset unexpected");
+_Static_assert(offsetof(pkt_set_drive_pid_t, pwm_per_mps) == 21u,
+               "pkt_set_drive_pid_t.pwm_per_mps offset unexpected");
+_Static_assert(offsetof(pkt_set_drive_pid_t, crc) == 25u,
+               "pkt_set_drive_pid_t.crc offset unexpected");
 #endif
 
 #ifdef __cplusplus

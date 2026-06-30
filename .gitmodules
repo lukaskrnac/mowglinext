@@ -4,4 +4,4 @@
 	branch = main
 [submodule "ros2/src/external/universal-gnss"]
 	path = ros2/src/external/universal-gnss
-	url = https://github.com/pepeuch/universal-gnss.git
+	url = https://github.com/lukaskrnac/universal-gnss.git

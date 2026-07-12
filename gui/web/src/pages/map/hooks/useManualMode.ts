@@ -12,8 +12,8 @@ const MANUAL_EXIT_DEBOUNCE_MS = 1200;
 // react-joystick-component). Multiplied at this layer (before twist_mux) so
 // Nav2 autonomous speeds are unaffected. Tuned for precise manual control:
 // at 1.0 m/s the robot was too twitchy on grass.
-const MAX_LINEAR_MPS = 0.25;
-const MAX_ANGULAR_RAD_S = 0.6;
+const MAX_LINEAR_MPS = 0.5;
+const MAX_ANGULAR_RAD_S = 0.7;
 
 interface UseManualModeOptions {
     mowerAction: (action: string, params: Record<string, unknown>) => () => Promise<void>;

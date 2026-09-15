@@ -5,6 +5,12 @@
 > authoritative and which is a historical record. Excludes `ros2/src/opennav_coverage/**` and
 > `ros2/src/external/**` (vendored submodules) and `node_modules/`.
 
+## Update-system documents added after index generation
+
+- [Software updates and recovery](../UPDATES.md) — **current**, operator/contributor: host updater, installer, publication and platform contract.
+- [Remote access (Tailscale sidecar)](../REMOTE_ACCESS.md) — **current**, operator/contributor: optional `mowgli-remote` container owned by the GUI backend, settings keys, reconcile rules, troubleshooting.
+- [Update-system design snapshot](../UPDATE_SYSTEM_PLAN.md) — **historical**, contributor: original design intent; use UPDATES.md for implemented behavior.
+
 ## How to read this index
 
 - **status** — `current` (trust it), `historical` (a dated record of *what was decided/found then*),
@@ -68,6 +74,10 @@ tree at f21729e9; regenerate when files are added or removed rather than hand-pa
 
 ## Contributor docs (current)
 
+Migration update (2026-09-14): [ROS2_LYRICAL_MIGRATION.md](../ROS2_LYRICAL_MIGRATION.md)
+is current for the Lyrical APIs, source dependency pins, build targets and acceptance
+procedure. It supersedes Kilted-specific build details in the September 3 codemaps.
+
 | Doc | Audience | What it is |
 |-----|----------|-----------|
 | [`README.md`](../../README.md) | contributor | Project front page: what it does, quick start, monorepo table, doc links, license. |
@@ -94,6 +104,7 @@ tree at f21729e9; regenerate when files are added or removed rather than hand-pa
 | Doc | What it is |
 |-----|-----------|
 | [`docs/FIRST_BOOT.md`](../FIRST_BOOT.md) | The post-install checklist: GUI up → RTK Fixed → IMU cal → yaw cal → dock pose → drive tuning → record area → first mow, plus troubleshooting. |
+| [`docs/MQTT_CONTROL.md`](../MQTT_CONTROL.md) | The `mqtt_bridge_node` topic/JSON/command contract — the stable surface for external integrations (Home Assistant, mobile apps), as opposed to the GUI's internal `:4006` REST/WS API or its separate embedded MQTT broker. |
 | [`wiki/User-Guide.md`](../../wiki/User-Guide.md) | Operator walkthrough of the live GUI, built from a real-robot session (also synced to the wiki). |
 | [`docker/README.md`](../../docker/README.md) | Manual (non-installer) Docker Compose deployment: hardware requirements, quick start, config reference, container architecture. **Partially stale** — still documents SLAM Toolbox, `slam_mode`, `slam_toolbox.yaml`, which were removed (see stale claims below). |
 | [`docker/config/mowgli/README.md`](../../docker/config/mowgli/README.md) | What the read-only `/ros2_ws/config/` bind mount is, which files are git-ignored, how parameter override works. |

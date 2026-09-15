@@ -48,6 +48,8 @@
  *   publish_rate     (double,  default 100.0 Hz → 10 ms period)
  *   high_level_rate  (double,  default 2.0 Hz   → 500 ms period)
  *   cmd_vel_{linear,angular}_{accel,decel}_limit (double, startup-only)
+ *   deadband_pwm     (double,  default 40.0 PWM, startup-only — motor stiction
+ *                     estimate the wheel_pid_* set must be able to bridge)
  */
 
 #include <chrono>
@@ -72,6 +74,7 @@
 #include "mowgli_hardware/cmd_vel_validation.hpp"
 #include "mowgli_hardware/dig_detector.hpp"
 #include "mowgli_hardware/dig_escalation.hpp"
+#include "mowgli_hardware/drive_gain_sanity.hpp"
 #include "mowgli_hardware/gnss_hardware_status.hpp"
 #include "mowgli_hardware/imu_liveness.hpp"
 #include "mowgli_hardware/ll_datatypes.hpp"
@@ -79,6 +82,7 @@
 #include "mowgli_hardware/packet_handler.hpp"
 #include "mowgli_hardware/serial_port.hpp"
 #include "mowgli_hardware/timer_period.hpp"
+#include "mowgli_interfaces/update_maintenance.hpp"
 
 // High-level mode constants — must match HighLevelStatus.msg and the
 // HL_MODE_* defines in firmware/mowgli_protocol.h. Declared locally to
@@ -100,6 +104,14 @@ static constexpr double kMinRuntimeWheelKd = 0.0;
 static constexpr double kMaxRuntimeWheelKd = 500.0;
 static constexpr double kMinRuntimeWheelIntegralLimit = 0.0;
 static constexpr double kMaxRuntimeWheelIntegralLimit = 255.0;
+// Template defaults for the firmware wheel PI (mowgli_bringup
+// config/mowgli_robot.yaml, field-validated 2026-09-15). Must stay in lockstep
+// with the template and mowgli.launch.py — guarded by
+// mowgli_bringup/test/test_drive_pid_defaults.py, which regexes these lines.
+static constexpr double kTemplateWheelPidKp = 10.0;
+static constexpr double kTemplateWheelPidKi = 2000.0;
+static constexpr double kTemplateWheelPidKd = 0.0;
+static constexpr double kTemplateWheelPidIntegralLimit = 45.0;
 // Firmware gyro yaw-rate loop (Option C) — mirrors the firmware's own
 // pid_constrain() ranges (Firmware-2, task #33 report) so an out-of-range
 // host value is rejected here instead of being silently re-clamped on the
@@ -441,23 +453,61 @@ private:
     play_clear_ms_ = declare_parameter<int>("play_button_clear_emergency_ms", 2000);
     // Drive-motor wheel-velocity PID gains + feedforward. Pushed to the STM32
     // firmware (PACKET_ID_LL_SET_DRIVE_PID) so the GUI can retune the per-wheel
-    // loop without reflashing. Fallback defaults match the mowgli_bringup
-    // template (pre-calibration field defaults; a per-robot auto-tune overrides
-    // them). Live-tunable via the set-parameters callback below; the firmware
-    // re-clamps every value. The floating_point_range on these parameters
-    // mirrors the firmware validation bounds so ros2 param set rejects
-    // out-of-range values at the framework level before the callback fires.
-    wheel_pid_kp_ = bounded_double("wheel_pid_kp", 0.2, kMinRuntimeWheelKp, kMaxRuntimeWheelKp);
-    wheel_pid_ki_ = bounded_double("wheel_pid_ki", 0.092, kMinRuntimeWheelKi, kMaxRuntimeWheelKi);
-    wheel_pid_kd_ = bounded_double("wheel_pid_kd", 0.01, kMinRuntimeWheelKd, kMaxRuntimeWheelKd);
+    // loop without reflashing. The firmware applies them UNSCALED in PWM units
+    // (kp PWM/(m/s), ki PWM/(m/s·s), integral_limit PWM). Fallback defaults
+    // match the mowgli_bringup template (field-validated 2026-09-15; a
+    // per-robot auto-tune overrides them). Live-tunable via the set-parameters
+    // callback below; the firmware re-clamps every value. The
+    // floating_point_range on these parameters mirrors the firmware validation
+    // bounds so ros2 param set rejects out-of-range values at the framework
+    // level before the callback fires.
+    wheel_pid_kp_ = bounded_double("wheel_pid_kp", 10.0, kMinRuntimeWheelKp, kMaxRuntimeWheelKp);
+    wheel_pid_ki_ = bounded_double("wheel_pid_ki", 2000.0, kMinRuntimeWheelKi, kMaxRuntimeWheelKi);
+    wheel_pid_kd_ = bounded_double("wheel_pid_kd", 0.0, kMinRuntimeWheelKd, kMaxRuntimeWheelKd);
     wheel_pid_integral_limit_ = bounded_double("wheel_pid_integral_limit",
-                                               15.0,
+                                               45.0,
                                                kMinRuntimeWheelIntegralLimit,
                                                kMaxRuntimeWheelIntegralLimit);
     wheel_pid_pwm_per_mps_ = bounded_double("wheel_pid_pwm_per_mps",
                                             282.135,
                                             kMinRuntimePwmPerMps,
                                             kMaxRuntimePwmPerMps);
+    // Stiction gate for the set above (mowgli_hardware/drive_gain_sanity.hpp).
+    // The old template (kp 0.2 / ki 0.092 / integral_limit 15) capped the
+    // firmware loop at ~24 PWM at the 0.03 m/s an inner arc wheel is asked
+    // for — under the ~40 PWM static-friction deadband, so that wheel never
+    // turned. Such a set is replaced on the wire by the template gains (see
+    // send_drive_pid); the bridge is not a config writer: it logs, it does not
+    // fix the file.
+    deadband_pwm_ = startup_double(
+        "deadband_pwm",
+        40.0,
+        "Startup-only estimate of the drive motors' static-friction deadband in PWM. "
+        "wheel_pid_integral_limit + wheel_pid_kp*0.03 + wheel_pid_pwm_per_mps*0.03 must reach "
+        "it, or the template gains are sent to the firmware in its place.");
+    drive_gains_below_deadband_ = !DriveGainsBridgeDeadband(wheel_pid_kp_,
+                                                            wheel_pid_integral_limit_,
+                                                            wheel_pid_pwm_per_mps_,
+                                                            deadband_pwm_);
+    if (drive_gains_below_deadband_)
+    {
+      RCLCPP_ERROR(
+          get_logger(),
+          "wheel_pid_* gains cannot bridge the motor deadband: integral_limit %.3f + kp %.3f*0.03 "
+          "+ pwm_per_mps %.3f*0.03 = %.1f PWM < deadband_pwm %.1f. Sending the template gains "
+          "kp %.1f / ki %.1f / kd %.1f / integral_limit %.1f to the firmware instead (the "
+          "configured values are left untouched). Fix mowgli_robot.yaml: delete the overriding "
+          "keys to fall back to those defaults.",
+          wheel_pid_integral_limit_,
+          wheel_pid_kp_,
+          wheel_pid_pwm_per_mps_,
+          DriveGainsBridgePwm(wheel_pid_kp_, wheel_pid_integral_limit_, wheel_pid_pwm_per_mps_),
+          deadband_pwm_,
+          kTemplateWheelPidKp,
+          kTemplateWheelPidKi,
+          kTemplateWheelPidKd,
+          kTemplateWheelPidIntegralLimit);
+    }
     // Firmware gyro yaw-rate loop (Option C, task #33/#34 — replaces the
     // removed host-side angular_rate_controller.hpp). Pushed to the STM32 via
     // PACKET_ID_LL_SET_YAW_PID (see send_yaw_pid()). Defaults are the
@@ -638,6 +688,33 @@ private:
           if (!result.successful)
           {
             return result;
+          }
+          // Any drive-PID change re-sends the whole SET_DRIVE_PID packet, so
+          // the gains it would carry must be able to bridge the motor
+          // deadband (see deadband_pwm_ in declare_parameters).
+          if (drive_pid_changed && !DriveGainsBridgeDeadband(next_wheel_pid_kp,
+                                                             next_wheel_pid_integral_limit,
+                                                             next_wheel_pid_pwm_per_mps,
+                                                             deadband_pwm_))
+          {
+            result.successful = false;
+            result.reason = "wheel_pid_* gains cannot bridge the motor deadband: integral_limit " +
+                            std::to_string(next_wheel_pid_integral_limit) + " + kp " +
+                            std::to_string(next_wheel_pid_kp) + "*0.03 + pwm_per_mps " +
+                            std::to_string(next_wheel_pid_pwm_per_mps) + "*0.03 = " +
+                            std::to_string(DriveGainsBridgePwm(next_wheel_pid_kp,
+                                                               next_wheel_pid_integral_limit,
+                                                               next_wheel_pid_pwm_per_mps)) +
+                            " PWM < deadband_pwm " + std::to_string(deadband_pwm_) +
+                            " (template defaults: kp " + std::to_string(kTemplateWheelPidKp) +
+                            ", ki " + std::to_string(kTemplateWheelPidKi) + ", integral_limit " +
+                            std::to_string(kTemplateWheelPidIntegralLimit) + ")";
+            return result;
+          }
+          if (drive_pid_changed)
+          {
+            // A set that passes the gate supersedes a startup refusal.
+            drive_gains_below_deadband_ = false;
           }
           min_linear_vel_ = next_min_linear_vel;
           ticks_per_meter_ = next_ticks_per_meter;
@@ -2425,6 +2502,11 @@ private:
 
   void send_blade_command(uint8_t on, uint8_t dir)
   {
+    if (mowgli_interfaces::updateMaintenanceActive())
+    {
+      on = 0;
+      mow_enabled_ = false;
+    }
     LlCmdBlade pkt{};
     pkt.type = PACKET_ID_LL_CMD_BLADE;
     pkt.blade_on = on;
@@ -2455,13 +2537,40 @@ private:
     {
       return;
     }
+    // Startup gate failed (declare_parameters logged the values): push the
+    // template gains instead of the configured set. Withholding the packet
+    // would also withhold ticks_per_meter and leave the firmware on its
+    // compile-time gains (Kp 30 / Ki 5000 / clamp 100), which have never run
+    // together with the firmware yaw-rate loop; the template set is the
+    // field-validated one. The configured values are NOT modified — the
+    // bridge is not a config writer — so every (re)send keeps saying so.
+    const bool substitute = drive_gains_below_deadband_;
+    const double kp = substitute ? kTemplateWheelPidKp : wheel_pid_kp_;
+    const double ki = substitute ? kTemplateWheelPidKi : wheel_pid_ki_;
+    const double kd = substitute ? kTemplateWheelPidKd : wheel_pid_kd_;
+    const double integral_limit =
+        substitute ? kTemplateWheelPidIntegralLimit : wheel_pid_integral_limit_;
+    if (substitute)
+    {
+      RCLCPP_ERROR_THROTTLE(get_logger(),
+                            *get_clock(),
+                            60000,
+                            "Configured wheel_pid_* set is below deadband_pwm %.1f — sending the "
+                            "template gains kp %.1f / ki %.1f / kd %.1f / integral_limit %.1f "
+                            "instead (see startup error; fix mowgli_robot.yaml)",
+                            deadband_pwm_,
+                            kp,
+                            ki,
+                            kd,
+                            integral_limit);
+    }
     LlSetDrivePid pkt{};
     pkt.type = PACKET_ID_LL_SET_DRIVE_PID;
     pkt.ticks_per_meter = static_cast<float>(ticks_per_meter_);
-    pkt.kp = static_cast<float>(wheel_pid_kp_);
-    pkt.ki = static_cast<float>(wheel_pid_ki_);
-    pkt.kd = static_cast<float>(wheel_pid_kd_);
-    pkt.integral_limit = static_cast<float>(wheel_pid_integral_limit_);
+    pkt.kp = static_cast<float>(kp);
+    pkt.ki = static_cast<float>(ki);
+    pkt.kd = static_cast<float>(kd);
+    pkt.integral_limit = static_cast<float>(integral_limit);
     pkt.pwm_per_mps = static_cast<float>(wheel_pid_pwm_per_mps_);
     if (send_raw_packet(reinterpret_cast<const uint8_t*>(&pkt),
                         sizeof(LlSetDrivePid) - sizeof(uint16_t)))
@@ -2477,10 +2586,10 @@ private:
                   "Sent drive params: ticks_per_meter=%.3f kp=%.3f ki=%.3f kd=%.3f "
                   "integral_limit=%.3f pwm_per_mps=%.3f",
                   ticks_per_meter_,
-                  wheel_pid_kp_,
-                  wheel_pid_ki_,
-                  wheel_pid_kd_,
-                  wheel_pid_integral_limit_,
+                  kp,
+                  ki,
+                  kd,
+                  integral_limit,
                   wheel_pid_pwm_per_mps_);
     }
   }
@@ -3042,6 +3151,27 @@ private:
   {
     last_map_pose_x_ = msg->pose.pose.position.x;
     last_map_pose_y_ = msg->pose.pose.position.y;
+    // Release the repeat-dig latch once the robot is provably away from the
+    // spot (2x the same-spot radius): the operator lifted it clear, or HOME
+    // drove it out. Without this the only exit was the charger, so a robot
+    // carried onto open grass still refused Play ("DIG_OBSTRUCTION" forever).
+    if (dig_escalated_ && DigEscalationClearedByDisplacement(dig_escalation_x_,
+                                                             dig_escalation_y_,
+                                                             last_map_pose_x_,
+                                                             last_map_pose_y_,
+                                                             dig_escalate_cfg_.radius_m))
+    {
+      dig_escalated_ = false;
+      dig_latch_history_.clear();
+      publish_dig_escalated();
+      RCLCPP_INFO(get_logger(),
+                  "Dig escalation cleared: robot is %.2f m from the escalation point "
+                  "(%.2f, %.2f) — carried clear or driven out.",
+                  std::hypot(last_map_pose_x_ - dig_escalation_x_,
+                             last_map_pose_y_ - dig_escalation_y_),
+                  dig_escalation_x_,
+                  dig_escalation_y_);
+    }
     // Worst axis of the position block; the detector compares a scalar
     // distance so the larger sigma is the honest one to gate on.
     // MAJOR AXIS of the xy covariance ellipse, not max(var_xx, var_yy).
@@ -3277,6 +3407,8 @@ private:
     }
 
     dig_escalated_ = true;
+    dig_escalation_x_ = last_map_pose_x_;
+    dig_escalation_y_ = last_map_pose_y_;
     RCLCPP_ERROR(get_logger(),
                  "Dig escalation: %d latches within %.2f m in %.0f s at map (%.2f, %.2f) — "
                  "the robot cannot free itself here; stopping.",
@@ -3313,6 +3445,11 @@ private:
   /// Single point where a velocity command reaches the firmware.
   void send_cmd_vel_packet(double vx, double wz)
   {
+    if (mowgli_interfaces::updateMaintenanceActive())
+    {
+      vx = 0.0;
+      wz = 0.0;
+    }
     // Keep this final construction boundary defensive as well: callers such
     // as the bounded dig escape pass doubles.  Check float32 representability
     // before narrowing: converting an out-of-range double is not a safe way
@@ -3451,11 +3588,18 @@ private:
   DigEscalationCfg dig_escalate_cfg_;
   DigLatchHistory dig_latch_history_;
   /// Latched once the robot proves it cannot free itself at one spot. Cleared
-  /// only when the robot reaches the charger: mating with the dock is
-  /// unambiguous proof it physically left the obstruction, whether the
-  /// operator carried it out or it drove home. Nothing else clears it, so a
-  /// robot still sitting against the object cannot quietly resume.
+  /// when the robot reaches the charger (mating with the dock is unambiguous
+  /// proof it physically left the obstruction) or when the fused pose has
+  /// moved kDigEscalationClearFactor x dig_escalate_radius_m away from the
+  /// escalation point (carried clear by the operator, or driven out on a
+  /// HOME). A robot still sitting against the object matches neither, so it
+  /// cannot quietly resume: Play stays refused by the tree's
+  /// DigObstructionGuard until one of the two happens.
   bool dig_escalated_{false};
+  /// Map-frame position at which the latch was raised; the displacement
+  /// clear above is measured from here.
+  double dig_escalation_x_{0.0};
+  double dig_escalation_y_{0.0};
 
   /// Latest differential-drive command, captured in on_cmd_vel, with the time
   /// it arrived. Both components are required: a pure pivot has vx == 0 while
@@ -3614,11 +3758,17 @@ private:
   // (re)connect; pid_resend_count_ > 0 makes send_drive_pid() fire on the next
   // N heartbeat ticks (seeded so the first packet survives USB re-enumeration /
   // firmware boot even if one is dropped).
-  double wheel_pid_kp_{0.2};
-  double wheel_pid_ki_{0.092};
-  double wheel_pid_kd_{0.01};
-  double wheel_pid_integral_limit_{15.0};
+  double wheel_pid_kp_{kTemplateWheelPidKp};
+  double wheel_pid_ki_{kTemplateWheelPidKi};
+  double wheel_pid_kd_{kTemplateWheelPidKd};
+  double wheel_pid_integral_limit_{kTemplateWheelPidIntegralLimit};
   double wheel_pid_pwm_per_mps_{282.135};
+  // Motor stiction estimate [PWM] the wheel_pid_* set must bridge
+  // (drive_gain_sanity.hpp); startup-only. When the startup set fails the
+  // gate, drive_gains_below_deadband_ makes send_drive_pid() substitute the
+  // template gains until a set-parameters change passes it.
+  double deadband_pwm_{40.0};
+  bool drive_gains_below_deadband_{false};
   int pid_resend_count_{5};
 
   // Firmware gyro yaw-rate loop (Option C, task #33/#34). Defaults are the

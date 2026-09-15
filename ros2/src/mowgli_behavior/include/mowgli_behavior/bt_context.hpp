@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "geometry_msgs/msg/point32.hpp"
+#include "mowgli_behavior/cross_hatch.hpp"
 #include "mowgli_behavior/start_blocked_escape.hpp"
 #include "mowgli_interfaces/msg/emergency.hpp"
 #include "mowgli_interfaces/msg/high_level_status.hpp"
@@ -50,6 +51,8 @@ namespace mowgli_behavior
 struct BTContext
 {
   /// ROS2 node used by action/service nodes to create clients.
+  /// BehaviorTreeNode::releaseResources breaks this owning reference after
+  /// callbacks stop and the tree is released; otherwise it forms a self-cycle.
   rclcpp::Node::SharedPtr node;
 
   // -----------------------------------------------------------------------
@@ -361,6 +364,11 @@ struct BTContext
   /// completion, loaded once at node startup, and removed by EndSession. See
   /// coverage_persistence.{hpp,cpp}.
   std::string coverage_resume_path;
+  bool mow_cross_hatch{false};
+  std::map<uint32_t, CrossHatch> cross_hatch;
+  // Disabled sessions still latch their base orientation for resume, but do not
+  // create persistent alternation history or trigger EndSession metadata writes.
+  std::set<uint32_t> base_orientation_areas;
   /// True when GetNextUnmowedArea exhausted the area list because every area is
   /// genuinely DONE (not because of a transient service error / timeout / no
   /// areas defined). The coverage subtree reads this (IsCoverageComplete) to
@@ -454,7 +462,7 @@ struct BTContext
 
   /// Operator-configured drive speeds (m/s), sourced from mowgli_robot.yaml
   /// by behavior_tree_node and applied to the live controllers by SetNavMode:
-  /// transit_speed → FollowPath.desired_linear_vel (RPP transit), mowing_speed
+  /// transit_speed → FollowPath.primary_controller.max_linear_vel (RPP transit), mowing_speed
   /// → FollowCoveragePath.speed_fast (FTC coverage). Defaults match the shipped
   /// template; SetNavMode halves them in "degraded" mode (floored at the host
   /// min-drive clamp).

@@ -32,6 +32,7 @@
 #include "mowgli_behavior/bt_context.hpp"
 #include "mowgli_behavior/condition_nodes.hpp"
 #include "mowgli_behavior/coverage_nodes.hpp"
+#include "mowgli_behavior/coverage_orientation_service.hpp"
 #include "mowgli_behavior/coverage_persistence.hpp"
 #include "mowgli_behavior/escape_nodes.hpp"
 #include "mowgli_behavior/localization_health.hpp"
@@ -46,6 +47,7 @@
 #include "mowgli_interfaces/msg/status.hpp"
 #include "mowgli_interfaces/srv/high_level_control.hpp"
 #include "mowgli_interfaces/srv/start_in_area.hpp"
+#include "mowgli_interfaces/update_maintenance.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "nav2_msgs/action/undock_robot.hpp"
 #include "nav2_msgs/msg/collision_monitor_state.hpp"
@@ -103,8 +105,8 @@ public:
       // auto-re-enters) when it was a mow command (COMMAND_START == 1) AND a
       // resumable snapshot genuinely exists. Any other restored command, or an
       // empty snapshot, falls back to IDLE so the robot never starts moving on
-      // boot without real resume state. A terminal EndSession deletes the file,
-      // so this branch is only reached for a truly interrupted session.
+      // boot without real resume state. EndSession clears commands/cursors;
+      // a phase-only cross-hatch snapshot therefore stays IDLE too.
       constexpr uint8_t kCommandStart = 1;  // HighLevelControl::Request::COMMAND_START
       const bool has_resumable_state =
           !context_->area_resume_pose_index.empty() || !context_->completed_areas.empty();
@@ -136,6 +138,27 @@ public:
   std::shared_ptr<BTContext> context() const
   {
     return context_;
+  }
+
+  /// Call only after the executor has stopped and joined its callbacks.
+  void releaseResources()
+  {
+    // Halt while BTContext still owns a valid node (halt handlers use it for
+    // cancellation and resume persistence). ROS may already be shut down.
+    try
+    {
+      tree_.haltTree();
+    }
+    catch (const std::exception& ex)
+    {
+      RCLCPP_WARN(get_logger(), "Tree halt during shutdown: %s", ex.what());
+    }
+    logger_.reset();
+    tree_ = BT::Tree{};
+    blackboard_.reset();
+    // Break node -> context -> node before main returns. Otherwise the TF
+    // listener and DDS participant survive into shared-library finalization.
+    context_->node.reset();
   }
 
 private:
@@ -588,6 +611,7 @@ private:
 
   void setupServiceServer()
   {
+    coverage_orientation_service_ = std::make_unique<CoverageOrientationService>(*this, context_);
     using HighLevelControl = mowgli_interfaces::srv::HighLevelControl;
 
     high_level_control_srv_ = create_service<HighLevelControl>(
@@ -596,6 +620,12 @@ private:
                HighLevelControl::Response::SharedPtr resp)
         {
           RCLCPP_INFO(get_logger(), "HighLevelControl: received command=%u", req->command);
+          if (mowgli_interfaces::updateMaintenanceActive() &&
+              req->command != HighLevelControl::Request::COMMAND_STOP)
+          {
+            resp->success = false;
+            return;
+          }
           // COMMAND_S2 (4, "mow next area" — the GUI's onMowNextArea button) has
           // no dedicated MainLogic branch: in this architecture mowing always
           // resumes from the next UN-mowed area (GetNextUnmowedArea), so "mow
@@ -663,6 +693,11 @@ private:
         [this](const StartInArea::Request::SharedPtr req, StartInArea::Response::SharedPtr resp)
         {
           RCLCPP_INFO(get_logger(), "StartInArea: received area=%u", req->area);
+          if (mowgli_interfaces::updateMaintenanceActive())
+          {
+            resp->success = false;
+            return;
+          }
           {
             std::lock_guard<std::mutex> lock(context_->context_mutex);
             context_->target_area_index = static_cast<int>(req->area);
@@ -698,7 +733,7 @@ private:
           RCLCPP_INFO(get_logger(),
                       "Coverage resume clear requested — applied before the next BT tick");
           resp->success = true;
-          resp->message = "coverage resume state cleared";
+          resp->message = "coverage resume clear queued for the next behavior-tree tick";
         });
 
     // Latched signal the GUI reads to decide whether to offer "Resume vs Start
@@ -970,7 +1005,7 @@ private:
     blackboard_->set("idle_nav2_suspend", idle_nav2_suspend);
 
     // Transit / mowing speeds, sourced from mowgli_robot.yaml and applied to
-    // the live controllers by SetNavMode (FollowPath.desired_linear_vel for the
+    // the live controllers by SetNavMode (FollowPath.primary_controller.max_linear_vel for the
     // RPP transit controller, FollowCoveragePath.speed_fast for FTC coverage).
     // Stored on the shared BTContext so SetNavMode's tick is a pure read.
     // Previously SetNavMode hardcoded 0.5 (precise) / 0.25 (degraded), which
@@ -1069,6 +1104,7 @@ private:
     // the plan_coverage action goal (mow_angle_deg).
     const double mow_angle_deg = declare_parameter<double>("mow_angle_deg", kMowAngleAutoDeg);
     blackboard_->set("mow_angle_deg", mow_angle_deg);
+    context_->mow_cross_hatch = declare_parameter<bool>("mow_cross_hatch", false);
 
     // Area-recording boundary resolution — operator-tunable in
     // mowgli_robot.yaml, previously HARDCODED in main_tree.xml (a 0.2 m
@@ -1120,8 +1156,13 @@ private:
 
   void tickTree()
   {
+    coverage_orientation_service_->processPending();
     {
       std::lock_guard<std::mutex> lock(context_->context_mutex);
+      if (mowgli_interfaces::updateMaintenanceActive())
+      {
+        context_->current_command = 8;  // COMMAND_STOP: hold position, never auto-resume.
+      }
       updateLocalizationHealthLocked();
     }
 
@@ -1148,9 +1189,18 @@ private:
       context_->area_guard_halt_count.clear();
       // Disarm the #487 escape motion too — see EndSession for why.
       context_->start_blocked_escape_armed = false;
-      clearCoverageResumeState(*context_);
-      RCLCPP_INFO(get_logger(),
-                  "Cleared coverage resume state on request — next start begins fresh");
+      if (clearCoverageResumeState(*context_))
+      {
+        RCLCPP_INFO(get_logger(),
+                    "Cleared coverage resume state on request — next start begins fresh");
+      }
+      else
+      {
+        RCLCPP_ERROR(get_logger(),
+                     "Could not clear resume file or save cross-hatch history at '%s'. "
+                     "Check storage before restarting; persisted state may be stale or missing.",
+                     context_->coverage_resume_path.c_str());
+      }
     }
     try
     {
@@ -1175,6 +1225,7 @@ private:
   // ------------------------------------------------------------------
 
   std::shared_ptr<BTContext> context_;
+  std::unique_ptr<CoverageOrientationService> coverage_orientation_service_;
 
   // GPS-fixed debounce state (see the /gps callback): rides through the F9P
   // per-epoch Fixed↔Float flicker so gps_is_fixed — and thus SetNavMode — does
@@ -1280,11 +1331,15 @@ int main(int argc, char** argv)
   // the future, so GetCoverageStatus / GetNextStrip / etc. all time out
   // — symptom: `GetNextUnmowedArea: all areas complete` immediately on
   // start because the service future is never ready.
-  rclcpp::executors::MultiThreadedExecutor executor;
-  executor.add_node(node);
-  executor.add_node(node->context()->helper_node);
-  executor.spin();
+  {
+    rclcpp::executors::MultiThreadedExecutor executor;
+    executor.add_node(node);
+    executor.add_node(node->context()->helper_node);
+    executor.spin();
+  }
 
+  node->releaseResources();
+  node.reset();
   rclcpp::shutdown();
   return 0;
 }

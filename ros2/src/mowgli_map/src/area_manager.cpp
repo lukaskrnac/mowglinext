@@ -820,47 +820,111 @@ void MapServerNode::on_set_docking_point(
 
   if (req->use_gps_position)
   {
-    double gps_x_mean = 0.0;
-    double gps_y_mean = 0.0;
+    // Capture the dock POSITION from the averaged RAW (yaw-independent) GPS
+    // antenna position, then lever-arm-correct it ONCE using docking_pose_'s
+    // yaw — the switch above has already set that to whatever THIS call is
+    // about to persist (PRESERVE: the existing dock_pose_yaw; REQUEST: the
+    // manually-specified yaw; MOTION: req->yaw_rad, a fresh independently-
+    // measured heading). See recent_gps_antenna_enu_'s doc comment in the
+    // header for why this averages the raw antenna position rather than
+    // /gps/pose_cov's already lever-arm-corrected one (issue #446): that
+    // correction is applied with whatever the FUSED yaw is at each sample,
+    // so a stable-but-biased fused yaw (e.g. a settled-wrong magnetometer
+    // lock) silently biased the averaged position with nothing to catch it
+    // after the fact. Correcting once with THIS call's own final yaw makes
+    // the result correct regardless of what the fused yaw was doing during
+    // capture — in particular, MOTION mode's fresh req->yaw_rad fixes a
+    // stale stored yaw even though every /gps/fix sample in the window was
+    // received before that fresh yaw was known.
+    double antenna_east_mean = 0.0;
+    double antenna_north_mean = 0.0;
+    size_t antenna_sample_count = 0;
     {
-      std::lock_guard<std::mutex> lk(last_gps_pose_cov_mutex_);
-      if (recent_gps_xy_.size() < dock_set_gps_avg_min_samples_)
+      std::lock_guard<std::mutex> lk(recent_gps_antenna_mutex_);
+      if (recent_gps_antenna_enu_.size() < dock_set_gps_avg_min_samples_)
       {
         res->success = false;
         RCLCPP_WARN(get_logger(),
-                    "set_docking_point rejected: only %zu GPS samples in the last "
-                    "%.1f s (need >= %zu) to average the dock position. Wait for "
-                    "more /gps/pose_cov updates.",
-                    recent_gps_xy_.size(),
+                    "set_docking_point rejected: only %zu RTK-Fixed /gps/fix sample(s) in "
+                    "the last %.1f s (need >= %zu) to average the dock antenna position. "
+                    "Wait for more GPS updates.",
+                    recent_gps_antenna_enu_.size(),
                     dock_set_gps_avg_window_s_,
                     dock_set_gps_avg_min_samples_);
         return;
       }
-      for (const auto& [t, x, y] : recent_gps_xy_)
+      for (const auto& [t, east, north] : recent_gps_antenna_enu_)
       {
         (void)t;
-        gps_x_mean += x;
-        gps_y_mean += y;
+        antenna_east_mean += east;
+        antenna_north_mean += north;
       }
-      const double n = static_cast<double>(recent_gps_xy_.size());
-      gps_x_mean /= n;
-      gps_y_mean /= n;
+      antenna_sample_count = recent_gps_antenna_enu_.size();
+      const double n = static_cast<double>(antenna_sample_count);
+      antenna_east_mean /= n;
+      antenna_north_mean /= n;
     }
-    docking_pose_.position.x = gps_x_mean;
-    docking_pose_.position.y = gps_y_mean;
+
+    // Resolve the GPS lever arm from TF — mirrors
+    // navsat_to_absolute_pose_node's own resolution, which this node cannot
+    // reach into (separate process). Retried on every capture until
+    // URDF/TF is up. Fail closed rather than silently treat an unresolved
+    // lever arm as (0, 0): that would apply NO correction at all and
+    // quietly re-introduce the yaw-bias error this capture path exists to
+    // avoid, only now unconditionally instead of only when the fused yaw
+    // happened to be wrong.
+    if (!lever_arm_known_)
+    {
+      try
+      {
+        auto tf = tf_buffer_->lookupTransform("base_footprint", "gps_link", tf2::TimePointZero);
+        lever_arm_x_ = tf.transform.translation.x;
+        lever_arm_y_ = tf.transform.translation.y;
+        lever_arm_known_ = true;
+      }
+      catch (const tf2::TransformException& ex)
+      {
+        res->success = false;
+        RCLCPP_WARN(get_logger(),
+                    "set_docking_point rejected: GPS lever arm not yet resolved from TF "
+                    "(base_footprint→gps_link: %s). Wait for robot_state_publisher to "
+                    "come up and retry.",
+                    ex.what());
+        return;
+      }
+    }
+
+    // antenna_enu = base_enu + R(yaw)·lever_arm_body
+    //   -> base_enu = antenna_enu - R(yaw)·lever_arm_body
+    // Same formula navsat_to_absolute_pose_node applies per-sample with the
+    // LIVE fused yaw; here it is applied once with the FINAL yaw this call
+    // persists.
+    const double final_yaw =
+        2.0 * std::atan2(docking_pose_.orientation.z, docking_pose_.orientation.w);
+    const double cos_yaw = std::cos(final_yaw);
+    const double sin_yaw = std::sin(final_yaw);
+    const double base_x = antenna_east_mean - (cos_yaw * lever_arm_x_ - sin_yaw * lever_arm_y_);
+    const double base_y = antenna_north_mean - (sin_yaw * lever_arm_x_ + cos_yaw * lever_arm_y_);
+
+    docking_pose_.position.x = base_x;
+    docking_pose_.position.y = base_y;
     docking_pose_.position.z = 0.0;
     RCLCPP_INFO(get_logger(),
-                "Docking point captured from averaged GPS: (%.3f, %.3f) over %zu "
-                "samples; request fused position was (%.3f, %.3f) — Δ=(%.3f, %.3f) m. "
-                "Orientation source: %s.",
-                gps_x_mean,
-                gps_y_mean,
-                recent_gps_xy_.size(),
+                "Docking point captured: raw antenna GPS averaged to (%.3f, %.3f) over "
+                "%zu sample(s), lever-arm-corrected with yaw=%.3f rad (source: %s) to "
+                "base position (%.3f, %.3f); request fused position was (%.3f, %.3f) — "
+                "Δ=(%.3f, %.3f) m.",
+                antenna_east_mean,
+                antenna_north_mean,
+                antenna_sample_count,
+                final_yaw,
+                yaw_src_desc,
+                base_x,
+                base_y,
                 req->docking_pose.position.x,
                 req->docking_pose.position.y,
-                req->docking_pose.position.x - gps_x_mean,
-                req->docking_pose.position.y - gps_y_mean,
-                yaw_src_desc);
+                req->docking_pose.position.x - base_x,
+                req->docking_pose.position.y - base_y);
   }
   else
   {
@@ -1277,6 +1341,81 @@ void MapServerNode::on_discard_obstacle(
   // also why a discarded proposal cannot come back after a restart.
   res->success = true;
   res->message = "pending obstacle " + std::to_string(req->obstacle_id) + " discarded";
+  RCLCPP_INFO(get_logger(), "%s", res->message.c_str());
+}
+
+namespace
+{
+/// How far outside a pending dig polygon the robot centre may sit and still
+/// count as "trapped by it": one chassis length, which also covers the
+/// inflation the global costmap wraps around the lethal band (floor 0.58 m).
+constexpr double kDigDiscardClearanceM = 0.60;
+}  // namespace
+
+std::size_t MapServerNode::discard_dig_keepouts_near_robot()
+{
+  if (!have_robot_heading_)
+  {
+    RCLCPP_WARN(get_logger(),
+                "discard_dig_keepouts_near_robot: no robot pose latched yet - nothing dropped.");
+    return 0;
+  }
+  const double rx = last_robot_x_;
+  const double ry = last_robot_y_;
+  geometry_msgs::msg::Point32 robot;
+  robot.x = static_cast<float>(rx);
+  robot.y = static_cast<float>(ry);
+  std::size_t dropped = 0;
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    for (auto& area : areas_)
+    {
+      for (auto it = area.obstacles.begin(); it != area.obstacles.end();)
+      {
+        const bool is_pending_dig =
+            it->pending && it->source == mowgli_interfaces::msg::MapObstacleInfo::SOURCE_DIG;
+        const bool touches_robot =
+            is_pending_dig &&
+            (point_in_polygon(robot, it->polygon) ||
+             point_to_polygon_distance(rx, ry, it->polygon) <= kDigDiscardClearanceM);
+        if (!touches_robot)
+        {
+          ++it;
+          continue;
+        }
+        RCLCPP_WARN(get_logger(),
+                    "Dropping pending dig keepout %u ('%s') - it sits under the robot at "
+                    "(%.2f, %.2f) and would refuse the way out.",
+                    it->id,
+                    it->name.c_str(),
+                    rx,
+                    ry);
+        erase_obstacle_polygon_locked(it->polygon);
+        it = area.obstacles.erase(it);
+        masks_dirty_ = true;
+        ++dropped;
+      }
+    }
+  }
+  if (dropped == 0)
+  {
+    return 0;
+  }
+  // Same re-stamp + replan nudge as a single discard.
+  apply_area_classifications();
+  std_msgs::msg::Bool replan_msg;
+  replan_msg.data = true;
+  replan_needed_pub_->publish(replan_msg);
+  return dropped;
+}
+
+void MapServerNode::on_discard_dig_keepouts_near_robot(
+    const std_srvs::srv::Trigger::Request::SharedPtr /*req*/,
+    std_srvs::srv::Trigger::Response::SharedPtr res)
+{
+  const std::size_t dropped = discard_dig_keepouts_near_robot();
+  res->success = true;
+  res->message = std::to_string(dropped) + " pending dig keepout(s) under the robot discarded";
   RCLCPP_INFO(get_logger(), "%s", res->message.c_str());
 }
 

@@ -6,6 +6,11 @@
 
 ## Where to look
 
+Managed installer and updater share `install/compose/stack.json` via the Go `installer-stack` command. Releases ship a checksummed Compose bundle; installed releases survive older-checkout installer reruns. See `docs/UPDATES.md` for selection, ownership and migration constraints.
+
+Coordinated updates: `install/deployment.json` owns the publication build list and per-image compatibility contracts and verified service projection. Installed Compose fragments declare `garden.mowgli.update.*` labels; absent optional services stay absent. See `docs/UPDATES.md` for dependency, health and supported persistence contracts.
+
+
 | Task | Start here |
 |------|------------|
 | Trace an install end-to-end (15 steps) | `install/mowglinext.sh` `main()` L88–199 (each `progress_run*` names the lib function) |
@@ -81,7 +86,7 @@
 | `compose/docker-compose.foxglove.yml` | 5 | **Unused** — no code selects it; overrides `mowgli.command` with a non-existent `enable_coverage:=` arg |
 | **`install/config/`** (seeds copied to `docker/config/`) | | |
 | `config/mowgli/mowgli_robot.yaml` | 79 | The SPARSE installed robot config seed (Invariant 15) |
-| `config/cyclonedds.xml` | 27 | Loopback-only DDS: `AllowMulticast=false`, iface `lo`, `MaxAutoParticipantIndex=500`, unicast peer `localhost` |
+| `config/cyclonedds.xml` | ~45 | Loopback-only DDS: `AllowMulticast=false`, iface `lo`, `MaxAutoParticipantIndex=500`, unicast peer `localhost` with `PruneDelay="inf"` (Cyclone 11 otherwise stops re-announcing to a peer port after 30 s — a dropped boot-burst SPDP then leaves two participants blind to each other) |
 | `config/mqtt/mosquitto.conf` | 18 | Anonymous listeners 1883 + 9001 (websockets) |
 | `config/mowgli/hardware_bridge.yaml` | 6 | **Dead copy** — launch reads the package share copy |
 | `config/mowgli/twist_mux.yaml` | 45 | **Dead copy** — launch reads the package share copy |
@@ -115,7 +120,8 @@
 | `docker/stack.sh` | 178 | Dev-checkout stack manager reusing `install/lib/compose.sh` (`regen up down restart pull update logs ps config`) |
 | `docker/README.md` | 792 | Operator deployment manual (largely stale — see stale claims) |
 | `docker/.env.example` | 28 | Template for `docker/.env` (`COMPOSE_PROJECT_NAME`, `ENABLE_MQTT`, `ENABLE_WATCHTOWER`, image refs) |
-| `docker/config/cyclonedds.xml` | 31 | TRACKED runtime copy actually mounted by the stack; must stay in sync with the `install/config/` seed |
+| `docker/config/cyclonedds.xml` | ~49 | TRACKED runtime copy actually mounted by the stack; must stay in sync with the `install/config/` seed |
+| `install/lib/sysctl.sh` | ~45 | `install_dds_sysctl`: writes `/etc/sysctl.d/90-mowgli-dds.conf` (rmem/wmem 8 MiB) and applies it — the DDS boot burst overflowed the 208 KiB default (`UdpRcvbufErrors`); run in the udev step |
 | `docker/config/mowgli/README.md` | 77 | Runtime-config note (stale) |
 | `docker/config/mowgli/drive_tuning/drive_pid_last_backup.yaml` | 9 | GUI drive-PID backup sample (dir otherwise gitignored) |
 | `docker/docker-compose.simulation.yaml` | 125 | `simulation` / `dev-sim` / `simulation-gui` built from `ros2/Dockerfile` target `simulation` |
@@ -128,7 +134,7 @@
 | `sensors/gps/Dockerfile` | 91 | Universal GNSS sidecar image — **build context = repo root**; builds `mowgli_interfaces`, `universal_gnss_ros2`, `mowgli_gnss_bridge` + the `gnss_tools` CLI into `/opt/gnss_sidecar` |
 | `sensors/gps/start_gps.sh` | 599 | Image CMD: resolves config (YAML → env → default), applies the receiver profile, then runs `receiver_node` + topic bridge + optional `ntrip_node` |
 | `sensors/gps/universal_gnss_topic_bridge.py` | 406 | Retained Python bridge (`GNSS_BRIDGE_IMPL=python`) |
-| `sensors/gps/ros2_entrypoint.sh` | 12 | Sources `/opt/ros/kilted` + `/opt/gnss_sidecar` |
+| `sensors/gps/ros2_entrypoint.sh` | 12 | Sources `/opt/ros/lyrical` + `/opt/gnss_sidecar` |
 | `sensors/gps/mowgli_gnss_bridge/src/universal_gnss_topic_bridge.cpp` | 489 | Default C++ bridge: universal→public enum/capability projection + diagnostics merge |
 | `sensors/gps/mowgli_gnss_bridge/include/mowgli_gnss_bridge/universal_gnss_topic_bridge.hpp` | 78 | Node class, pub/sub members, QoS contract |
 | `sensors/gps/mowgli_gnss_bridge/src/main.cpp` | 16 | `rclcpp::spin` entry |
@@ -268,3 +274,5 @@ CI: sensor images build via `.github/workflows/sensors-{gps,lidar-ldlidar,lidar-
 - `install/.preset` / `install/.preset.consumed` — optional hardware preset dropped next to the installer; read and renamed to `.consumed` by `lib/state.sh` (`mark_preset_consumed` L160). Nothing in this repo writes it — `docs/install.sh` passes web-composer choices as CLI flags instead.
 - `ros2/src/external/universal-gnss` — git submodule, pinned to the mowglinext fork; the gps image copies its packages, never patch them in place.
 - LiDAR driver sources (`Myzhar/ldrobot-lidar-ros2`, `Slamtec/rplidar_ros`, `ldrobotSensorTeam/ldlidar_stl_ros2`) are cloned inside the Dockerfiles; the `sed` patches there are the only supported way to modify them.
+
+External release components: `gui/cmd/publish-deployment/definition.go` reads built/external entries in `install/deployment.json`. The workflow builds only built entries; publisher resolves external Docker Hub/GHCR index digests and both platforms. Deployment schema 3 and journal schema 5 preserve external provenance; existing storage, health, installer-selection and core-image guards still apply. See `docs/UPDATES.md`, External images in standard deployments.

@@ -1,10 +1,43 @@
 # GUI
 
+## Installed versions
+
+Open **Settings → Updates** to inspect the software currently installed on the mower.
+The same page is linked from the Home health check, the bottom of the desktop rail,
+and **More → Versions & updates** on mobile.
+
+The page reports the robot, GUI and sensor container image references, source
+revisions, image IDs and repository digests. Each component is built independently;
+different source revisions do not by themselves indicate an incompatible stack.
+Metadata is read from the image used by the container, even if its tag has since moved.
+
+Mainboard firmware version and protocol compatibility come from live hardware status.
+Compatibility means the firmware speaks the robot software's protocol, not that it
+is the newest release. Cached, disconnected and stale readings are distinguished.
+The configured mower model is a setting; a hardware board revision is not reported.
+
+GUI server and browser build identities help detect a browser left open across a
+deployment. **Refresh browser** loads the served web build when their identities differ.
+Unidentified local builds are shown as unknown. **Copy version details** provides an
+inventory for troubleshooting without exporting robot settings or credentials.
+
+The page is read-only. **Refresh versions** refreshes the local inventory.
+**Check now** compares image metadata with Stable releases or Development builds;
+the comparison selector does not change the installed channel. Each installed
+first-party image is compared with its `dev` tag or the latest
+published Stable release tag, using immutable digests. Results show matching,
+different, unavailable or unsupported images. Missing platforms and network
+failures never produce a blanket up-to-date result.
+
+See [update-check behavior](../docs/UPDATE_CHECKS.md) for tag selection and limits.
+
 MowgliNext web interface -- React frontend + Go backend for mower monitoring and control.
 
 ## Access
 
 Default: `http://<mower-ip>:4006`
+
+From outside the home network: Settings → **Remote access** starts an optional Tailscale sidecar (`mowgli-remote`) so the same interface is reachable from any device signed in to your tailnet, as `https://<name>.<tailnet>.ts.net` or `http://<tailnet-ip>:4006`. Nothing is exposed to the public internet, and the interface still has no login of its own — see [`docs/REMOTE_ACCESS.md`](../docs/REMOTE_ACCESS.md).
 
 ## Dashboard
 
@@ -48,11 +81,15 @@ On mobile, the dashboard stacks vertically: compact hero card, live mini-map, 2x
 | **Map** | Mapbox GL map editor -- define mowing areas, navigation zones and obstacles, place the dock (position + heading), OpenMower map import, live robot position, joystick for manual mowing |
 | **Schedule** | Weekly grid view with color-coded schedule blocks, schedule cards with day toggles and time picker, IrriSense soil chip |
 | **Statistics** | Hero stat cards (distance, hours, completion rate, runs), weekly bar chart, a year-of-mowing heatmap, zone coverage bars, session history table |
-| **Settings** | Grouped configuration editor (Appearance, Hardware, Drive Motor, NTRIP Corrections, GPS & Positioning, Sensors, **Localization**, Mowing, Docking, Battery, Safety, Obstacles, Navigation, Rain, Status LEDs, IrriSense, Advanced) |
+| **Settings** | Grouped configuration editor (Appearance, Hardware, Drive Motor, NTRIP Corrections, GPS & Positioning, Sensors, **Localization**, Mowing, Docking, Battery, Safety, Obstacles, Navigation, Rain, Status LEDs, IrriSense, Remote access, Notifications, Advanced) |
 | **Parameters** | Live ROS2 parameter editor -- read and write running-node parameters without a restart, with a basic/middle/expert tier filter and a confirm step on dangerous keys |
 | **Onboarding** | First-time setup wizard (9 steps: welcome, robot model, firmware, NTRIP, GPS, datum, sensors, calibration, done) |
 | **Diagnostics** | Health hero + alert list, then tabs: System (containers, CPU temp, rosbag, raw `/diagnostics`), Localization (filtered pose, **Fusion Graph (iSAM2)**, heading sources), Robot (behavior tree + coverage, sensors), Calibration (config cross-checks, calibration status) |
 | **Logs** | Live container log viewer -- pick any container on the host (the `mowgli-*` ones carry an app label), tail it with a severity filter |
+
+### Settings: Remote access section
+
+An on/off switch for the Tailscale sidecar, a node name, an optional write-only auth key (interactive login otherwise), an HTTPS-publishing toggle (Tailscale Serve, needs MagicDNS + HTTPS certificates enabled on the tailnet) and the pinned image. Below it a status card polls every 5 s while the section is open: image download → starting → **Login required** with an *Open Tailscale login* button, or **Connected** with the reachable URLs and a *Log out of tailnet* action. The settings live in the GUI database, not in `mowgli_robot.yaml`, and the page's single Save button covers them.
 
 ### Settings: Localization section
 

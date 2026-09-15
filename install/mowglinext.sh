@@ -24,6 +24,7 @@ source "${INSTALL_LIB_DIR}/platform.sh"
 source "${INSTALL_LIB_DIR}/docker.sh"
 source "${INSTALL_LIB_DIR}/backend_choice.sh"
 source "${INSTALL_LIB_DIR}/udev.sh"
+source "${INSTALL_LIB_DIR}/sysctl.sh"
 source "${INSTALL_LIB_DIR}/deploy.sh"
 source "${INSTALL_LIB_DIR}/env.sh"
 source "${INSTALL_LIB_DIR}/serial_probe.sh"
@@ -37,6 +38,7 @@ source "${INSTALL_LIB_DIR}/rc_local.sh"
 source "${INSTALL_LIB_DIR}/checks.sh"
 source "${INSTALL_LIB_DIR}/compose.sh"
 source "${INSTALL_LIB_DIR}/tools.sh"
+source "${INSTALL_LIB_DIR}/updater.sh"
 
 
 load_preset() {
@@ -93,6 +95,11 @@ main() {
   print_platform_summary
 
   if ! $CHECK_ONLY; then
+    if [[ -f "$DOCKER_DIR/.updater-managed" ]]; then
+      exec 9<"$DOCKER_DIR/.deployment.lock"
+      flock -n -x 9 || { error "Another deployment operation is running."; return 1; }
+      [[ ! -e /var/lib/mowgli-updater/maintenance ]] || { error "$MSG_UPDATER_RECOVERY"; return 1; }
+    fi
     # Pre-acquire sudo credentials once for the entire install session
     if command -v sudo >/dev/null 2>&1; then
       echo ""
@@ -139,6 +146,8 @@ main() {
     progress_run_interactive 7 "$TOTAL_STEPS" "Configuring rangefinders" \
       run_range_configuration_step
 
+    check_updater_hardware || return 1
+
     progress_run_interactive 8 "$TOTAL_STEPS" "Preparing repository" \
       setup_directory
 
@@ -149,7 +158,7 @@ main() {
       'setup_env'
 
     progress_run 11 "$TOTAL_STEPS" "Installing udev rules" \
-      'install_udev_rules'
+      'install_udev_rules && install_dds_sysctl'
 
     progress_run_interactive 12 "$TOTAL_STEPS" "Configuring mower" \
       run_mower_configuration_step
@@ -159,6 +168,8 @@ main() {
 
     progress_run 14 "$TOTAL_STEPS" "Installing MOTD" \
       'install_motd'
+
+    install_host_updater
 
     progress_run_live 15 "$TOTAL_STEPS" "Starting containers" \
       run_startup_step_live

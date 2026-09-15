@@ -4,6 +4,8 @@
 > Index generated 2026-09-03 at f21729e9; regenerate when files are added/removed.
 > Loaded on demand from `CLAUDE.md`.
 
+Complete deployment image metadata/versioning: `.github/workflows/deployment-release.yml`, validated before descriptor publication by `gui/cmd/publish-deployment/main.go`. Image contract 1 links immutable bytes to release/version/source/component/protocol; custom-image verification lives in `gui/pkg/updater/image_release.go`.
+
 ## Where to look
 
 | Task | Start here |
@@ -128,7 +130,7 @@ Also deployed by `pages.yml` but not part of the composer logic: `docs/CNAME` (`
 | GitHub Release assets `dist/*.bin`, `dist/*.elf`, `dist/manifest.json` | `firmware-ci.yml` `release` | tag `v*.*.*` |
 | GitHub Pages site (mowgli.garden) | `pages.yml` | — |
 | GitHub wiki | `wiki-sync.yml` | — |
-| Actions artifacts `test-results-kilted`, `cppcheck-report`, `digests-*` | `ros2-ci.yml`, image workflows | 14 / 7 / 1-day retention |
+| Actions artifacts `test-results-lyrical`, `cppcheck-report`, `digests-*` | `ros2-ci.yml`, image workflows | 14 / 7 / 1-day retention |
 
 Image names are lowercased into `GITHUB_ENV` in every image job (fork owners with mixed-case names). ROS2 images set `sbom: false` (syft SPDX exceeded buildkit's 40 MiB attestation cap); sensor images keep `sbom: true`. Build caches: `type=registry,ref=<image>:buildcache-{amd64,arm64}`.
 
@@ -193,8 +195,8 @@ Where the tests run in CI: `tools/motor` is symlinked to `ros2/src/mowgli_tools`
 
 ## Pitfalls
 
-- `.devcontainer/Dockerfile` installs Fields2Cover **v2.0.0** into `/opt/fields2cover-200` (L178–188) and the apt `ros-kilted-fields2cover`, but `mowgli_coverage` requires `Fields2Cover 3.0.0`, searched under `PATHS /opt/fields2cover-300` (`ros2/src/mowgli_coverage/CMakeLists.txt:42-48` — `NO_DEFAULT_PATH` is deliberately NOT set; the 3.0.0 version pin alone rejects the retained v2 tree). `make build-full` inside a stock devcontainer fails at `mowgli_coverage`; post-create sidesteps it only by not building at all (`MOWGLI_POST_CREATE_BUILD` defaults to `0`, L91) — its `DEV_PACKAGES` build is `--packages-up-to`, so setting it to `1` still pulls `mowgli_coverage` in through `mowgli_bringup`'s `exec_depend`.
-- The devcontainer ships Gazebo (`ros-kilted-ros-gz-*`, L126–129) and no Webots. The sim is Webots (`ros2/src/mowgli_simulation`, `webots_ros2_driver`), installed only in `ros2/Dockerfile` L509–516 — `make sim` does not work in a plain Codespace.
+- `.devcontainer/Dockerfile` now builds Fields2Cover **v3** from the pinned revision into `/opt/fields2cover-300` (`fields2cover-v3-builder` stage), the same prefix `mowgli_coverage` searches under `PATHS /opt/fields2cover-300`; the former v2 tree at `/opt/fields2cover-200` is gone (`ros2/src/mowgli_coverage/CMakeLists.txt:42-48` — `NO_DEFAULT_PATH` is deliberately NOT set; the 3.0.0 version pin alone rejects the retained v2 tree). `make build-full` inside a stock devcontainer fails at `mowgli_coverage`; post-create sidesteps it only by not building at all (`MOWGLI_POST_CREATE_BUILD` defaults to `0`, L91) — its `DEV_PACKAGES` build is `--packages-up-to`, so setting it to `1` still pulls `mowgli_coverage` in through `mowgli_bringup`'s `exec_depend`.
+- The devcontainer ships Gazebo (`ros-lyrical-ros-gz-*`, L178–180) and no Webots. The sim is Webots (`ros2/src/mowgli_simulation`, `webots_ros2_driver`), installed only in `ros2/Dockerfile` L509–516 — `make sim` does not work in a plain Codespace.
 - `.githooks/pre-push` runs `format.sh --check`, which is a **whole-tree** `clang-format --dry-run --Werror`. With any clang-format major ≠ 18 installed locally it reformats files CI never asked about and auto-creates a commit (`format.sh` L12, L21–24 only *warn* on a version mismatch). The hook is opt-in (`git config core.hooksPath .githooks`) and nothing in the repo installs it.
 - `msg-codegen-drift.yml` and `protocol-version-drift.yml` have `pull_request: branches: [main]` only (L15–16 / L12–13). A PR into `dev` gets those gates only through the `push` trigger on the source branch — a `codex/…`-style branch name matches neither, so both gates can be silently absent on a `dev` PR. `ros2-ci.yml` solved exactly this problem with the `changes` job.
 - `docs/test_install.sh` and `docs/test_web_composer.sh` are both RED at this SHA and no workflow runs them: `test_install.sh` L57–58 asserts help strings without the `first-boot default:` wording that `install.sh` L151–152 actually prints; `test_web_composer.sh` L75–76 asserts a `tfluna-group` that no longer exists in `docs/index.html`.
@@ -213,3 +215,5 @@ Where the tests run in CI: `tools/motor` is symlinked to `ros2/src/mowgli_tools`
 - Nothing in this area is code-generated. The drift gates in `msg-codegen-drift.yml` police generated files that live in *other* areas (`gui/pkg/msgs/**`, `gui/web/src/types/ros.generated.ts`, `firmware/.../ros_lib/mower_msgs/**`) — regenerate with the `gui/generate_*.sh` scripts and `firmware/scripts/sync_ros_lib.py`, never by hand.
 - `.github/scripts/install-ros-apt-source.sh` downloads a third-party `.deb` from the `ros-infrastructure/ros-apt-source` releases; the asset is resolved at run time, not pinned in-tree.
 - `/tmp/digests/*`, `cppcheck-report.xml`, `dist/` (firmware release packaging) are CI scratch — never committed.
+
+External release components: `gui/cmd/publish-deployment/definition.go` reads built/external entries in `install/deployment.json`. The workflow builds only built entries; publisher resolves external Docker Hub/GHCR index digests and both platforms. Deployment schema 3 and journal schema 5 preserve external provenance; existing storage, health, installer-selection and core-image guards still apply. See `docs/UPDATES.md`, External images in standard deployments.

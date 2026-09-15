@@ -209,6 +209,33 @@ def test_navigation_launch_does_not_clamp_num_headland_passes() -> None:
 
 
 # ---------------------------------------------------------------------------
+# (b2) connector_max_headland_passes must reach coverage_server (issue #497).
+# ---------------------------------------------------------------------------
+
+
+def test_navigation_launch_injects_connector_max_headland_passes() -> None:
+    """navigation.launch.py must read connector_max_headland_passes from
+    mowgli_robot.yaml and write it into coverage_server's parameter dict.
+    Without the write the operator's Turn-Around Headland Limit setting does
+    nothing — coverage_server keeps its own declare_int default of 0
+    (unlimited) forever, and turn-around connectors keep using the whole
+    headland apron regardless of what the GUI shows.
+    """
+    tree = _parse("navigation.launch.py")
+    assert _reads_robot_param(
+        tree, "connector_max_headland_passes", "connector_max_headland_passes"
+    ), (
+        "navigation.launch.py no longer reads connector_max_headland_passes "
+        "from the robot config (rt_rp.get) — the GUI setting is orphaned."
+    )
+    values = _subscript_assign_values(tree, "cov_params", "connector_max_headland_passes")
+    assert values, (
+        'navigation.launch.py must assign cov_params["connector_max_headland_passes"] — '
+        "without it coverage_server keeps its own default and the setting is dead."
+    )
+
+
+# ---------------------------------------------------------------------------
 # (c) mowing_enabled must reach hardware_bridge_node (issue #195).
 # ---------------------------------------------------------------------------
 
@@ -336,3 +363,17 @@ def test_mowgli_launch_passes_charge_limits_to_hardware_bridge(
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_cross_hatch_setting_reaches_behavior_tree() -> None:
+    call = _find_node_call(_parse("full_system.launch.py"), "behavior_tree_node")
+    assert call is not None
+    parameters = next(kw.value for kw in call.keywords if kw.arg == "parameters")
+    values = [value for entry in parameters.elts if isinstance(entry, ast.Dict)
+              for key, value in zip(entry.keys, entry.values)
+              if isinstance(key, ast.Constant) and key.value == "mow_cross_hatch"]
+    assert len(values) == 1
+    expression = compile(ast.Expression(values[0]), "full_system.launch.py", "eval")
+    for config, expected in [({}, False), ({"mow_cross_hatch": True}, True)]:
+        assert eval(expression, {"__builtins__": {}, "bool": bool},
+                    {"robot_params": config}) is expected

@@ -208,7 +208,6 @@ void FusionGraphNode::OnLidarPose(geometry_msgs::msg::PoseWithCovarianceStamped:
 
   const double mx = msg->pose.pose.position.x;
   const double my = msg->pose.pose.position.y;
-  last_lidar_map_xy_ = gtsam::Vector2(mx, my);
 
   // The manual switch: only actually fuse into the graph while LiDAR is the
   // selected primary source. Health/covariance bookkeeping above still ran

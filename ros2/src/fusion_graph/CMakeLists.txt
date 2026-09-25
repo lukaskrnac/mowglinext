@@ -93,6 +93,7 @@ add_executable(fusion_graph_node
   src/fusion_graph_node_timer.cpp
   src/fusion_graph_node_publish.cpp
   src/fusion_graph_node_lidar_anchor.cpp
+  src/fusion_graph_node_lidar_primary.cpp
 )
 
 target_link_libraries(fusion_graph_node

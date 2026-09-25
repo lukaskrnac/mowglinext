@@ -349,6 +349,26 @@ fusion_graph_node:
     # heading stays with the gyro (2026-07-22 yaw-flip incident). This is the
     # only LiDAR-derived ABSOLUTE constraint in the graph.
     use_lidar_map_anchor: false
+
+    # ── External LiDAR pose source (primary, day-to-day) ────────────────
+    # Separate from use_lidar_map_anchor above (that's the built-in Beluga
+    # GNSS-outage-only fallback). This feeds an externally-run NDT/GICP
+    # localizer (lidar_localization_ros2) against a pre-built GLIM map as a
+    # second absolute-XY input, meant to run continuously. Empty topic =
+    # subscription not created.
+    lidar_pose_topic: "/pcl_pose"
+    lidar_alignment_status_topic: "/alignment_status"
+    lidar_pose_max_sigma_reject_m: 0.75   # reject a /pcl_pose fix this imprecise outright
+    lidar_pose_sigma_floor_m: 0.02        # never trust it tighter than this (tune on your rig)
+    lidar_pose_max_age_s: 0.5             # reject a stale sample
+    lidar_pose_max_consecutive_rejected: 5
+    lidar_pose_feed_yaw: true             # also QueueYaw() from NDT heading (see file header)
+    lidar_pose_yaw_sigma_floor_rad: 0.02
+    lidar_pose_robust: true
+    # The manual switch: "gps" or "lidar". Flip live any time with
+    #   ros2 param set /fusion_graph_node primary_localization_source lidar
+    # without relaunching the node.
+    primary_localization_source: "gps"
     lidar_map_resolution_m: 0.10
     lidar_map_tile_size_m: 10.0          # persistent tiles in datum coordinates
     lidar_map_radius_tiles: 2           # bounded 5 x 5 tiles, 50 x 50 m at defaults

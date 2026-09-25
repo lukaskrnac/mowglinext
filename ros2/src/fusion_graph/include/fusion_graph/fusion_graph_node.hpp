@@ -50,6 +50,7 @@
 #include "fusion_graph/pose_extrapolator.hpp"
 #include <Eigen/Core>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <mowgli_interfaces/gnss_observation_freshness.hpp>
 #include <mowgli_interfaces/msg/high_level_status.hpp>
 #include <mowgli_interfaces/msg/status.hpp>
@@ -108,6 +109,24 @@ private:
   void OnTimer();
   void OnPeriodicSaveTimer();
 
+  // ── External absolute-pose source: lidar_localization_ros2 ─────────
+  // A second absolute-XY input, symmetric to OnGnss/QueueGnss, fed by an
+  // NDT/GICP localizer running against a pre-built (GLIM) map, in
+  // fusion_graph_node_lidar_primary.cpp. Unlike the built-in Beluga
+  // "use_lidar_map_anchor" fallback (2D grid, engages only after a GNSS
+  // outage), this path is meant to be the day-to-day primary source:
+  // GraphManager::QueueLidarMapXy is a plain API call, independent of
+  // use_lidar_map_anchor_, so both inputs can coexist without touching
+  // the GTSAM/iSAM2 layer.
+  void OnLidarPose(geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg);
+  void OnLidarAlignmentStatus(diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr msg);
+  // Dynamic-parameter hook: lets `primary_localization_source` be flipped
+  // at runtime (`ros2 param set`) without relaunching the node — the
+  // "manual switch" between GPS and LiDAR as the graph's active absolute
+  // correction. Everything else stays a fixed, boot-time parameter.
+  rcl_interfaces::msg::SetParametersResult OnSetParameters(
+      const std::vector<rclcpp::Parameter>& params);
+
   // ── Helpers ────────────────────────────────────────────────────────
   // Flat-earth ENU projection from (lat, lon) to map frame XY.
   void LatLonToMap(double lat, double lon, double& x, double& y) const;
@@ -158,6 +177,32 @@ private:
   double datum_lat_ = 0.0;
   double datum_lon_ = 0.0;
   double datum_cos_lat_ = 1.0;
+
+  // ── External LiDAR pose source (fusion_graph_node_lidar_primary.cpp) ──
+  // "gps" (default, unchanged behaviour) or "lidar". Stored atomic so the
+  // dynamic-parameter callback (any executor thread) and OnGnss/OnLidarPose
+  // (subscription callbacks) can't race. This is the manual switch.
+  std::atomic<bool> primary_is_lidar_{false};
+  std::string lidar_pose_topic_;                 // empty = subscription not created
+  std::string lidar_alignment_status_topic_ = "/alignment_status";
+  double lidar_pose_max_sigma_reject_m_ = 0.75;   // reject a fix this imprecise outright
+  double lidar_pose_sigma_floor_m_ = 0.02;        // floor, mirrors gps_sigma_floor's role
+  double lidar_pose_max_age_s_ = 0.5;             // reject a stale /pcl_pose sample
+  double lidar_pose_max_consecutive_rejected_ = 5;  // from /alignment_status
+  bool lidar_pose_feed_yaw_ = true;               // also QueueYaw() from NDT heading
+  double lidar_pose_yaw_sigma_floor_rad_ = 0.02;
+  bool lidar_pose_robust_ = true;                 // Huber kernel, same reasoning as GPS
+  // Latest health snapshot from /alignment_status (diagnostic_msgs::DiagnosticArray,
+  // status name "lidar_localization_ros2/alignment"). Defaults are the safe/closed
+  // state: no factor is queued until at least one healthy status has been seen.
+  std::string lidar_failure_category_ = "missing_map";
+  int64_t lidar_consecutive_rejected_updates_ = 0;
+  bool lidar_reinitialization_requested_ = false;
+  std::optional<rclcpp::Time> lidar_alignment_stamp_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr sub_lidar_pose_;
+  rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr
+      sub_lidar_alignment_status_;
+  OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 
   // Most recent wheel timestamp (for accumulator dt).
   std::optional<rclcpp::Time> last_wheel_stamp_;

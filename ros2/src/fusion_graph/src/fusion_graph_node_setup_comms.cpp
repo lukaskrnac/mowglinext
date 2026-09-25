@@ -111,6 +111,23 @@ void FusionGraphNode::SetupCommunications(double node_period_s)
   sub_gps_ = create_subscription<sensor_msgs::msg::NavSatFix>(
       "/gps/fix", sensor_qos, std::bind(&FusionGraphNode::OnGnss, this, std::placeholders::_1));
 
+  // External LiDAR pose source (fusion_graph_node_lidar_primary.cpp). Opt-in:
+  // only subscribe when a topic name was configured, so a build/config that
+  // doesn't run lidar_localization_ros2 pays no cost and sees no idle
+  // subscription. Both are created together — the alignment status is what
+  // OnLidarPose gates on, so one without the other is a misconfiguration.
+  if (!lidar_pose_topic_.empty())
+  {
+    sub_lidar_pose_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+        lidar_pose_topic_,
+        sensor_qos,
+        std::bind(&FusionGraphNode::OnLidarPose, this, std::placeholders::_1));
+    sub_lidar_alignment_status_ = create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
+        lidar_alignment_status_topic_,
+        rclcpp::QoS(10),
+        std::bind(&FusionGraphNode::OnLidarAlignmentStatus, this, std::placeholders::_1));
+  }
+
   // /imu/cog_heading and /imu/mag_yaw are published BEST_EFFORT by
   // cog_to_imu.py and mag_yaw_publisher.py — use SensorDataQoS or
   // the subscription is silently dropped at the QoS handshake.

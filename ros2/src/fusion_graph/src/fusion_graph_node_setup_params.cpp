@@ -242,6 +242,38 @@ void FusionGraphNode::DeclareParameters()
   // Set auto_save_enabled to false to keep checkpoints fully manual
   // via the ~/save_graph service.
   auto_save_enabled_ = declare_parameter<bool>("auto_save_enabled", true);
+
+  // ── External LiDAR pose source (fusion_graph_node_lidar_primary.cpp) ──
+  // NOT the Beluga use_lidar_map_anchor_ fallback above — this is a second,
+  // independent absolute-XY input meant to run continuously as the primary
+  // correction, fed by an external NDT/GICP localizer (lidar_localization_ros2)
+  // against a pre-built map. Empty topic = subscription not created (opt-in).
+  lidar_pose_topic_ = declare_parameter<std::string>("lidar_pose_topic", "");
+  lidar_alignment_status_topic_ =
+      declare_parameter<std::string>("lidar_alignment_status_topic", "/alignment_status");
+  lidar_pose_max_sigma_reject_m_ =
+      declare_parameter<double>("lidar_pose_max_sigma_reject_m", 0.75);
+  lidar_pose_sigma_floor_m_ = declare_parameter<double>("lidar_pose_sigma_floor_m", 0.02);
+  lidar_pose_max_age_s_ = declare_parameter<double>("lidar_pose_max_age_s", 0.5);
+  lidar_pose_max_consecutive_rejected_ =
+      declare_parameter<double>("lidar_pose_max_consecutive_rejected", 5.0);
+  lidar_pose_feed_yaw_ = declare_parameter<bool>("lidar_pose_feed_yaw", true);
+  lidar_pose_yaw_sigma_floor_rad_ =
+      declare_parameter<double>("lidar_pose_yaw_sigma_floor_rad", 0.02);
+  lidar_pose_robust_ = declare_parameter<bool>("lidar_pose_robust", true);
+  // The manual switch. Boot-time default from this parameter, but flip it
+  // live any time with:
+  //   ros2 param set /fusion_graph_node primary_localization_source lidar
+  // See OnSetParameters() in fusion_graph_node_lidar_primary.cpp.
+  {
+    const std::string primary_source =
+        declare_parameter<std::string>("primary_localization_source", "gps");
+    if (primary_source != "gps" && primary_source != "lidar")
+      throw std::invalid_argument("primary_localization_source must be 'gps' or 'lidar'");
+    primary_is_lidar_.store(primary_source == "lidar", std::memory_order_relaxed);
+  }
+  param_cb_handle_ = add_on_set_parameters_callback(
+      std::bind(&FusionGraphNode::OnSetParameters, this, std::placeholders::_1));
 }
 
 }  // namespace fusion_graph

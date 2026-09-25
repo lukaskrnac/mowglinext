@@ -470,13 +470,25 @@ void FusionGraphNode::OnGnss(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
     }
   }
 
-  if (!graph_->QueueGnss(mx, my, sigma, /*robust=*/true, measurement_node))
+  // Manual switch (primary_localization_source): while LiDAR is the active
+  // primary source, GPS still runs every gate above and still updates the
+  // freshness/dock/RTK-fixed latches below (commit_current_gnss_evidence(),
+  // seed_xy_, the autoload override, ...) so the whole dock/re-anchor/cold-boot
+  // machinery keeps working unchanged and GPS quality stays visible on
+  // /fusion_graph/diagnostics — it just doesn't add a GnssLeverArmFactor to
+  // the graph. This mirrors the equivalent gate in OnLidarPose
+  // (fusion_graph_node_lidar_primary.cpp), which is the same switch in the
+  // other direction.
+  if (!primary_is_lidar_.load(std::memory_order_relaxed))
   {
-    RCLCPP_WARN_THROTTLE(get_logger(),
-                         *get_clock(),
-                         5000,
-                         "fusion_graph: GNSS epoch node left the live graph; sample dropped");
-    return;
+    if (!graph_->QueueGnss(mx, my, sigma, /*robust=*/true, measurement_node))
+    {
+      RCLCPP_WARN_THROTTLE(get_logger(),
+                           *get_clock(),
+                           5000,
+                           "fusion_graph: GNSS epoch node left the live graph; sample dropped");
+      return;
+    }
   }
   commit_current_gnss_evidence();
   // Latch whether the most recent seed came from RTK-Fixed so the next

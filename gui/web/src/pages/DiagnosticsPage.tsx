@@ -47,6 +47,8 @@ import {useBTLog, isBTNodeStale} from "../hooks/useBTLog.ts";
 import {useCogHeading} from "../hooks/useCogHeading.ts";
 import {useMagYaw} from "../hooks/useMagYaw.ts";
 import {useCalibrationStatus} from "../hooks/useCalibrationStatus.ts";
+import {LidarMapCalibrationCard} from "../components/LidarMapCalibrationCard.tsx";
+import {parseBoolish} from "../utils/settingsValues.ts";
 import {useWheelOdom} from "../hooks/useWheelOdom.ts";
 import {useWheelTicks} from "../hooks/useWheelTicks.ts";
 import {useWheelRpm} from "../hooks/useWheelRpm.ts";
@@ -186,8 +188,15 @@ export const DiagnosticsPage = () => {
     const {diagnostics} = useDiagnostics();
     // Mobile uses collapsible panels; desktop shows sensors in the Robot tab.
     // Subscribe to the high-rate IMU stream only in the visible sensor view.
-    const [openPanels, setOpenPanels] = useState<string[]>([]);
-    const [activeTab, setActiveTab] = useState("system");
+    // `?tab=calibration` deep-links the calibration view (e.g. from the
+    // GPS/LiDAR switch when the LiDAR map calibration is missing).
+    const initialTab = new URLSearchParams(window.location.search).get("tab");
+    const [openPanels, setOpenPanels] = useState<string[]>(
+        () => (initialTab === "calibration" ? ["calibration_status"] : []),
+    );
+    const [activeTab, setActiveTab] = useState(
+        () => (initialTab && ["system", "localization", "robot", "calibration"].includes(initialTab) ? initialTab : "system"),
+    );
     const sensorsPanelOpen = isMobile ? openPanels.includes("sensors") : activeTab === "robot";
     const imu = useImu(sensorsPanelOpen);
     const {settings} = useSettings();
@@ -1678,6 +1687,15 @@ export const DiagnosticsPage = () => {
                         </Typography.Text>
                     )}
                 </Card>
+            </Col>
+            <Col xs={24}>
+                <LidarMapCalibrationCard
+                    saved={calibrationStatus?.lidar_map}
+                    datumLat={settings?.datum_lat !== undefined ? Number(settings.datum_lat) : undefined}
+                    datumLon={settings?.datum_lon !== undefined ? Number(settings.datum_lon) : undefined}
+                    lidarEnabled={parseBoolish(settings?.lidar_enabled) === true}
+                    onFinished={refreshCalibration}
+                />
             </Col>
         </Row>
     );

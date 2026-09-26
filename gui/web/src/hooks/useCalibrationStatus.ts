@@ -33,10 +33,29 @@ export interface MagCalibrationStatus {
     error?: string;
 }
 
+/** lidar_map_calibration.yaml (calibrate_lidar_map_node): p_map = R(yaw)·p_lidar_map + (x, y). */
+export interface LidarMapCalibrationFileStatus {
+    present: boolean;
+    calibrated_at?: string;
+    x?: number;
+    y?: number;
+    yaw_rad?: number;
+    yaw_deg?: number;
+    datum_lat?: number;
+    datum_lon?: number;
+    pairs?: number;
+    inliers?: number;
+    rms_m?: number;
+    max_residual_m?: number;
+    error?: string;
+}
+
 export interface CalibrationStatus {
     dock: DockCalibrationStatus;
     imu: ImuCalibrationStatus;
     mag: MagCalibrationStatus;
+    /** Absent on backends older than the LiDAR map calibration. */
+    lidar_map?: LidarMapCalibrationFileStatus;
 }
 
 /**

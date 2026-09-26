@@ -72,3 +72,16 @@ Po kalibrácii netreba posielať `set_pose` ani `/initialpose`:
 
 Jediný prípad, kde treba zasiahnuť ručne: štart mimo doku **a** bez GPS **a**
 `lidar_localization` ešte nesleduje — vtedy raz `/initialpose` (frame `lidar_map`).
+
+## V GUI
+
+- **Diagnostika → Kalibrácia → Kalibrácia LiDAR mapy**: tlačidlá Štart/Zrušiť
+  (volajú `~/start` a `~/cancel`), živý priebeh z `~/status` (páry, rozptyl
+  trajektórie, RTK, stav LiDARu, dôvody zahodenia) a uložený výsledok zo
+  `lidar_map_calibration.yaml` (vrátane varovania pri inom datume). Počas zberu
+  jazdi ručne cez mapu (manuálny režim).
+- **Prepínač GPS ↔ LiDAR** (dashboard → Kontrola stavu, Nastavenia →
+  Lokalizácia, a pri kalibrácii): nastaví `primary_localization_source` na
+  `fusion_graph_node` za behu a uloží ho do `mowgli_robot.yaml`, takže platí aj
+  po reštarte. Bez platnej kalibrácie `fusion_graph` LiDAR odmietne a GUI to
+  ohlási (nič sa neuloží). Zobrazuje sa len s `lidar_enabled: true`.

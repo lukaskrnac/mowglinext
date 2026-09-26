@@ -1,6 +1,6 @@
 import {describe, it, expect, vi, beforeEach, afterEach} from 'vitest';
 import {renderHook, act} from '@testing-library/react';
-import {useManualMode} from './useManualMode.ts';
+import {resolveMaxLinearMps, useManualMode} from './useManualMode.ts';
 
 describe('useManualMode', () => {
     let mowerAction: (action: string, params: Record<string, unknown>) => () => Promise<void>;
@@ -88,6 +88,34 @@ describe('useManualMode', () => {
             header: {stamp: {sec: 0, nanosec: 0}, frame_id: ""},
             twist: {linear: {x: 0.2, y: 0, z: 0}, angular: {z: -0.3, x: 0, y: 0}},
         });
+    });
+
+    it('handleJoyMove uses the configured manual speed cap', () => {
+        const {result} = renderHook(() =>
+            useManualMode({
+                mowerAction,
+                joyStream: {sendJsonMessage, start: startStream},
+                maxLinearMps: 0.4,
+            })
+        );
+        act(() => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            result.current.handleJoyMove({x: 0, y: 0.5} as any);
+        });
+        expect(sendJsonMessage).toHaveBeenCalledWith({
+            header: {stamp: {sec: 0, nanosec: 0}, frame_id: ""},
+            twist: {linear: {x: 0.2, y: 0, z: 0}, angular: {z: -0, x: 0, y: 0}},
+        });
+    });
+
+    it('resolveMaxLinearMps falls back and clamps', () => {
+        expect(resolveMaxLinearMps(undefined)).toBe(0.25);
+        expect(resolveMaxLinearMps("abc")).toBe(0.25);
+        expect(resolveMaxLinearMps(0)).toBe(0.25);
+        expect(resolveMaxLinearMps(-1)).toBe(0.25);
+        expect(resolveMaxLinearMps("0.35")).toBe(0.35);
+        expect(resolveMaxLinearMps(0.01)).toBe(0.05);
+        expect(resolveMaxLinearMps(3)).toBe(0.5);
     });
 
     it('handleJoyStop sends zero velocity', () => {

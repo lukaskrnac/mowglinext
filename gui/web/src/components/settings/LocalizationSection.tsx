@@ -1,6 +1,7 @@
 import React, {useMemo} from "react";
 import {Alert, Card, Col, Form, InputNumber, Row, Space, Switch, Tag, Typography} from "antd";
 import {
+    AimOutlined,
     CompassOutlined,
     NodeIndexOutlined,
     RadarChartOutlined,
@@ -9,6 +10,7 @@ import {
 import {useTranslation} from "react-i18next";
 import {useThemeMode} from "../../theme/ThemeContext.tsx";
 import {useDiagnostics} from "../../hooks/useDiagnostics.ts";
+import {LocalizationSourceSwitch} from "../LocalizationSourceSwitch.tsx";
 
 const {Text, Paragraph, Link} = Typography;
 
@@ -121,6 +123,25 @@ export const LocalizationSection: React.FC<Props> = ({values, onChange}) => {
                     </span>
                 }
             />
+
+            {/* ── Primary absolute-position source: GPS or external LiDAR ──── */}
+            {lidarEnabled && (
+                <Card
+                    size="small"
+                    style={{marginBottom: 16}}
+                    title={
+                        <Space>
+                            <AimOutlined style={{color: colors.accent}}/>
+                            <span>{t("localizationSource.title")}</span>
+                        </Space>
+                    }
+                >
+                    <LocalizationSourceSwitch/>
+                    <Paragraph type="secondary" style={{margin: "8px 0 0", fontSize: 11}}>
+                        {t("localizationSource.settingsNote")}
+                    </Paragraph>
+                </Card>
+            )}
 
             {/* ── Group A: LiDAR for obstacle avoidance ─────────────────────── */}
             <Card

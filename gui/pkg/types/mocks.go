@@ -67,6 +67,9 @@ type MockRosProvider struct {
 	Parameters []RosParameter
 	ParamErr   error
 	SetParams  [][]RosParameter
+	// GetParamNames records the names slice of each GetParameters call
+	// (nil = "every parameter").
+	GetParamNames [][]string
 }
 
 type ServiceCall struct {
@@ -116,9 +119,10 @@ func (m *MockRosProvider) Publish(_ string, _ string, _ interface{}) error {
 	return m.PublishErr
 }
 
-func (m *MockRosProvider) GetParameters(_ context.Context, _ []string) ([]RosParameter, error) {
+func (m *MockRosProvider) GetParameters(_ context.Context, names []string) ([]RosParameter, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.GetParamNames = append(m.GetParamNames, names)
 	if m.ParamErr != nil {
 		return nil, m.ParamErr
 	}

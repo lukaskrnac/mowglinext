@@ -71,6 +71,9 @@ var schemaDefaultsWithNoTemplateEntry = map[string]string{
 	// the same reason as map_save_on_dock above: previously-installed YAMLs may
 	// still carry the key and the schema also validates/flattens those files.
 	"path_spacing": "dead knob, template line deleted 2026-09-05; no ROS2 consumer",
+
+	"primary_localization_source": "fusion_graph.yaml default \"gps\"; fusion_graph.launch.py injects it only when set in the installed config",
+	"manual_mowing_speed":         "GUI-only teleop cap read by the map joystick; not a ROS2 parameter",
 }
 
 // findSchemaTemplateDivergence compares schemaDefaults against the

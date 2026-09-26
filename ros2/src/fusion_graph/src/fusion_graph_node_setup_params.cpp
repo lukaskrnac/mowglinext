@@ -256,7 +256,7 @@ void FusionGraphNode::DeclareParameters()
   lidar_pose_sigma_floor_m_ = declare_parameter<double>("lidar_pose_sigma_floor_m", 0.02);
   lidar_pose_max_age_s_ = declare_parameter<double>("lidar_pose_max_age_s", 0.5);
   lidar_pose_max_consecutive_rejected_ =
-      declare_parameter<double>("lidar_pose_max_consecutive_rejected", 5.0);
+      declare_parameter<int64_t>("lidar_pose_max_consecutive_rejected", 5);
   lidar_pose_feed_yaw_ = declare_parameter<bool>("lidar_pose_feed_yaw", true);
   lidar_pose_yaw_sigma_floor_rad_ =
       declare_parameter<double>("lidar_pose_yaw_sigma_floor_rad", 0.02);

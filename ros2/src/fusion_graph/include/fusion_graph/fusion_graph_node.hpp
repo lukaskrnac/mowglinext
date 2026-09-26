@@ -188,7 +188,7 @@ private:
   double lidar_pose_max_sigma_reject_m_ = 0.75;   // reject a fix this imprecise outright
   double lidar_pose_sigma_floor_m_ = 0.02;        // floor, mirrors gps_sigma_floor's role
   double lidar_pose_max_age_s_ = 0.5;             // reject a stale /pcl_pose sample
-  double lidar_pose_max_consecutive_rejected_ = 5;  // from /alignment_status
+  int64_t lidar_pose_max_consecutive_rejected_ = 5;  // from /alignment_status
   bool lidar_pose_feed_yaw_ = true;               // also QueueYaw() from NDT heading
   double lidar_pose_yaw_sigma_floor_rad_ = 0.02;
   bool lidar_pose_robust_ = true;                 // Huber kernel, same reasoning as GPS

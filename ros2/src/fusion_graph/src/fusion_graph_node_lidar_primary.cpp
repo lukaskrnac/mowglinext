@@ -89,8 +89,77 @@ void FusionGraphNode::OnLidarAlignmentStatus(
         lidar_reinitialization_requested_ = (kv.value == "true" || kv.value == "1");
     }
     lidar_alignment_stamp_ = rclcpp::Time(msg->header.stamp, get_clock()->get_clock_type());
+    MaybeSeedLidarLocalizer();
     return;
   }
+}
+
+// Give lidar_localization_ros2 its /initialpose from the graph, so nobody has
+// to click "2D Pose Estimate" after every start: when the localizer is not
+// tracking (not "healthy", or asking for reinitialization) for longer than
+// lidar_seed_after_s_ while the graph IS initialised (dock seed, GNSS, or a
+// LiDAR bootstrap before tracking was lost), publish the current graph pose
+// mapped back into lidar_map with the inverse calibration. Rate-limited, so a
+// wrong seed just retries instead of flooding.
+void FusionGraphNode::MaybeSeedLidarLocalizer()
+{
+  if (!lidar_auto_seed_ || !pub_lidar_initialpose_)
+    return;
+  const double now_s = this->now().seconds();
+  const bool healthy = lidar_failure_category_ == "healthy" && !lidar_reinitialization_requested_;
+  if (healthy)
+  {
+    lidar_unhealthy_since_s_ = -1.0;
+    return;
+  }
+  if (lidar_unhealthy_since_s_ < 0.0)
+    lidar_unhealthy_since_s_ = now_s;
+  if (now_s - lidar_unhealthy_since_s_ < lidar_seed_after_s_ ||
+      now_s - last_lidar_seed_s_ < lidar_seed_period_s_)
+    return;
+
+  LidarMapTransform lmt;
+  {
+    std::lock_guard<std::mutex> lock(lidar_map_tf_mu_);
+    lmt = lidar_map_tf_;
+  }
+  if (!lmt.calibrated || !graph_->IsInitialized())
+    return;
+  const auto snap = graph_->LatestSnapshot();
+  if (!snap)
+    return;
+
+  // map -> lidar_map: p_lm = R(-yaw) * (p_map - t)
+  const double c = std::cos(lmt.yaw);
+  const double s = std::sin(lmt.yaw);
+  const double dx = snap->pose.x() - lmt.x;
+  const double dy = snap->pose.y() - lmt.y;
+  const double x_lm = c * dx + s * dy;
+  const double y_lm = -s * dx + c * dy;
+  const double yaw_lm =
+      std::atan2(std::sin(snap->pose.theta() - lmt.yaw), std::cos(snap->pose.theta() - lmt.yaw));
+
+  geometry_msgs::msg::PoseWithCovarianceStamped m;
+  m.header.stamp = this->now();
+  m.header.frame_id = lidar_pose_frame_;
+  m.pose.pose.position.x = x_lm;
+  m.pose.pose.position.y = y_lm;
+  m.pose.pose.orientation.z = std::sin(yaw_lm / 2.0);
+  m.pose.pose.orientation.w = std::cos(yaw_lm / 2.0);
+  m.pose.covariance[0] = 0.25;
+  m.pose.covariance[7] = 0.25;
+  m.pose.covariance[35] = 0.05;
+  pub_lidar_initialpose_->publish(m);
+  last_lidar_seed_s_ = now_s;
+  RCLCPP_INFO(get_logger(),
+              "fusion_graph: LiDAR localizer not tracking (%s) — seeded %s at "
+              "(%.2f, %.2f, %.2f rad) in %s",
+              lidar_failure_category_.c_str(),
+              lidar_initialpose_topic_.c_str(),
+              x_lm,
+              y_lm,
+              yaw_lm,
+              lidar_pose_frame_.c_str());
 }
 
 void FusionGraphNode::OnLidarPose(geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg)
@@ -242,6 +311,32 @@ void FusionGraphNode::OnLidarPose(geometry_msgs::msg::PoseWithCovarianceStamped:
   // even while GPS is primary — that's what you watch before flipping.
   if (!primary_is_lidar_.load(std::memory_order_relaxed))
     return;
+
+  // Boot without GPS and away from the dock: nothing else can initialise the
+  // graph (dock seed needs is_charging, GNSS seed needs a fix + COG). With
+  // LiDAR as the calibrated primary source, a healthy /pcl_pose is an
+  // absolute pose in its own right — use it as X_0, exactly what a manual
+  // ~/set_pose does (OnSetPose).
+  if (!graph_->IsInitialized())
+  {
+    if (!lidar_bootstrap_from_pose_)
+      return;
+    const auto& q0 = msg->pose.pose.orientation;
+    const double yaw0_lm =
+        std::atan2(2.0 * (q0.w * q0.z + q0.x * q0.y), 1.0 - 2.0 * (q0.y * q0.y + q0.z * q0.z));
+    const double yaw0 = std::atan2(std::sin(yaw0_lm + lmt.yaw), std::cos(yaw0_lm + lmt.yaw));
+    graph_->Initialize(gtsam::Pose2(mx, my, yaw0),
+                       this->now().seconds(),
+                       std::max(sigma, lidar_pose_sigma_floor_m_));
+    t_map_odom_anchor_valid_ = false;
+    RCLCPP_INFO(get_logger(),
+                "fusion_graph: bootstrap init from /pcl_pose (LiDAR primary) at "
+                "(%.2f, %.2f, %.2f rad)",
+                mx,
+                my,
+                yaw0);
+    return;
+  }
 
   graph_->QueueLidarMapXy(gtsam::Vector2(mx, my),
                           *cov_applied,

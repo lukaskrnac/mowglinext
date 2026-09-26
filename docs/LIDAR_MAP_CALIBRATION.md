@@ -56,3 +56,19 @@ Zmazanie kalibrácie: zmaž súbor a reštartuj stack.
 Kalibrácia platí pre danú mapu a datum. Pri zmene datumu ju
 `fusion_graph.launch.py` zahodí (vypíše varovanie). Pri novej GLIM mape ju
 treba spustiť znova.
+
+## Štart bez ručného zadávania pozície
+
+Po kalibrácii netreba posielať `set_pose` ani `/initialpose`:
+
+- **`lidar_auto_seed`** — keď `lidar_localization` nesleduje (`/alignment_status`
+  nie je `healthy` dlhšie ako 3 s) a graf je inicializovaný (dok, GPS), `fusion_graph`
+  mu pošle svoju pozíciu ako `/initialpose` vo frame `lidar_map` (najviac raz za 10 s).
+- **`lidar_bootstrap_from_pose`** — keď je zdroj `lidar` a graf ešte nie je
+  inicializovaný (bez GPS, mimo doku), prvá zdravá `/pcl_pose` sa použije ako
+  počiatočná pozícia grafu.
+- **Zdroj pri štarte:** do nainštalovaného `mowgli_robot.yaml` (sekcia robota) pridaj
+  `primary_localization_source: lidar`. Bez platnej kalibrácie node zostane na `gps`.
+
+Jediný prípad, kde treba zasiahnuť ručne: štart mimo doku **a** bez GPS **a**
+`lidar_localization` ešte nesleduje — vtedy raz `/initialpose` (frame `lidar_map`).

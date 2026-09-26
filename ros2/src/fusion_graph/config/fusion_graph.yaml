@@ -371,6 +371,16 @@ fusion_graph_node:
     # fusion_graph.launch.py injects from /ros2_ws/maps/lidar_map_calibration.yaml.
     # Without a calibration /pcl_pose is ignored and "lidar" is refused below.
     lidar_pose_frame: "lidar_map"
+    # Hands-off LiDAR start-up. bootstrap: with LiDAR primary and the graph not
+    # yet initialised (no GPS, not on the dock) the first healthy /pcl_pose is
+    # used as the initial pose. auto_seed: while lidar_localization is not
+    # tracking, the graph pose is sent to it as /initialpose (lidar_map frame)
+    # after lidar_seed_after_s, at most every lidar_seed_period_s.
+    lidar_bootstrap_from_pose: true
+    lidar_auto_seed: true
+    lidar_initialpose_topic: "/initialpose"
+    lidar_seed_after_s: 3.0
+    lidar_seed_period_s: 10.0
     # The manual switch: "gps" or "lidar". Flip live any time with
     #   ros2 param set /fusion_graph_node primary_localization_source lidar
     # without relaunching the node.

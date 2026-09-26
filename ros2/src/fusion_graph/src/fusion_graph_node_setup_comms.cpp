@@ -124,6 +124,10 @@ void FusionGraphNode::SetupCommunications(double node_period_s)
         lidar_pose_topic_,
         sensor_qos,
         std::bind(&FusionGraphNode::OnLidarPose, this, std::placeholders::_1));
+    if (lidar_auto_seed_)
+      pub_lidar_initialpose_ =
+          create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(lidar_initialpose_topic_,
+                                                                          rclcpp::QoS(1));
     sub_lidar_alignment_status_ = create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
         lidar_alignment_status_topic_,
         rclcpp::QoS(10),

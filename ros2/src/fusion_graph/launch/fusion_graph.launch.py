@@ -181,6 +181,10 @@ def generate_launch_description() -> LaunchDescription:
         # Runtime map geometry overrides the package defaults. The node
         # validates the resolution, tile dimensions and range margin.
         _read_lidar_map_calibration(datum_lat, datum_lon),
+        # Optional boot-time source ("gps" | "lidar") from the installed
+        # mowgli_robot.yaml. "lidar" only takes effect with a valid
+        # calibration; the node falls back to gps otherwise.
+        {key: str(cfg[key]) for key in ("primary_localization_source",) if key in cfg},
         {key: cfg[key] for key in (
             "lidar_map_resolution_m",
             "lidar_map_tile_size_m",

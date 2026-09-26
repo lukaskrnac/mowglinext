@@ -224,6 +224,21 @@ private:
   LidarMapTransform lidar_map_tf_;
   std::unique_ptr<tf2_ros::StaticTransformBroadcaster> lidar_map_static_tf_;
   void PublishLidarMapStaticTf();
+  // Automatic LiDAR start-up (no manual set_pose / 2D Pose Estimate):
+  //  * lidar_bootstrap_from_pose_: uninitialised graph + LiDAR primary ->
+  //    first healthy /pcl_pose becomes X_0;
+  //  * lidar_auto_seed_: localizer not tracking + graph initialised ->
+  //    publish the graph pose as /initialpose in lidar_map.
+  bool lidar_bootstrap_from_pose_ = true;
+  bool lidar_auto_seed_ = true;
+  std::string lidar_initialpose_topic_ = "/initialpose";
+  double lidar_seed_after_s_ = 3.0;
+  double lidar_seed_period_s_ = 10.0;
+  double lidar_unhealthy_since_s_ = -1.0;
+  double last_lidar_seed_s_ = -1e9;
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr
+      pub_lidar_initialpose_;
+  void MaybeSeedLidarLocalizer();
 
   // Most recent wheel timestamp (for accumulator dt).
   std::optional<rclcpp::Time> last_wheel_stamp_;

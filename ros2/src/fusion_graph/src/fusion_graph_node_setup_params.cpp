@@ -261,6 +261,12 @@ void FusionGraphNode::DeclareParameters()
       declare_parameter<double>("lidar_pose_yaw_sigma_floor_rad", 0.02);
   lidar_pose_robust_ = declare_parameter<bool>("lidar_pose_robust", true);
   lidar_pose_frame_ = declare_parameter<std::string>("lidar_pose_frame", "lidar_map");
+  lidar_bootstrap_from_pose_ = declare_parameter<bool>("lidar_bootstrap_from_pose", true);
+  lidar_auto_seed_ = declare_parameter<bool>("lidar_auto_seed", true);
+  lidar_initialpose_topic_ =
+      declare_parameter<std::string>("lidar_initialpose_topic", "/initialpose");
+  lidar_seed_after_s_ = declare_parameter<double>("lidar_seed_after_s", 3.0);
+  lidar_seed_period_s_ = declare_parameter<double>("lidar_seed_period_s", 10.0);
   {
     std::lock_guard<std::mutex> lock(lidar_map_tf_mu_);
     lidar_map_tf_.x = declare_parameter<double>("lidar_pose_map_x", 0.0);

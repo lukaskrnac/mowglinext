@@ -44,6 +44,11 @@ struct PointPair
   double src_y = 0.0;
   double dst_x = 0.0;
   double dst_y = 0.0;
+  // Base pose the antenna point was derived from (lidar_map frame). Only
+  // used by the lever-arm diagnostic (FitWithLeverArm).
+  double base_x = 0.0;
+  double base_y = 0.0;
+  double base_yaw = 0.0;
 };
 
 /// p_dst = R(theta) * p_src + (tx, ty)
@@ -261,6 +266,98 @@ inline Spread SourceSpread(const std::vector<PointPair>& pairs)
   s.major_std_m = std::sqrt(std::max(0.0, l1));
   s.minor_std_m = std::sqrt(l2);
   return s;
+}
+
+/// Diagnostic fit that also ESTIMATES the antenna lever arm instead of
+/// trusting the configured one. In complex notation (2D rotations commute):
+///   dst_i = a * base_i + b * e^{i*yaw_i} + t
+/// with a = s*e^{i*theta}, b = a*lever, which is linear in (a, b, t).
+/// A lever arm far from the configured gps_x/gps_y — typically its mirror
+/// image — means the LiDAR yaw is off (e.g. lidar_yaw by pi) or the lever
+/// arm is misconfigured; a scale far from 1 means the map or GNSS is off.
+/// Needs heading variation (turns) to separate the lever arm from t.
+struct LeverFit
+{
+  double theta = 0.0;
+  double scale = 1.0;
+  double tx = 0.0;
+  double ty = 0.0;
+  double lever_x = 0.0;  // base frame
+  double lever_y = 0.0;
+  double rms_m = 0.0;
+};
+
+inline std::optional<LeverFit> FitWithLeverArm(const std::vector<PointPair>& pairs)
+{
+  if (pairs.size() < 6)
+    return std::nullopt;
+  // Unknowns: ar, ai, br, bi, tx, ty. Normal equations N x = r.
+  double n_mat[6][7] = {};
+  auto add_row = [&n_mat](const double row[6], double rhs)
+  {
+    for (int i = 0; i < 6; ++i)
+    {
+      for (int j = 0; j < 6; ++j)
+        n_mat[i][j] += row[i] * row[j];
+      n_mat[i][6] += row[i] * rhs;
+    }
+  };
+  for (const auto& p : pairs)
+  {
+    const double ux = std::cos(p.base_yaw);
+    const double uy = std::sin(p.base_yaw);
+    const double rx[6] = {p.base_x, -p.base_y, ux, -uy, 1.0, 0.0};
+    const double ry[6] = {p.base_y, p.base_x, uy, ux, 0.0, 1.0};
+    add_row(rx, p.dst_x);
+    add_row(ry, p.dst_y);
+  }
+  // Gauss-Jordan with partial pivoting.
+  for (int c = 0; c < 6; ++c)
+  {
+    int piv = c;
+    for (int r = c + 1; r < 6; ++r)
+      if (std::abs(n_mat[r][c]) > std::abs(n_mat[piv][c]))
+        piv = r;
+    if (std::abs(n_mat[piv][c]) < 1e-9)
+      return std::nullopt;  // no heading variation / degenerate
+    if (piv != c)
+      for (int j = 0; j < 7; ++j)
+        std::swap(n_mat[c][j], n_mat[piv][j]);
+    const double inv = 1.0 / n_mat[c][c];
+    for (int j = c; j < 7; ++j)
+      n_mat[c][j] *= inv;
+    for (int r = 0; r < 6; ++r)
+    {
+      if (r == c || n_mat[r][c] == 0.0)
+        continue;
+      const double f = n_mat[r][c];
+      for (int j = c; j < 7; ++j)
+        n_mat[r][j] -= f * n_mat[c][j];
+    }
+  }
+  const double ar = n_mat[0][6], ai = n_mat[1][6], br = n_mat[2][6], bi = n_mat[3][6];
+  LeverFit f;
+  f.tx = n_mat[4][6];
+  f.ty = n_mat[5][6];
+  const double a2 = ar * ar + ai * ai;
+  if (a2 < 1e-12)
+    return std::nullopt;
+  f.scale = std::sqrt(a2);
+  f.theta = std::atan2(ai, ar);
+  // lever = b / a = b * conj(a) / |a|^2
+  f.lever_x = (br * ar + bi * ai) / a2;
+  f.lever_y = (bi * ar - br * ai) / a2;
+  double sse = 0.0;
+  for (const auto& p : pairs)
+  {
+    const double ux = std::cos(p.base_yaw);
+    const double uy = std::sin(p.base_yaw);
+    const double px = ar * p.base_x - ai * p.base_y + br * ux - bi * uy + f.tx;
+    const double py = ar * p.base_y + ai * p.base_x + br * uy + bi * ux + f.ty;
+    sse += (px - p.dst_x) * (px - p.dst_x) + (py - p.dst_y) * (py - p.dst_y);
+  }
+  f.rms_m = std::sqrt(sse / static_cast<double>(pairs.size()));
+  return f;
 }
 
 /// Planar pose sample in the lidar_map frame.

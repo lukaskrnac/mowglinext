@@ -361,6 +361,10 @@ private:
     if (state_ != State::kCollecting)
       return;
     ++gps_fixes_;
+    last_fix_sigma_m_ =
+        fix.position_covariance_type == sensor_msgs::msg::NavSatFix::COVARIANCE_TYPE_UNKNOWN
+            ? std::numeric_limits<double>::quiet_NaN()
+            : std::sqrt(std::max(fix.position_covariance[0], fix.position_covariance[4]));
     if (!std::isfinite(fix.latitude) || !std::isfinite(fix.longitude))
       return Reject("gps_invalid");
 
@@ -420,6 +424,9 @@ private:
 
       lma::PointPair pr;
       lma::AntennaFromBase(pose->x, pose->y, pose->yaw, lever_x_, lever_y_, pr.src_x, pr.src_y);
+      pr.base_x = pose->x;
+      pr.base_y = pose->y;
+      pr.base_yaw = pose->yaw;
       pr.dst_x = pf.east;
       pr.dst_y = pf.north;
       if (!pairs_.empty() && std::hypot(pr.dst_x - pairs_.back().dst_x,
@@ -453,6 +460,7 @@ private:
     rejects_.clear();
     history_.clear();
     last_fit_.reset();
+    last_lever_fit_.reset();
     last_spread_ = {};
     message_ = "collecting — drive slowly over the garden (L-shape / figure of eight)";
     started_ = now();
@@ -485,6 +493,7 @@ private:
     {
       last_spread_ = lma::SourceSpread(pairs_);
       last_fit_ = lma::RobustFitRigid2D(pairs_);
+      last_lever_fit_ = lma::FitWithLeverArm(pairs_);
       if (last_fit_)
       {
         const double tnow = now().seconds();
@@ -642,7 +651,17 @@ private:
         << ",\"inliers\":" << last_fit_->inliers;
     }
     j << ",\"lidar_healthy\":" << (LidarHealthy() ? "true" : "false");
+    if (last_lever_fit_)
+    {
+      // Diagnostic: lever arm estimated from the data vs the configured one.
+      j << ",\"diag\":{\"lever_cfg\":[" << Fmt(lever_x_, 3) << "," << Fmt(lever_y_, 3)
+        << "],\"lever_est\":[" << Fmt(last_lever_fit_->lever_x, 3) << ","
+        << Fmt(last_lever_fit_->lever_y, 3) << "],\"scale\":" << Fmt(last_lever_fit_->scale, 4)
+        << ",\"yaw_deg\":" << Fmt(last_lever_fit_->theta * 180.0 / M_PI, 3)
+        << ",\"rms_cm\":" << Fmt(last_lever_fit_->rms_m * 100.0, 1) << "}";
+    }
     j << ",\"gps_fixes\":" << gps_fixes_;
+    j << ",\"gps_fix_sigma_m\":" << Fmt(last_fix_sigma_m_, 3);
     if (gnss_status_.has_value())
     {
       namespace gsu = mowgli_interfaces::gnss_status_utils;
@@ -691,9 +710,11 @@ private:
   std::vector<lma::PointPair> pairs_;
   std::deque<PendingFix> pending_;
   std::size_t gps_fixes_ = 0;
+  double last_fix_sigma_m_ = std::numeric_limits<double>::quiet_NaN();
   std::map<std::string, std::size_t> rejects_;
   std::deque<FitSample> history_;
   std::optional<lma::RobustFitResult> last_fit_;
+  std::optional<lma::LeverFit> last_lever_fit_;
   lma::Spread last_spread_;
   bool lidar_healthy_ = false;
   std::optional<rclcpp::Time> lidar_health_rx_;

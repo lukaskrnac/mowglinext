@@ -155,3 +155,37 @@ TEST(LidarMapAlignment, AntennaLeverArmRotatesWithYaw)
   EXPECT_NEAR(ax, 1.0, 1e-12);
   EXPECT_NEAR(ay, 1.3, 1e-12);
 }
+
+TEST(LidarMapAlignment, LeverArmDiagnosticRecoversRealLeverArm)
+{
+  // True antenna 0.3 m ahead of base; poses along a figure of eight with
+  // changing heading.
+  const lma::Rigid2D truth{2.8, -0.6, -0.2};
+  std::vector<lma::PointPair> pairs;
+  for (int i = 0; i < 200; ++i)
+  {
+    const double s = 2.0 * M_PI * i / 200.0;
+    lma::PointPair p;
+    p.base_x = 4.0 * std::sin(s);
+    p.base_y = 2.5 * std::sin(2.0 * s);
+    p.base_yaw = std::atan2(5.0 * std::cos(2.0 * s), 4.0 * std::cos(s));
+    double ax = 0, ay = 0;
+    lma::AntennaFromBase(p.base_x, p.base_y, p.base_yaw, 0.3, 0.0, ax, ay);
+    truth.Apply(ax, ay, p.dst_x, p.dst_y);
+    pairs.push_back(p);
+  }
+  const auto f = lma::FitWithLeverArm(pairs);
+  ASSERT_TRUE(f.has_value());
+  EXPECT_NEAR(f->lever_x, 0.3, 1e-6);
+  EXPECT_NEAR(f->lever_y, 0.0, 1e-6);
+  EXPECT_NEAR(f->scale, 1.0, 1e-6);
+  EXPECT_NEAR(lma::WrapAngle(f->theta - truth.theta), 0.0, 1e-6);
+  EXPECT_LT(f->rms_m, 1e-6);
+
+  // Same data, LiDAR yaw reported off by pi: the lever arm comes out mirrored.
+  for (auto& p : pairs)
+    p.base_yaw = lma::WrapAngle(p.base_yaw + M_PI);
+  const auto g = lma::FitWithLeverArm(pairs);
+  ASSERT_TRUE(g.has_value());
+  EXPECT_NEAR(g->lever_x, -0.3, 1e-6);
+}

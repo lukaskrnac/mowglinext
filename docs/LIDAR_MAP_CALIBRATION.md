@@ -45,7 +45,7 @@ Zmazanie kalibrácie: zmaž súbor a reštartuj stack.
 ## Čo sa kontroluje
 
 - GPS: RTK-Fixed z `/gps/status` a `horizontal_accuracy` ≤ 3 cm (fallback NavSatFix).
-- LiDAR: `/alignment_status` healthy, `/pcl_pose` interpolovaný na čas fixu (medzera ≤ 0,25 s).
+- LiDAR: `/alignment_status` healthy, `/pcl_pose` interpolovaný na čas fixu (medzera ≤ 0,5 s; fix čaká na LiDAR pózu max. 3 s).
 - Pohyb: rýchlosť ≤ 0,5 m/s, yaw rate ≤ 0,6 rad/s, rozostup párov ≥ 5 cm.
 - Rameno antény (`gps_x/gps_y`) sa otáča yaw-om z LiDARu, nie z `fusion_graph`,
   takže kalibrácia platí aj keď je zdroj `lidar`.

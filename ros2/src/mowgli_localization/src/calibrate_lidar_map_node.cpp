@@ -119,7 +119,7 @@ public:
 
     max_gps_accuracy_m_ = declare_parameter<double>("max_gps_accuracy_m", 0.03);
     gps_time_offset_s_ = declare_parameter<double>("gps_time_offset_s", 0.0);
-    max_pair_gap_s_ = declare_parameter<double>("max_pair_gap_s", 0.25);
+    max_pair_gap_s_ = declare_parameter<double>("max_pair_gap_s", 0.5);
     max_speed_mps_ = declare_parameter<double>("max_speed_mps", 0.5);
     max_yaw_rate_rps_ = declare_parameter<double>("max_yaw_rate_rps", 0.6);
     min_pair_spacing_m_ = declare_parameter<double>("min_pair_spacing_m", 0.05);
@@ -245,6 +245,15 @@ private:
     return "unknown";
   }
 
+  struct PendingFix
+  {
+    double t = 0.0;  // fix time (+ gps_time_offset_s), ROS clock
+    double received = 0.0;  // arrival time, for the wait timeout
+    double east = 0.0;
+    double north = 0.0;
+  };
+  static constexpr double kMaxPairWaitS = 3.0;
+
   struct FitSample
   {
     double t;
@@ -267,6 +276,8 @@ private:
     poses_.push_back(p);
     while (!poses_.empty() && poses_.front().t < p.t - 10.0)
       poses_.pop_front();
+    if (state_ == State::kCollecting)
+      ProcessPending();
   }
 
   void OnAlignment(const diagnostic_msgs::msg::DiagnosticArray& m)
@@ -340,10 +351,16 @@ private:
     ++rejects_[why];
   }
 
+  // GNSS side of a pair. Gated here (RTK/accuracy and LiDAR health are judged
+  // at fix time), then queued: /pcl_pose is stamped at scan time but only
+  // published after NDT has run, so when a fix arrives the LiDAR pose for its
+  // timestamp usually does not exist yet. ProcessPending() pairs it once the
+  // pose buffer has caught up.
   void OnFix(const sensor_msgs::msg::NavSatFix& fix)
   {
     if (state_ != State::kCollecting)
       return;
+    ++gps_fixes_;
     if (!std::isfinite(fix.latitude) || !std::isfinite(fix.longitude))
       return Reject("gps_invalid");
 
@@ -356,24 +373,63 @@ private:
       return Reject(last_pose_frame_.empty() || last_pose_frame_ == lidar_frame_ ? "no_lidar_pose"
                                                                                  : "lidar_frame");
 
-    const double t = rclcpp::Time(fix.header.stamp).seconds() + gps_time_offset_s_;
-    const auto pose = lma::Interpolate(poses_, t, max_pair_gap_s_);
-    if (!pose)
-      return Reject("no_lidar_pose_at_fix_time");
-    const auto motion = lma::SpeedAndYawRate(poses_, t, 0.3);
-    if (motion && (motion->first > max_speed_mps_ || motion->second > max_yaw_rate_rps_))
-      return Reject("too_fast");
-
-    lma::PointPair pr;
-    lma::AntennaFromBase(pose->x, pose->y, pose->yaw, lever_x_, lever_y_, pr.src_x, pr.src_y);
+    PendingFix pf;
+    pf.t = rclcpp::Time(fix.header.stamp).seconds() + gps_time_offset_s_;
+    pf.received = now().seconds();
     mowgli_interfaces::wgs84::ToEnu(
-        fix.latitude, fix.longitude, datum_lat_, datum_lon_, pr.dst_x, pr.dst_y);
+        fix.latitude, fix.longitude, datum_lat_, datum_lon_, pf.east, pf.north);
+    pending_.push_back(pf);
+    ProcessPending();
+  }
 
-    if (!pairs_.empty() && std::hypot(pr.dst_x - pairs_.back().dst_x,
-                                      pr.dst_y - pairs_.back().dst_y) < min_pair_spacing_m_)
-      return Reject("not_moving");
+  void ProcessPending()
+  {
+    const double tnow = now().seconds();
+    while (!pending_.empty())
+    {
+      const PendingFix pf = pending_.front();
+      if (poses_.empty() || pf.t > poses_.back().t)
+      {
+        // LiDAR has not produced a pose for this instant yet — wait, but not forever.
+        if (tnow - pf.received > kMaxPairWaitS)
+        {
+          pending_.pop_front();
+          Reject("lidar_pose_timeout");
+          continue;
+        }
+        return;
+      }
+      pending_.pop_front();
+      if (pf.t < poses_.front().t)
+      {
+        Reject("lidar_pose_too_old");
+        continue;
+      }
+      const auto pose = lma::Interpolate(poses_, pf.t, max_pair_gap_s_);
+      if (!pose)
+      {
+        Reject("lidar_pose_gap");
+        continue;
+      }
+      const auto motion = lma::SpeedAndYawRate(poses_, pf.t, 0.3);
+      if (motion && (motion->first > max_speed_mps_ || motion->second > max_yaw_rate_rps_))
+      {
+        Reject("too_fast");
+        continue;
+      }
 
-    pairs_.push_back(pr);
+      lma::PointPair pr;
+      lma::AntennaFromBase(pose->x, pose->y, pose->yaw, lever_x_, lever_y_, pr.src_x, pr.src_y);
+      pr.dst_x = pf.east;
+      pr.dst_y = pf.north;
+      if (!pairs_.empty() && std::hypot(pr.dst_x - pairs_.back().dst_x,
+                                        pr.dst_y - pairs_.back().dst_y) < min_pair_spacing_m_)
+      {
+        Reject("not_moving");
+        continue;
+      }
+      pairs_.push_back(pr);
+    }
   }
 
   // ── lifecycle ───────────────────────────────────────────────────
@@ -392,6 +448,8 @@ private:
       return;
     }
     pairs_.clear();
+    pending_.clear();
+    gps_fixes_ = 0;
     rejects_.clear();
     history_.clear();
     last_fit_.reset();
@@ -421,6 +479,7 @@ private:
     if (state_ != State::kCollecting)
       return;
     const double elapsed = (now() - started_).seconds();
+    ProcessPending();
 
     if (pairs_.size() >= 20)
     {
@@ -583,6 +642,20 @@ private:
         << ",\"inliers\":" << last_fit_->inliers;
     }
     j << ",\"lidar_healthy\":" << (LidarHealthy() ? "true" : "false");
+    j << ",\"gps_fixes\":" << gps_fixes_;
+    if (gnss_status_.has_value())
+    {
+      namespace gsu = mowgli_interfaces::gnss_status_utils;
+      const auto acc = gsu::HorizontalAccuracyMeters(*gnss_status_);
+      j << ",\"gps_rtk_fixed\":" << (gsu::IsRtkFixed(*gnss_status_) ? "true" : "false")
+        << ",\"gps_fix_type\":" << static_cast<int>(gnss_status_->fix_type)
+        << ",\"gps_rtk_mode\":" << static_cast<int>(gnss_status_->rtk_mode)
+        << ",\"gps_accuracy_m\":" << (acc ? Fmt(*acc, 3) : std::string("null"));
+    }
+    else
+    {
+      j << ",\"gps_status\":\"no /gps/status received\"";
+    }
     if (!last_pose_frame_.empty() && last_pose_frame_ != lidar_frame_)
       j << ",\"warning\":\"/pcl_pose frame is '" << last_pose_frame_ << "', expected '"
         << lidar_frame_ << "' (set lidar_localization global_frame_id)\"";
@@ -616,6 +689,8 @@ private:
   std::deque<lma::TimedPose> poses_;
   std::string last_pose_frame_;
   std::vector<lma::PointPair> pairs_;
+  std::deque<PendingFix> pending_;
+  std::size_t gps_fixes_ = 0;
   std::map<std::string, std::size_t> rejects_;
   std::deque<FitSample> history_;
   std::optional<lma::RobustFitResult> last_fit_;

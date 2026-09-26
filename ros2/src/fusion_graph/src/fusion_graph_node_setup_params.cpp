@@ -251,8 +251,7 @@ void FusionGraphNode::DeclareParameters()
   lidar_pose_topic_ = declare_parameter<std::string>("lidar_pose_topic", "");
   lidar_alignment_status_topic_ =
       declare_parameter<std::string>("lidar_alignment_status_topic", "/alignment_status");
-  lidar_pose_max_sigma_reject_m_ =
-      declare_parameter<double>("lidar_pose_max_sigma_reject_m", 0.75);
+  lidar_pose_max_sigma_reject_m_ = declare_parameter<double>("lidar_pose_max_sigma_reject_m", 0.75);
   lidar_pose_sigma_floor_m_ = declare_parameter<double>("lidar_pose_sigma_floor_m", 0.02);
   lidar_pose_max_age_s_ = declare_parameter<double>("lidar_pose_max_age_s", 0.5);
   lidar_pose_max_consecutive_rejected_ =

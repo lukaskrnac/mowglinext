@@ -184,15 +184,15 @@ private:
   // dynamic-parameter callback (any executor thread) and OnGnss/OnLidarPose
   // (subscription callbacks) can't race. This is the manual switch.
   std::atomic<bool> primary_is_lidar_{false};
-  std::string lidar_pose_topic_;                 // empty = subscription not created
+  std::string lidar_pose_topic_;  // empty = subscription not created
   std::string lidar_alignment_status_topic_ = "/alignment_status";
-  double lidar_pose_max_sigma_reject_m_ = 0.75;   // reject a fix this imprecise outright
-  double lidar_pose_sigma_floor_m_ = 0.02;        // floor, mirrors gps_sigma_floor's role
-  double lidar_pose_max_age_s_ = 0.5;             // reject a stale /pcl_pose sample
+  double lidar_pose_max_sigma_reject_m_ = 0.75;  // reject a fix this imprecise outright
+  double lidar_pose_sigma_floor_m_ = 0.02;  // floor, mirrors gps_sigma_floor's role
+  double lidar_pose_max_age_s_ = 0.5;  // reject a stale /pcl_pose sample
   int64_t lidar_pose_max_consecutive_rejected_ = 5;  // from /alignment_status
-  bool lidar_pose_feed_yaw_ = true;               // also QueueYaw() from NDT heading
+  bool lidar_pose_feed_yaw_ = true;  // also QueueYaw() from NDT heading
   double lidar_pose_yaw_sigma_floor_rad_ = 0.02;
-  bool lidar_pose_robust_ = true;                 // Huber kernel, same reasoning as GPS
+  bool lidar_pose_robust_ = true;  // Huber kernel, same reasoning as GPS
   // Latest health snapshot from /alignment_status (diagnostic_msgs::DiagnosticArray,
   // status name "lidar_localization_ros2/alignment"). Defaults are the safe/closed
   // state: no factor is queued until at least one healthy status has been seen.

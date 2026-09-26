@@ -57,7 +57,8 @@ double LargestSigma(const Eigen::Matrix2d& cov)
 }
 }  // namespace
 
-void FusionGraphNode::OnLidarAlignmentStatus(diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr msg)
+void FusionGraphNode::OnLidarAlignmentStatus(
+    diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr msg)
 {
   // lidar_localization_ros2 publishes one DiagnosticStatus per update, named
   // "lidar_localization_ros2/alignment" (docs/troubleshooting.md). Defensive:
@@ -206,8 +207,10 @@ void FusionGraphNode::OnLidarPose(geometry_msgs::msg::PoseWithCovarianceStamped:
   const auto cov_applied = FloorLidarCovariance(cov, lidar_pose_sigma_floor_m_);
   if (!cov_applied)
   {
-    RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 5000, "fusion_graph: /pcl_pose covariance not PSD — dropped");
+    RCLCPP_WARN_THROTTLE(get_logger(),
+                         *get_clock(),
+                         5000,
+                         "fusion_graph: /pcl_pose covariance not PSD — dropped");
     return;
   }
 
@@ -240,8 +243,10 @@ void FusionGraphNode::OnLidarPose(geometry_msgs::msg::PoseWithCovarianceStamped:
   if (!primary_is_lidar_.load(std::memory_order_relaxed))
     return;
 
-  graph_->QueueLidarMapXy(
-      gtsam::Vector2(mx, my), *cov_applied, lidar_pose_robust_, measurement_node);
+  graph_->QueueLidarMapXy(gtsam::Vector2(mx, my),
+                          *cov_applied,
+                          lidar_pose_robust_,
+                          measurement_node);
 
   if (lidar_pose_feed_yaw_)
   {
@@ -254,10 +259,9 @@ void FusionGraphNode::OnLidarPose(geometry_msgs::msg::PoseWithCovarianceStamped:
     // floored elsewhere — never trust a covariance report tighter than the
     // configured floor.
     const double yaw_var = msg->pose.covariance[35];
-    const double sigma_yaw =
-        std::isfinite(yaw_var) && yaw_var > 0.0
-            ? std::max(std::sqrt(yaw_var), lidar_pose_yaw_sigma_floor_rad_)
-            : lidar_pose_yaw_sigma_floor_rad_;
+    const double sigma_yaw = std::isfinite(yaw_var) && yaw_var > 0.0
+                                 ? std::max(std::sqrt(yaw_var), lidar_pose_yaw_sigma_floor_rad_)
+                                 : lidar_pose_yaw_sigma_floor_rad_;
     graph_->QueueYaw(yaw, sigma_yaw, /*robust=*/true);
   }
 }

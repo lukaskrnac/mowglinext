@@ -33,11 +33,12 @@
 //     far more reliable than that 2D-grid AMCL heading estimate would have been, but
 //     keep this gated and watch /fusion_graph/diagnostics cov_yawyaw after enabling.
 
-#include "fusion_graph/fusion_graph_node.hpp"
-
 #include <algorithm>
 #include <cmath>
+#include <mutex>
+#include <optional>
 
+#include "fusion_graph/fusion_graph_node.hpp"
 #include "fusion_graph/lidar_covariance.hpp"
 #include <Eigen/Eigenvalues>
 
@@ -93,21 +94,38 @@ void FusionGraphNode::OnLidarAlignmentStatus(diagnostic_msgs::msg::DiagnosticArr
 
 void FusionGraphNode::OnLidarPose(geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg)
 {
-  // frame_id must already be the SAME map frame fusion_graph uses (ENU metres
-  // around datum_lat_/datum_lon_, dock at the origin) — see
-  // tools/align_glim_map.py. This node does not re-project lat/lon here; the
-  // alignment is a one-time offline step on the map file, not a runtime TF.
-  if (msg->header.frame_id != map_frame_)
+  // /pcl_pose is in the external localizer's own map frame (lidar_pose_frame_,
+  // the GLIM map's arbitrary local frame). It is re-expressed in map_frame_
+  // with the calibrated lidar_map -> map transform (calibrate_lidar_map_node)
+  // below; without a calibration nothing is fused.
+  if (msg->header.frame_id != lidar_pose_frame_)
   {
     RCLCPP_WARN_THROTTLE(get_logger(),
                          *get_clock(),
                          5000,
-                         "fusion_graph: /pcl_pose frame_id '%s' != map_frame '%s' — sample "
-                         "dropped (is the GLIM map aligned to the fusion_graph datum?)",
+                         "fusion_graph: /pcl_pose frame_id '%s' != lidar_pose_frame '%s' — sample "
+                         "dropped (set lidar_localization global_frame_id to '%s')",
                          msg->header.frame_id.c_str(),
-                         map_frame_.c_str());
+                         lidar_pose_frame_.c_str(),
+                         lidar_pose_frame_.c_str());
     return;
   }
+  LidarMapTransform lmt;
+  {
+    std::lock_guard<std::mutex> lock(lidar_map_tf_mu_);
+    lmt = lidar_map_tf_;
+  }
+  if (!lmt.calibrated)
+  {
+    RCLCPP_WARN_THROTTLE(get_logger(),
+                         *get_clock(),
+                         30000,
+                         "fusion_graph: no lidar_map -> map calibration — /pcl_pose ignored. Run "
+                         "/calibrate_lidar_map_node/start under RTK-Fixed.");
+    return;
+  }
+  const double lmt_c = std::cos(lmt.yaw);
+  const double lmt_s = std::sin(lmt.yaw);
 
   // Freshness. lidar_localization_ros2 stamps /pcl_pose at scan time, same
   // convention as the GNSS receipt-stamp handling in OnGnss.
@@ -160,6 +178,10 @@ void FusionGraphNode::OnLidarPose(geometry_msgs::msg::PoseWithCovarianceStamped:
   cov(0, 1) = msg->pose.covariance[1];
   cov(1, 0) = msg->pose.covariance[6];
   cov(1, 1) = msg->pose.covariance[7];
+  // Rotate the xy covariance into map_frame_ with the calibration yaw.
+  Eigen::Matrix2d rot;
+  rot << lmt_c, -lmt_s, lmt_s, lmt_c;
+  cov = rot * cov * rot.transpose();
   const double sigma = LargestSigma(cov);
   if (!std::isfinite(sigma) || sigma <= 0.0)
   {
@@ -206,8 +228,10 @@ void FusionGraphNode::OnLidarPose(geometry_msgs::msg::PoseWithCovarianceStamped:
     }
   }
 
-  const double mx = msg->pose.pose.position.x;
-  const double my = msg->pose.pose.position.y;
+  const double lx = msg->pose.pose.position.x;
+  const double ly = msg->pose.pose.position.y;
+  const double mx = lmt_c * lx - lmt_s * ly + lmt.x;
+  const double my = lmt_s * lx + lmt_c * ly + lmt.y;
 
   // The manual switch: only actually fuse into the graph while LiDAR is the
   // selected primary source. Health/covariance bookkeeping above still ran
@@ -222,7 +246,10 @@ void FusionGraphNode::OnLidarPose(geometry_msgs::msg::PoseWithCovarianceStamped:
   if (lidar_pose_feed_yaw_)
   {
     const auto& q = msg->pose.pose.orientation;
-    const double yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    const double yaw_lidar_map =
+        std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    const double yaw_sum = yaw_lidar_map + lmt.yaw;
+    const double yaw = std::atan2(std::sin(yaw_sum), std::cos(yaw_sum));
     // cov[35] is yaw-yaw variance. Floor it the same way GPS/mag yaw sigma is
     // floored elsewhere — never trust a covariance report tighter than the
     // configured floor.
@@ -240,28 +267,111 @@ rcl_interfaces::msg::SetParametersResult FusionGraphNode::OnSetParameters(
 {
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
+
+  // Calibration first, so a single set_parameters call carrying both the
+  // calibration and primary_localization_source=lidar is accepted.
+  LidarMapTransform next;
+  {
+    std::lock_guard<std::mutex> lock(lidar_map_tf_mu_);
+    next = lidar_map_tf_;
+  }
+  bool calibration_changed = false;
+  for (const auto& p : params)
+  {
+    const auto& n = p.get_name();
+    if (n == "lidar_pose_map_x")
+      next.x = p.as_double();
+    else if (n == "lidar_pose_map_y")
+      next.y = p.as_double();
+    else if (n == "lidar_pose_map_yaw")
+      next.yaw = p.as_double();
+    else if (n == "lidar_pose_map_calibrated")
+      next.calibrated = p.as_bool();
+    else
+      continue;
+    calibration_changed = true;
+  }
+  if (calibration_changed &&
+      (!std::isfinite(next.x) || !std::isfinite(next.y) || !std::isfinite(next.yaw)))
+  {
+    result.successful = false;
+    result.reason = "lidar_pose_map_x/y/yaw must be finite";
+    return result;
+  }
+
+  std::optional<bool> want_lidar;
   for (const auto& p : params)
   {
     if (p.get_name() != "primary_localization_source")
       continue;  // not ours: accept, some other mechanism may own it
     const std::string value = p.as_string();
     if (value == "gps")
-    {
-      primary_is_lidar_.store(false, std::memory_order_relaxed);
-      RCLCPP_INFO(get_logger(), "fusion_graph: primary_localization_source -> gps");
-    }
+      want_lidar = false;
     else if (value == "lidar")
-    {
-      primary_is_lidar_.store(true, std::memory_order_relaxed);
-      RCLCPP_INFO(get_logger(), "fusion_graph: primary_localization_source -> lidar");
-    }
+      want_lidar = true;
     else
     {
       result.successful = false;
       result.reason = "primary_localization_source must be 'gps' or 'lidar'";
+      return result;
     }
   }
+  if (want_lidar.value_or(primary_is_lidar_.load(std::memory_order_relaxed)) && !next.calibrated)
+  {
+    result.successful = false;
+    result.reason =
+        "LiDAR primary needs a lidar_map -> map calibration: run /calibrate_lidar_map_node/start";
+    return result;
+  }
+
+  if (calibration_changed)
+  {
+    {
+      std::lock_guard<std::mutex> lock(lidar_map_tf_mu_);
+      lidar_map_tf_ = next;
+    }
+    RCLCPP_INFO(get_logger(),
+                "fusion_graph: lidar_map -> map calibration %s: yaw=%.3f deg t=(%.3f, %.3f)",
+                next.calibrated ? "set" : "cleared",
+                next.yaw * 180.0 / M_PI,
+                next.x,
+                next.y);
+    PublishLidarMapStaticTf();
+  }
+  if (want_lidar.has_value())
+  {
+    primary_is_lidar_.store(*want_lidar, std::memory_order_relaxed);
+    RCLCPP_INFO(get_logger(),
+                "fusion_graph: primary_localization_source -> %s",
+                *want_lidar ? "lidar" : "gps");
+  }
   return result;
+}
+
+// Static map -> lidar_map TF so the GLIM map, /pcl_pose and /path of the
+// external localizer render in the map frame (RViz/Foxglove). A static,
+// sibling-of-odom frame: it does not touch the map->odom / odom->base_footprint
+// ownership of Invariant 2.
+void FusionGraphNode::PublishLidarMapStaticTf()
+{
+  if (!lidar_map_static_tf_)
+    return;
+  LidarMapTransform lmt;
+  {
+    std::lock_guard<std::mutex> lock(lidar_map_tf_mu_);
+    lmt = lidar_map_tf_;
+  }
+  if (!lmt.calibrated)
+    return;
+  geometry_msgs::msg::TransformStamped t;
+  t.header.stamp = this->now();
+  t.header.frame_id = map_frame_;
+  t.child_frame_id = lidar_pose_frame_;
+  t.transform.translation.x = lmt.x;
+  t.transform.translation.y = lmt.y;
+  t.transform.rotation.z = std::sin(lmt.yaw / 2.0);
+  t.transform.rotation.w = std::cos(lmt.yaw / 2.0);
+  lidar_map_static_tf_->sendTransform(t);
 }
 
 }  // namespace fusion_graph

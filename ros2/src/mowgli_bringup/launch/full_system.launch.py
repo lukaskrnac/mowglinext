@@ -545,6 +545,30 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ------------------------------------------------------------------
+    # 7c. LiDAR map calibration node (on-demand, LiDAR builds only)
+    # Estimates the lidar_map -> map transform for the external LiDAR
+    # localizer (lidar_localization_ros2 on a GLIM map) from a short drive
+    # under RTK-Fixed. Idle until /calibrate_lidar_map_node/start is called;
+    # progress on /calibrate_lidar_map_node/status. Writes
+    # /ros2_ws/maps/lidar_map_calibration.yaml (read by fusion_graph.launch.py)
+    # and pushes the result to fusion_graph_node live.
+    # ------------------------------------------------------------------
+    calibrate_lidar_map_node = Node(
+        condition=IfCondition(use_lidar),
+        package="mowgli_localization",
+        executable="calibrate_lidar_map_node",
+        name="calibrate_lidar_map_node",
+        output="screen",
+        parameters=[
+            {"use_sim_time": use_sim_time},
+            {"datum_lat": datum_lat},
+            {"datum_lon": datum_lon},
+            {"lever_arm_x": float(robot_params.get("gps_x", 0.0))},
+            {"lever_arm_y": float(robot_params.get("gps_y", 0.0))},
+        ],
+    )
+
+    # ------------------------------------------------------------------
     # 8. Diagnostics
     # ------------------------------------------------------------------
     diagnostics_node = Node(
@@ -793,6 +817,7 @@ def generate_launch_description() -> LaunchDescription:
             navsat_converter_node,  # publishes /gps/absolute_pose for GUI + BT
             localization_monitor_node,
             calibrate_imu_yaw_node,
+            calibrate_lidar_map_node,
             diagnostics_node,
             mqtt_bridge_node,
             foxglove_bridge_node,

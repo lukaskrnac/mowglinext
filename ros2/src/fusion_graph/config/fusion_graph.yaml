@@ -365,6 +365,12 @@ fusion_graph_node:
     lidar_pose_feed_yaw: true             # also QueueYaw() from NDT heading (see file header)
     lidar_pose_yaw_sigma_floor_rad: 0.02
     lidar_pose_robust: true
+    # /pcl_pose frame (lidar_localization_ros2 global_frame_id). The GLIM map
+    # has its own local frame; calibrate_lidar_map_node estimates the
+    # lidar_map -> map transform (lidar_pose_map_x/y/yaw/calibrated), which
+    # fusion_graph.launch.py injects from /ros2_ws/maps/lidar_map_calibration.yaml.
+    # Without a calibration /pcl_pose is ignored and "lidar" is refused below.
+    lidar_pose_frame: "lidar_map"
     # The manual switch: "gps" or "lidar". Flip live any time with
     #   ros2 param set /fusion_graph_node primary_localization_source lidar
     # without relaunching the node.

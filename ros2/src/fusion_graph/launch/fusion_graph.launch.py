@@ -82,6 +82,47 @@ def _read_robot_config() -> dict:
     return {}
 
 
+LIDAR_MAP_CALIBRATION_PATH = "/ros2_ws/maps/lidar_map_calibration.yaml"
+
+
+def _read_lidar_map_calibration(datum_lat: float, datum_lon: float) -> dict:
+    """lidar_map -> map calibration written by calibrate_lidar_map_node.
+
+    Returned as fusion_graph parameters. Only trusted when it was computed
+    against the SAME datum as the one in use now: the transform maps into
+    the datum ENU frame, so a datum change silently invalidates it (same
+    reasoning as map_server's areas.dat datum stamp, Invariant 4). A missing,
+    unreadable or stale file yields lidar_pose_map_calibrated=False, which
+    makes fusion_graph ignore /pcl_pose and refuse the "lidar" primary source.
+    """
+    uncalibrated = {"lidar_pose_map_calibrated": False}
+    if not os.path.exists(LIDAR_MAP_CALIBRATION_PATH):
+        return uncalibrated
+    try:
+        with open(LIDAR_MAP_CALIBRATION_PATH, "r") as f:
+            cal = (yaml.safe_load(f) or {}).get("lidar_map_calibration", {})
+        cal_lat = float(cal["datum_lat"])
+        cal_lon = float(cal["datum_lon"])
+        out = {
+            "lidar_pose_map_x": float(cal["x"]),
+            "lidar_pose_map_y": float(cal["y"]),
+            "lidar_pose_map_yaw": float(cal["yaw"]),
+            "lidar_pose_map_calibrated": True,
+        }
+    except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
+        print(f"[fusion_graph.launch] ignoring {LIDAR_MAP_CALIBRATION_PATH}: {exc}")
+        return uncalibrated
+    # ~1 cm at the equator; the datum is written with full precision.
+    if abs(cal_lat - datum_lat) > 1e-7 or abs(cal_lon - datum_lon) > 1e-7:
+        print(
+            f"[fusion_graph.launch] {LIDAR_MAP_CALIBRATION_PATH} was computed for datum "
+            f"({cal_lat}, {cal_lon}), current datum is ({datum_lat}, {datum_lon}) — "
+            "ignoring it; re-run /calibrate_lidar_map_node/start."
+        )
+        return uncalibrated
+    return out
+
+
 def generate_launch_description() -> LaunchDescription:
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time", default_value="false",
@@ -139,6 +180,7 @@ def generate_launch_description() -> LaunchDescription:
         params_file,
         # Runtime map geometry overrides the package defaults. The node
         # validates the resolution, tile dimensions and range margin.
+        _read_lidar_map_calibration(datum_lat, datum_lon),
         {key: cfg[key] for key in (
             "lidar_map_resolution_m",
             "lidar_map_tile_size_m",

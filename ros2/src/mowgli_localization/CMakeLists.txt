@@ -30,6 +30,7 @@ find_package(tf2_ros            REQUIRED)
 find_package(tf2_geometry_msgs  REQUIRED)
 find_package(mowgli_interfaces  REQUIRED)
 find_package(yaml-cpp           REQUIRED)
+find_package(diagnostic_msgs    REQUIRED)
 
 # ---------------------------------------------------------------------------
 # Common include directory macro
@@ -175,6 +176,29 @@ target_link_libraries(calibrate_imu_yaw_node
 target_link_libraries(calibrate_imu_yaw_node yaml-cpp)
 
 # ---------------------------------------------------------------------------
+# Executable: calibrate_lidar_map_node (on-demand lidar_map -> map alignment
+# for the external LiDAR localizer; math in lidar_map_alignment.hpp)
+# ---------------------------------------------------------------------------
+
+add_executable(calibrate_lidar_map_node
+  src/calibrate_lidar_map_node.cpp
+)
+
+target_include_directories(calibrate_lidar_map_node PUBLIC ${INCLUDE_DIR})
+
+target_link_libraries(calibrate_lidar_map_node
+  ${rclcpp_TARGETS}
+  ${geometry_msgs_TARGETS}
+  ${sensor_msgs_TARGETS}
+  ${std_msgs_TARGETS}
+  ${std_srvs_TARGETS}
+  ${diagnostic_msgs_TARGETS}
+  ${mowgli_interfaces_TARGETS}
+)
+
+target_link_libraries(calibrate_lidar_map_node yaml-cpp)
+
+# ---------------------------------------------------------------------------
 # Executable: costmap_scan_filter_node (conditional radial blank for the
 # local_costmap obstacle_layer — masks the dock while charging without
 # opening a 0.10–0.65 m blind ring during normal mowing)
@@ -251,6 +275,7 @@ install(
     cog_to_imu
     mag_yaw_publisher
     calibrate_imu_yaw_node
+    calibrate_lidar_map_node
     costmap_scan_filter_node
     scan_deskew_node
     gps_dock_detection_node
@@ -296,6 +321,14 @@ if(BUILD_TESTING)
   # ---- test_cog_yaw_math ----
   # Pure C++ test of the COG-to-body-heading algebra (cog_yaw_math.hpp).
   # Guards the 2026-05-27 reverse+rotate yaw fix — no ROS2 deps, link gtest.
+  ament_add_gtest(test_lidar_map_alignment
+    test/test_lidar_map_alignment.cpp
+  )
+
+  target_include_directories(test_lidar_map_alignment PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+
   ament_add_gtest(test_cog_yaw_math
     test/test_cog_yaw_math.cpp
   )

@@ -31,6 +31,8 @@ void FusionGraphNode::SetupCommunications(double node_period_s)
 
   // ── TF ────────────────────────────────────────────────────────────
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+  lidar_map_static_tf_ = std::make_unique<tf2_ros::StaticTransformBroadcaster>(*this);
+  PublishLidarMapStaticTf();
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
   tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
 

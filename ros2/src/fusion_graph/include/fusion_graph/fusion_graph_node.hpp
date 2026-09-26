@@ -34,6 +34,7 @@
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <tf2_ros/buffer.hpp>
+#include <tf2_ros/static_transform_broadcaster.hpp>
 #include <tf2_ros/transform_broadcaster.hpp>
 #include <tf2_ros/transform_listener.hpp>
 
@@ -50,10 +51,10 @@
 #include "fusion_graph/pose_extrapolator.hpp"
 #include <Eigen/Core>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
-#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <mowgli_interfaces/gnss_observation_freshness.hpp>
 #include <mowgli_interfaces/msg/high_level_status.hpp>
 #include <mowgli_interfaces/msg/status.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <sophus/se2.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
@@ -203,6 +204,26 @@ private:
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr
       sub_lidar_alignment_status_;
   OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
+  // lidar_map -> map calibration (calibrate_lidar_map_node, persisted in
+  // /ros2_ws/maps/lidar_map_calibration.yaml and injected by
+  // fusion_graph.launch.py). /pcl_pose arrives in lidar_pose_frame_ (the GLIM
+  // map's own local frame) and is mapped into map_frame_ with
+  //   p_map = R(yaw) * p_lidar_map + (x, y)
+  // before it is queued. Uncalibrated = every sample is dropped and the
+  // primary source cannot be switched to "lidar". Guarded by
+  // lidar_map_tf_mu_: written by the parameter callback, read by OnLidarPose.
+  struct LidarMapTransform
+  {
+    double x = 0.0;
+    double y = 0.0;
+    double yaw = 0.0;
+    bool calibrated = false;
+  };
+  std::string lidar_pose_frame_ = "lidar_map";
+  mutable std::mutex lidar_map_tf_mu_;
+  LidarMapTransform lidar_map_tf_;
+  std::unique_ptr<tf2_ros::StaticTransformBroadcaster> lidar_map_static_tf_;
+  void PublishLidarMapStaticTf();
 
   // Most recent wheel timestamp (for accumulator dt).
   std::optional<rclcpp::Time> last_wheel_stamp_;

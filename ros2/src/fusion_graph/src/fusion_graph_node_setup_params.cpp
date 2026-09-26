@@ -261,6 +261,14 @@ void FusionGraphNode::DeclareParameters()
   lidar_pose_yaw_sigma_floor_rad_ =
       declare_parameter<double>("lidar_pose_yaw_sigma_floor_rad", 0.02);
   lidar_pose_robust_ = declare_parameter<bool>("lidar_pose_robust", true);
+  lidar_pose_frame_ = declare_parameter<std::string>("lidar_pose_frame", "lidar_map");
+  {
+    std::lock_guard<std::mutex> lock(lidar_map_tf_mu_);
+    lidar_map_tf_.x = declare_parameter<double>("lidar_pose_map_x", 0.0);
+    lidar_map_tf_.y = declare_parameter<double>("lidar_pose_map_y", 0.0);
+    lidar_map_tf_.yaw = declare_parameter<double>("lidar_pose_map_yaw", 0.0);
+    lidar_map_tf_.calibrated = declare_parameter<bool>("lidar_pose_map_calibrated", false);
+  }
   // The manual switch. Boot-time default from this parameter, but flip it
   // live any time with:
   //   ros2 param set /fusion_graph_node primary_localization_source lidar
@@ -270,7 +278,18 @@ void FusionGraphNode::DeclareParameters()
         declare_parameter<std::string>("primary_localization_source", "gps");
     if (primary_source != "gps" && primary_source != "lidar")
       throw std::invalid_argument("primary_localization_source must be 'gps' or 'lidar'");
-    primary_is_lidar_.store(primary_source == "lidar", std::memory_order_relaxed);
+    const bool want_lidar = primary_source == "lidar";
+    bool calibrated = false;
+    {
+      std::lock_guard<std::mutex> lock(lidar_map_tf_mu_);
+      calibrated = lidar_map_tf_.calibrated;
+    }
+    if (want_lidar && !calibrated)
+      RCLCPP_WARN(get_logger(),
+                  "fusion_graph: primary_localization_source=lidar but the lidar_map -> map "
+                  "calibration is missing — staying on gps. Run "
+                  "/calibrate_lidar_map_node/start first.");
+    primary_is_lidar_.store(want_lidar && calibrated, std::memory_order_relaxed);
   }
   param_cb_handle_ = add_on_set_parameters_callback(
       std::bind(&FusionGraphNode::OnSetParameters, this, std::placeholders::_1));

@@ -85,7 +85,8 @@ func topicSubscribeInterval(topic string) (int, bool) {
 		"path", "plan", "power", "emergency", "dockingSensor",
 		"robotDescription", "recordingTrajectory",
 		"coverageResumeAvailable",
-		"fusionDiag", "dockCalibrationStatus", "lidarMapCalibrationStatus":
+		"fusionDiag", "dockCalibrationStatus", "lidarMapCalibrationStatus",
+		"glimSupervisorStatus":
 		return -1, true
 	default:
 		return -1, false

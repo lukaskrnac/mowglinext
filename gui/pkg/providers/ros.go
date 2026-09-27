@@ -34,8 +34,11 @@ var topicMap = map[string]topicDef{
 	// LiDAR map calibration progress (calibrate_lidar_map_node): a latched
 	// std_msgs/String carrying a JSON object (state, pairs, spread, fit, …).
 	"lidarMapCalibrationStatus": {"/calibrate_lidar_map_node/status", "std_msgs/msg/String"},
-	"gps":                       {"/gps/fix", "sensor_msgs/msg/NavSatFix"},
-	"gnssStatus":                {"/gps/status", "mowgli_interfaces/msg/GnssStatus"},
+	// glim_supervisor (3d_mowgli_slam_stack): latched std_msgs/String with a
+	// JSON object — state, sessions, active map.
+	"glimSupervisorStatus": {"/glim_supervisor/status", "std_msgs/msg/String"},
+	"gps":                  {"/gps/fix", "sensor_msgs/msg/NavSatFix"},
+	"gnssStatus":           {"/gps/status", "mowgli_interfaces/msg/GnssStatus"},
 	// The robot's global pose comes from fusion_graph_node, the sole
 	// map-frame localizer. "pose" and "fusionRaw" both point at
 	// /odometry/filtered_map; the duplicate key is kept for backwards

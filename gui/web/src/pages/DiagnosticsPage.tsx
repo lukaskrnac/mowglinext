@@ -48,6 +48,7 @@ import {useCogHeading} from "../hooks/useCogHeading.ts";
 import {useMagYaw} from "../hooks/useMagYaw.ts";
 import {useCalibrationStatus} from "../hooks/useCalibrationStatus.ts";
 import {LidarMapCalibrationCard} from "../components/LidarMapCalibrationCard.tsx";
+import {GlimMappingCard} from "../components/GlimMappingCard.tsx";
 import {parseBoolish} from "../utils/settingsValues.ts";
 import {useWheelOdom} from "../hooks/useWheelOdom.ts";
 import {useWheelTicks} from "../hooks/useWheelTicks.ts";
@@ -1688,6 +1689,11 @@ export const DiagnosticsPage = () => {
                     )}
                 </Card>
             </Col>
+            {parseBoolish(settings?.lidar_enabled) === true && (
+                <Col xs={24}>
+                    <GlimMappingCard/>
+                </Col>
+            )}
             <Col xs={24}>
                 <LidarMapCalibrationCard
                     saved={calibrationStatus?.lidar_map}

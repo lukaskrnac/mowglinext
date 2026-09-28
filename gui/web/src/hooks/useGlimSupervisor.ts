@@ -41,6 +41,8 @@ export interface GlimSupervisorStatus {
     sessions: GlimSession[];
     active_map: GlimActiveMap;
     log_tail: string[];
+    /** Empty folder prepared for "Save Map" while the offline viewer is open. */
+    save_target: string | null;
 }
 
 /** Parse the std_msgs/String payload; tolerant of either field casing. */
@@ -63,6 +65,7 @@ export function parseGlimStatus(raw: unknown): GlimSupervisorStatus | null {
             sessions: Array.isArray(st.sessions) ? st.sessions : [],
             active_map: st.active_map ?? {path: "", exists: false, backups: []},
             log_tail: Array.isArray(st.log_tail) ? st.log_tail : [],
+            save_target: typeof st.save_target === "string" ? st.save_target : null,
         };
     } catch {
         return null;

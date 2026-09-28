@@ -172,7 +172,17 @@ export const GlimMappingCard: React.FC = () => {
                         <Alert type="warning" showIcon message={t("glimMapping.savingHint")}/>
                     )}
                     {state === "viewer" && (
-                        <Alert type="info" showIcon message={t("glimMapping.viewerHint", {dir: status.sessions_dir})}/>
+                        <Alert
+                            type="info"
+                            showIcon
+                            message={t("glimMapping.viewerHint", {dir: status.sessions_dir})}
+                            description={status.save_target ? (
+                                <span>
+                                    {t("glimMapping.saveTargetPrefix")} <Text code copyable>{status.save_target}</Text>
+                                    {" "}{t("glimMapping.saveTargetSuffix")}
+                                </span>
+                            ) : undefined}
+                        />
                     )}
 
                     <Descriptions size="small" column={1} title={<Text style={{fontSize: 12}}>{t("glimMapping.activeMap")}</Text>}>

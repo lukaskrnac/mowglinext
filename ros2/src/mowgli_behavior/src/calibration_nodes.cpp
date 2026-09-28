@@ -74,6 +74,8 @@ BT::NodeStatus RecordUndockStart::tick()
   auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
   ctx->undock_start_x = ctx->gps_x;
   ctx->undock_start_y = ctx->gps_y;
+  ctx->undock_start_lidar_x = ctx->lidar_x;
+  ctx->undock_start_lidar_y = ctx->lidar_y;
   ctx->undock_start_recorded = true;
   // Clear the per-undock GPS buffer and seed it with the current sample
   // so CalibrateHeadingFromUndock can line-fit the whole BackUp
@@ -106,6 +108,34 @@ BT::NodeStatus CalibrateHeadingFromUndock::tick()
     RCLCPP_WARN(ctx->node->get_logger(),
                 "CalibrateHeadingFromUndock: no undock_start recorded, "
                 "skipping (relying on dock_yaw seed).");
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  // LiDAR primary: heading comes from the LiDAR localizer, so there is
+  // nothing to refine (and a Float-quality GPS line fit must not override
+  // it via set_pose). Keep only the stuck-on-dock check, measured with the
+  // LiDAR position instead of GPS.
+  if (ctx->lidar_localization_ok)
+  {
+    double min_disp = 0.20;
+    getInput("min_displacement_m", min_disp);
+    const double ldist = std::hypot(ctx->lidar_x - ctx->undock_start_lidar_x,
+                                    ctx->lidar_y - ctx->undock_start_lidar_y);
+    ctx->undock_start_recorded = false;
+    if (ldist < min_disp && ctx->latest_power.charger_enabled)
+    {
+      RCLCPP_WARN(ctx->node->get_logger(),
+                  "CalibrateHeadingFromUndock: LiDAR displacement %.3fm below min %.3fm "
+                  "AND is_charging=true — robot stuck on dock, retrying undock.",
+                  ldist,
+                  min_disp);
+      return BT::NodeStatus::FAILURE;
+    }
+    RCLCPP_INFO(ctx->node->get_logger(),
+                "CalibrateHeadingFromUndock: LiDAR primary (moved %.3fm) — heading from "
+                "LiDAR, skipping GPS refinement.",
+                ldist);
+    ctx->yaw_seeded_this_session = true;
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -289,6 +319,16 @@ void SeedYawFromMotion::publish_zero(const rclcpp::Node::SharedPtr& node)
 BT::NodeStatus SeedYawFromMotion::onStart()
 {
   auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  if (ctx->lidar_localization_ok)
+  {
+    // LiDAR primary: the heading is already absolute — no forward drive,
+    // no GPS track fit.
+    RCLCPP_INFO(ctx->node->get_logger(),
+                "SeedYawFromMotion: LiDAR primary and localized — heading known, skipping.");
+    ctx->yaw_seeded_this_session = true;
+    return BT::NodeStatus::SUCCESS;
+  }
 
   if (ctx->yaw_seeded_this_session)
   {

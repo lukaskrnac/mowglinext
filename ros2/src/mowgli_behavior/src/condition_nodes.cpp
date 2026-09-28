@@ -291,6 +291,18 @@ BT::NodeStatus IsGPSFixed::tick()
 }
 
 // ---------------------------------------------------------------------------
+// IsLocalizationPrecise
+// ---------------------------------------------------------------------------
+
+BT::NodeStatus IsLocalizationPrecise::tick()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+  std::lock_guard<std::mutex> lock(ctx->context_mutex);
+  return (ctx->gps_is_fixed || ctx->lidar_localization_ok) ? BT::NodeStatus::SUCCESS
+                                                           : BT::NodeStatus::FAILURE;
+}
+
+// ---------------------------------------------------------------------------
 // ReplanNeeded
 // ---------------------------------------------------------------------------
 
@@ -562,11 +574,14 @@ BT::NodeStatus PreFlightCheck::tick()
 
   // ── 3. GPS fix type ──────────────────────────────────────────────────────
   uint8_t fix_type;
+  bool lidar_ok = false;
   {
     std::lock_guard<std::mutex> lock(ctx->context_mutex);
     fix_type = ctx->gps_fix_type;
+    lidar_ok = ctx->lidar_localization_ok;
   }
-  if (static_cast<int>(fix_type) < min_gps_fix_type)
+  // LiDAR as the primary, currently usable source satisfies the fix gate.
+  if (static_cast<int>(fix_type) < min_gps_fix_type && !lidar_ok)
   {
     // Indices match the quality-monotonic encoding in behavior_tree_node.cpp:
     // 0=no-fix, 2=DGPS, 3=RTK-float, 4=RTK-fix (1 unused/"auto").

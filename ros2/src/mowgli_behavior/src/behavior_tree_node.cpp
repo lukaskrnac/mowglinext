@@ -26,6 +26,7 @@
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "behaviortree_cpp/behavior_tree.h"
 #include "behaviortree_cpp/loggers/bt_cout_logger.h"
+#include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "mowgli_behavior/action_nodes.hpp"
 #include "mowgli_behavior/battery_filter.hpp"
@@ -56,6 +57,7 @@
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
 
 using namespace std::chrono_literals;
@@ -384,6 +386,34 @@ private:
               std::sqrt(std::max({msg->pose.covariance[0], msg->pose.covariance[7], 0.0}));
           std::lock_guard<std::mutex> lock(context_->context_mutex);
           loc_obs_.fused_sigma_xy_m = sigma;
+          updateLocalizationHealthLocked();
+        });
+
+    // External LiDAR localization (fork). fusion_graph announces its primary
+    // source (latched) and republishes every gated LiDAR pose in map frame;
+    // a fresh pose while LiDAR is primary = "localization usable" for the
+    // guards that would otherwise demand RTK (see lidar_localization_ok).
+    lidar_source_sub_ = create_subscription<std_msgs::msg::String>(
+        "/fusion_graph/primary_source",
+        rclcpp::QoS(1).reliable().transient_local(),
+        [this](std_msgs::msg::String::ConstSharedPtr msg)
+        {
+          std::lock_guard<std::mutex> lock(context_->context_mutex);
+          const bool lidar = msg->data == "lidar";
+          if (lidar != context_->lidar_primary)
+            RCLCPP_INFO(get_logger(), "Localization source: %s", msg->data.c_str());
+          context_->lidar_primary = lidar;
+          updateLocalizationHealthLocked();
+        });
+    lidar_pose_sub_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+        "/fusion_graph/lidar_pose",
+        rclcpp::QoS(10),
+        [this](geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg)
+        {
+          std::lock_guard<std::mutex> lock(context_->context_mutex);
+          context_->lidar_x = msg->pose.pose.position.x;
+          context_->lidar_y = msg->pose.pose.position.y;
+          context_->lidar_pose_rx_s = now().seconds();
           updateLocalizationHealthLocked();
         });
 
@@ -779,6 +809,12 @@ private:
     }
 
     const double now_s = ros_now.seconds();
+    constexpr double kLidarPoseMaxAgeS = 1.0;
+    context_->lidar_localization_ok = context_->lidar_primary && context_->lidar_pose_rx_s > 0.0 &&
+                                      now_s - context_->lidar_pose_rx_s < kLidarPoseMaxAgeS;
+    loc_obs_.lidar_primary = context_->lidar_primary;
+    loc_obs_.lidar_ok = context_->lidar_localization_ok;
+
     const bool was_degraded = context_->localization_degraded;
     const bool degraded = loc_monitor_.Update(now_s, loc_obs_);
     if (degraded == was_degraded)
@@ -1253,6 +1289,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr lethal_boundary_violation_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr dig_escalated_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr fused_odom_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr lidar_source_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr lidar_pose_sub_;
   // LocalizationGuard state. Both feeds write loc_obs_ under
   // context_->context_mutex and then call updateLocalizationHealthLocked().
   LocalizationHealthMonitor loc_monitor_{};

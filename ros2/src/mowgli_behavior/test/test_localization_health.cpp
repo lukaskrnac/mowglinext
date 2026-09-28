@@ -494,3 +494,61 @@ TEST(PersistentLatchTest, DeadBandHoldsCurrentState)
 }
 
 }  // namespace
+
+// ── LiDAR primary source ────────────────────────────────────────────────────
+
+TEST(LocalizationHealthLidar, GuardStaysActiveWithoutAnyGnssReceiver)
+{
+  // No /gps/status ever (gnss_seen=false) must NOT disable the guard when
+  // LiDAR is the primary source — otherwise switching the receiver off
+  // would silently remove the only localization stop.
+  mowgli_behavior::LocalizationHealthMonitor mon;
+  mowgli_behavior::LocalizationObservation obs;
+  obs.lidar_primary = true;
+  obs.lidar_ok = false;
+  EXPECT_FALSE(mon.Update(0.0, obs));
+  EXPECT_TRUE(mon.Update(10.0, obs));
+  EXPECT_EQ(mon.fault(), mowgli_behavior::LocalizationFault::kLidarLost);
+}
+
+TEST(LocalizationHealthLidar, HealthyLidarIgnoresBadGnss)
+{
+  mowgli_behavior::LocalizationHealthMonitor mon;
+  mowgli_behavior::LocalizationObservation obs;
+  obs.gnss_seen = true;
+  obs.gnss_fresh = false;  // receiver silent / stale
+  obs.rtk_mode = mowgli_behavior::RtkMode::kNone;
+  obs.lidar_primary = true;
+  obs.lidar_ok = true;
+  for (double t = 0.0; t < 30.0; t += 0.5)
+    EXPECT_FALSE(mon.Update(t, obs));
+  EXPECT_EQ(mon.fault(), mowgli_behavior::LocalizationFault::kNone);
+}
+
+TEST(LocalizationHealthLidar, PausesAndResumesWithPersistence)
+{
+  mowgli_behavior::LocalizationHealthMonitor mon;
+  mowgli_behavior::LocalizationObservation obs;
+  obs.lidar_primary = true;
+  obs.lidar_ok = true;
+  EXPECT_FALSE(mon.Update(0.0, obs));
+  obs.lidar_ok = false;
+  EXPECT_FALSE(mon.Update(1.0, obs));  // short dropout tolerated
+  EXPECT_TRUE(mon.Update(5.0, obs));  // > pause persistence
+  obs.lidar_ok = true;
+  EXPECT_TRUE(mon.Update(5.5, obs));  // resume needs persistence too
+  EXPECT_FALSE(mon.Update(8.0, obs));
+  EXPECT_EQ(mon.fault(), mowgli_behavior::LocalizationFault::kNone);
+}
+
+TEST(LocalizationHealthLidar, SigmaBackstopStillApplies)
+{
+  mowgli_behavior::LocalizationHealthMonitor mon;
+  mowgli_behavior::LocalizationObservation obs;
+  obs.lidar_primary = true;
+  obs.lidar_ok = true;
+  obs.fused_sigma_xy_m = 10.0;
+  EXPECT_FALSE(mon.Update(0.0, obs));
+  EXPECT_TRUE(mon.Update(20.0, obs));
+  EXPECT_EQ(mon.fault(), mowgli_behavior::LocalizationFault::kSigmaBackstop);
+}

@@ -111,11 +111,13 @@
 #include <string>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "mowgli_interfaces/msg/absolute_pose.hpp"
 #include "mowgli_localization/delta_gate.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "tf2/LinearMath/Quaternion.hpp"
 #include "tf2/LinearMath/Transform.hpp"
 #include "tf2/LinearMath/Vector3.hpp"
@@ -217,6 +219,24 @@ public:
           on_absolute_pose(msg);
         });
 
+    // External LiDAR localization (fork): when fusion_graph runs on LiDAR,
+    // the robot's map position for the detection comes from its gated LiDAR
+    // pose instead of RTK GPS, so docking works without GNSS.
+    lidar_source_sub_ =
+        create_subscription<std_msgs::msg::String>("/fusion_graph/primary_source",
+                                                   rclcpp::QoS(1).reliable().transient_local(),
+                                                   [this](std_msgs::msg::String::ConstSharedPtr msg)
+                                                   {
+                                                     lidar_primary_ = msg->data == "lidar";
+                                                   });
+    lidar_pose_sub_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+        "/fusion_graph/lidar_pose",
+        rclcpp::QoS(10),
+        [this](geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg)
+        {
+          on_lidar_pose(msg);
+        });
+
     // COG yaw (GPS course-over-ground, map frame, graph-INDEPENDENT) →
     // estimate the map→odom yaw offset Δ off the corruptible graph. SensorData
     // QoS to match cog_to_imu's publisher (best-effort).
@@ -263,7 +283,31 @@ private:
     {
       return;
     }
+    // LiDAR primary (fork): the robot position comes from the gated LiDAR
+    // pose instead (on_lidar_pose) — do not mix the two sources.
+    if (lidar_primary_)
+    {
+      return;
+    }
+    update_detection(msg->pose.pose.position.x, msg->pose.pose.position.y);
+  }
 
+  // LiDAR-primary counterpart of on_absolute_pose: /fusion_graph/lidar_pose is
+  // the /pcl_pose sample that passed fusion_graph's health/covariance gates,
+  // already in map frame — graph-independent like RTK, which is the property
+  // this node relies on.
+  void on_lidar_pose(geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg)
+  {
+    if (!lidar_primary_)
+    {
+      return;
+    }
+    update_detection(msg->pose.pose.position.x, msg->pose.pose.position.y);
+  }
+
+  // Robot map position (RTK-Fixed GPS or gated LiDAR) -> odom-frame dock detection.
+  void update_detection(double robot_map_x, double robot_map_y)
+  {
     // Robot's continuous-DR pose in odom (TF odom→base_footprint). This is the
     // half of the graph that never jumps; map→odom does NOT enter here.
     tf2::Transform robot_odom;
@@ -294,8 +338,8 @@ private:
     // approach) the target is flung to the wrong side. Δ = gate_.value(), the
     // SAME offset the orientation below uses, so the two stay consistent.
     const double delta = gate_.value();  // Δ = map→odom yaw (stabilised by gate_)
-    const double dx = dock_pose_x_ - msg->pose.pose.position.x;  // dock − robot, in map
-    const double dy = dock_pose_y_ - msg->pose.pose.position.y;
+    const double dx = dock_pose_x_ - robot_map_x;  // dock − robot, in map
+    const double dy = dock_pose_y_ - robot_map_y;
     const double c = std::cos(delta);  // R(−Δ): map displacement → odom
     const double s = std::sin(delta);
     const double dx_odom = c * dx + s * dy;
@@ -464,6 +508,9 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr detection_pub_;
   rclcpp::Subscription<mowgli_interfaces::msg::AbsolutePose>::SharedPtr abs_pose_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr cog_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr lidar_source_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr lidar_pose_sub_;
+  bool lidar_primary_{false};
   rclcpp::TimerBase::SharedPtr timer_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;

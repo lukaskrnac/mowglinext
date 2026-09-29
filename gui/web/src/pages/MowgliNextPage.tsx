@@ -23,6 +23,8 @@ import {useMowerAction} from "../components/MowerActions.tsx";
 import {computeBatteryPercent} from "../utils/battery.ts";
 import {deriveGpsStatus} from "../utils/gpsStatus.ts";
 import {deriveIsMoving} from "../utils/mowerMotion.ts";
+import {parseBoolish} from "../utils/settingsValues.ts";
+import {LocalizationSourceSwitch} from "../components/LocalizationSourceSwitch.tsx";
 
 import {GlassCard} from "../concept/components/GlassCard.tsx";
 import {BatteryRing} from "../concept/components/BatteryRing.tsx";
@@ -101,6 +103,8 @@ function useMowerData() {
     // rather than flashing a false "incompatible" on load.
     firmwareCompatible: status.firmware_compatible ?? null,
     firmwareVersion: status.firmware_version ?? "",
+    // The GPS/LiDAR localization switch only makes sense with a LiDAR.
+    lidarEnabled: parseBoolish(settings?.lidar_enabled) === true,
   };
 }
 
@@ -670,6 +674,14 @@ function HealthCard({data}: {data: ReturnType<typeof useMowerData>}) {
           {t('mowgliNextPage.firmwareFlashCta')}
         </Button>
       ),
+    });
+  }
+  if (data.lidarEnabled) {
+    rows.push({
+      k: t('localizationSource.title'),
+      ok: true,
+      note: t('localizationSource.dashboardNote'),
+      action: <LocalizationSourceSwitch compact/>,
     });
   }
   return (

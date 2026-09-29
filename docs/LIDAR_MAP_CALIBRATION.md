@@ -73,6 +73,35 @@ Po kalibrácii netreba posielať `set_pose` ani `/initialpose`:
 Jediný prípad, kde treba zasiahnuť ručne: štart mimo doku **a** bez GPS **a**
 `lidar_localization` ešte nesleduje — vtedy raz `/initialpose` (frame `lidar_map`).
 
+## V GUI
+
+- **Diagnostika → Kalibrácia → Kalibrácia LiDAR mapy**: tlačidlá Štart/Zrušiť
+  (volajú `~/start` a `~/cancel`), živý priebeh z `~/status` (páry, rozptyl
+  trajektórie, RTK, stav LiDARu, dôvody zahodenia) a uložený výsledok zo
+  `lidar_map_calibration.yaml` (vrátane varovania pri inom datume). Počas zberu
+  jazdi ručne cez mapu (manuálny režim).
+- **Prepínač GPS ↔ LiDAR** (dashboard → Kontrola stavu, Nastavenia →
+  Lokalizácia, a pri kalibrácii): nastaví `primary_localization_source` na
+  `fusion_graph_node` za behu a uloží ho do `mowgli_robot.yaml`, takže platí aj
+  po reštarte. Bez platnej kalibrácie `fusion_graph` LiDAR odmietne a GUI to
+  ohlási (nič sa neuloží). Zobrazuje sa len s `lidar_enabled: true`.
+
+## Mapovanie GLIM z GUI
+
+**Diagnostika → Kalibrácia → Mapovanie GLIM** ovláda `glim_supervisor` v GLIM
+kontajneri (repo `3d_mowgli_slam_stack`, `glim/supervisor/`). Kontajner beží
+stále a GLIM sa spúšťa len na požiadanie:
+
+- *Začať mapovanie* / *Ukončiť a uložiť*: každé mapovanie ide do nového
+  priečinka `glim_sessions/mapping_<dátum_čas>/`, nič sa neprepisuje.
+- *Otvoriť vo vieweri*: offline viewer sa otvorí rovno s danou reláciou
+  (na displeji robota, cez vzdialenú plochu). Spojené mapy ulož cez *Save Map*
+  do nového priečinka v `/glim/sessions`.
+- *Použiť ako mapu*: export relácie do `garden_map.ply`, ktorú číta
+  `lidar_localization`. Predchádzajúca mapa ostane ako záloha. Potom reštartuj
+  `lidar_localization` a sprav kalibráciu LiDAR mapy znova.
+
+Lokalizátor sa pri mapovaní nevypína. Podmienky (GPS, dok) sa nekontrolujú.
 ## Prevádzka bez GPS (LiDAR ako primárny zdroj)
 
 `fusion_graph` publikuje `/fusion_graph/primary_source` (`gps`|`lidar`, latched) a

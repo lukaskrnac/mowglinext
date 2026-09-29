@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/mowglinext/mowglinext/pkg/types"
@@ -28,11 +29,27 @@ type SetParamsRequest struct {
 	Parameters []types.RosParameter `json:"parameters"`
 }
 
+// parseParamNames reads the optional `names` query (comma-separated, may be
+// repeated) as fully-qualified "node.param" names. nil = every parameter,
+// which on a full stack is a large, slow (several-second) bridge round-trip —
+// callers that only need a couple of values should always pass names.
+func parseParamNames(c *gin.Context) []string {
+	var names []string
+	for _, raw := range c.QueryArray("names") {
+		for _, n := range strings.Split(raw, ",") {
+			if n = strings.TrimSpace(n); n != "" {
+				names = append(names, n)
+			}
+		}
+	}
+	return names
+}
+
 func getParams(rosProvider types.IRosProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 12*time.Second)
 		defer cancel()
-		params, err := rosProvider.GetParameters(ctx, nil)
+		params, err := rosProvider.GetParameters(ctx, parseParamNames(c))
 		if err != nil {
 			c.JSON(http.StatusServiceUnavailable, ErrorResponse{Error: err.Error()})
 			return

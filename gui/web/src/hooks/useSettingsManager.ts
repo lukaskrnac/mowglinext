@@ -132,6 +132,10 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
         description: "settingsSections.localization.description",
         keys: [
             "use_lidar_map_anchor", "lidar_anchor_shadow_mode",
+            // Claimed (keeps it out of AdvancedSection) but NOT edited through
+            // the dirty-key form: LocalizationSourceSwitch applies it live on
+            // fusion_graph_node and persists it itself.
+            "primary_localization_source",
             "use_magnetometer",
             "enable_mag_cal", "declination_deg", "min_horizontal_uT", "mag_yaw_variance",
         ],
@@ -152,6 +156,8 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
             // so they were dead controls. swath_overlap (a real coverage_server
             // param) is surfaced here instead.
             "mowing_enabled", "mowing_speed", "transit_speed",
+            // GUI-only: joystick forward cap for manual mowing (useManualMode).
+            "manual_mowing_speed",
             // Blade-load slowdown (FollowCoveragePath.blade_load_*, injected by
             // navigation.launch.py): slow the feed when the blade RPM sags.
             "blade_load_slowdown_enabled", "blade_load_rpm_full",

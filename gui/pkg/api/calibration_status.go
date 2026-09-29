@@ -29,6 +29,12 @@ const (
 	magCalibrationPath = "/ros2_ws/maps/mag_calibration.yaml"
 )
 
+// lidarMapCalibrationPath is written by calibrate_lidar_map_node (the
+// lidar_map -> map transform for the external LiDAR localizer) and read by
+// fusion_graph.launch.py. A var, not a const, so tests can point it at a
+// temp file.
+var lidarMapCalibrationPath = "/ros2_ws/maps/lidar_map_calibration.yaml"
+
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
@@ -71,11 +77,32 @@ type MagCalibrationStatus struct {
 	Error           string  `json:"error,omitempty"`
 }
 
+// LidarMapCalibrationStatus mirrors lidar_map_calibration.yaml
+// (p_map = R(yaw) * p_lidar_map + (x, y)). fusion_graph.launch.py ignores
+// the file when its datum differs from the configured one, so DatumLat/Lon
+// are reported for the GUI to flag a stale calibration.
+type LidarMapCalibrationStatus struct {
+	Present      bool    `json:"present"`
+	CalibratedAt string  `json:"calibrated_at,omitempty"`
+	X            float64 `json:"x,omitempty"`
+	Y            float64 `json:"y,omitempty"`
+	YawRad       float64 `json:"yaw_rad,omitempty"`
+	YawDeg       float64 `json:"yaw_deg,omitempty"`
+	DatumLat     float64 `json:"datum_lat,omitempty"`
+	DatumLon     float64 `json:"datum_lon,omitempty"`
+	Pairs        int     `json:"pairs,omitempty"`
+	Inliers      int     `json:"inliers,omitempty"`
+	RmsM         float64 `json:"rms_m,omitempty"`
+	MaxResidualM float64 `json:"max_residual_m,omitempty"`
+	Error        string  `json:"error,omitempty"`
+}
+
 // CalibrationStatusResponse is the payload for GET /calibration/status.
 type CalibrationStatusResponse struct {
-	Dock DockCalibrationStatus `json:"dock"`
-	Imu  ImuCalibrationStatus  `json:"imu"`
-	Mag  MagCalibrationStatus  `json:"mag"`
+	Dock     DockCalibrationStatus     `json:"dock"`
+	Imu      ImuCalibrationStatus      `json:"imu"`
+	Mag      MagCalibrationStatus      `json:"mag"`
+	LidarMap LidarMapCalibrationStatus `json:"lidar_map"`
 }
 
 // ---------------------------------------------------------------------------
@@ -98,9 +125,10 @@ func registerCalibrationStatusRoute(group *gin.RouterGroup, dbProvider types.IDB
 func getCalibrationStatus(dbProvider types.IDBProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		resp := CalibrationStatusResponse{
-			Dock: readDockCalibrationStatus(dbProvider),
-			Imu:  readImuCalibrationStatus(),
-			Mag:  readMagCalibrationStatus(),
+			Dock:     readDockCalibrationStatus(dbProvider),
+			Imu:      readImuCalibrationStatus(),
+			Mag:      readMagCalibrationStatus(),
+			LidarMap: readLidarMapCalibrationStatus(),
 		}
 		c.JSON(http.StatusOK, resp)
 	}
@@ -231,6 +259,52 @@ func readMagCalibrationStatus() MagCalibrationStatus {
 		MagnitudeMeanUT: parsed.MagCalibration.MagnitudeMeanUT,
 		MagnitudeStdUT:  parsed.MagCalibration.MagnitudeStdUT,
 		SampleCount:     parsed.MagCalibration.SampleCount,
+	}
+}
+
+// readLidarMapCalibrationStatus loads lidar_map_calibration.yaml.
+func readLidarMapCalibrationStatus() LidarMapCalibrationStatus {
+	data, err := os.ReadFile(lidarMapCalibrationPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return LidarMapCalibrationStatus{Present: false}
+		}
+		return LidarMapCalibrationStatus{Present: true, Error: err.Error()}
+	}
+	var parsed struct {
+		Cal *struct {
+			X            float64 `yaml:"x"`
+			Y            float64 `yaml:"y"`
+			Yaw          float64 `yaml:"yaw"`
+			DatumLat     float64 `yaml:"datum_lat"`
+			DatumLon     float64 `yaml:"datum_lon"`
+			Pairs        int     `yaml:"pairs"`
+			Inliers      int     `yaml:"inliers"`
+			RmsM         float64 `yaml:"rms_m"`
+			MaxResidualM float64 `yaml:"max_residual_m"`
+			CalibratedAt string  `yaml:"calibrated_at"`
+		} `yaml:"lidar_map_calibration"`
+	}
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		return LidarMapCalibrationStatus{Present: true, Error: "parse: " + err.Error()}
+	}
+	if parsed.Cal == nil {
+		return LidarMapCalibrationStatus{Present: true, Error: "missing lidar_map_calibration section"}
+	}
+	cal := parsed.Cal
+	return LidarMapCalibrationStatus{
+		Present:      true,
+		CalibratedAt: cal.CalibratedAt,
+		X:            cal.X,
+		Y:            cal.Y,
+		YawRad:       cal.Yaw,
+		YawDeg:       cal.Yaw * 180.0 / math.Pi,
+		DatumLat:     cal.DatumLat,
+		DatumLon:     cal.DatumLon,
+		Pairs:        cal.Pairs,
+		Inliers:      cal.Inliers,
+		RmsM:         cal.RmsM,
+		MaxResidualM: cal.MaxResidualM,
 	}
 }
 

@@ -281,6 +281,16 @@ export const MowingSection: React.FC<Props> = ({
                                     />
                                 </Form.Item>
                             </Col>
+                            <Col xs={12} sm={8}>
+                                <Form.Item label={fieldLabel("manual_mowing_speed", t("settingsMowing.manualSpeed"))} tooltip={t("settingsMowing.manualSpeedTooltip")}>
+                                    <InputNumber
+                                        value={values.manual_mowing_speed ?? defaults?.manual_mowing_speed}
+                                        onChange={(v) => onChange("manual_mowing_speed", v)}
+                                        min={0.05} max={0.5} step={0.05} precision={2}
+                                        style={{ width: "100%" }} addonAfter="m/s"
+                                    />
+                                </Form.Item>
+                            </Col>
                         </Row>
                     </Form>
                 </Space>

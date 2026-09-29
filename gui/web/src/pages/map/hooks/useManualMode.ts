@@ -12,16 +12,31 @@ const MANUAL_EXIT_DEBOUNCE_MS = 1200;
 // react-joystick-component). Multiplied at this layer (before twist_mux) so
 // Nav2 autonomous speeds are unaffected. Tuned for precise manual control:
 // at 1.0 m/s the robot was too twitchy on grass.
-const MAX_LINEAR_MPS = 0.25;
+// The forward cap is operator-configurable (Settings → Mowing →
+// manual_mowing_speed); DEFAULT_MAX_LINEAR_MPS mirrors the schema default and
+// is used until settings load or when the stored value is unusable.
+export const DEFAULT_MAX_LINEAR_MPS = 0.25;
+export const MIN_MAX_LINEAR_MPS = 0.05;
+export const MAX_MAX_LINEAR_MPS = 0.5;
 const MAX_ANGULAR_RAD_S = 0.6;
+
+/** Clamp an operator-configured forward cap into the safe range. */
+export function resolveMaxLinearMps(value: unknown): number {
+    const n = typeof value === "number" ? value : typeof value === "string" ? parseFloat(value) : NaN;
+    if (!Number.isFinite(n) || n <= 0) return DEFAULT_MAX_LINEAR_MPS;
+    return Math.min(MAX_MAX_LINEAR_MPS, Math.max(MIN_MAX_LINEAR_MPS, n));
+}
 
 interface UseManualModeOptions {
     mowerAction: (action: string, params: Record<string, unknown>) => () => Promise<void>;
     joyStream: { sendJsonMessage: (msg: unknown) => void; start: (uri: string) => void };
     stateName?: string;
+    /** Joystick full-deflection forward speed (m/s); clamped by resolveMaxLinearMps. */
+    maxLinearMps?: number;
 }
 
-export function useManualMode({mowerAction, joyStream, stateName}: UseManualModeOptions) {
+export function useManualMode({mowerAction, joyStream, stateName, maxLinearMps}: UseManualModeOptions) {
+    const linearCap = resolveMaxLinearMps(maxLinearMps);
     const [manualMode, setManualMode] = useState(() => stateName === "MANUAL_MOWING");
     const exitTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -100,7 +115,7 @@ export function useManualMode({mowerAction, joyStream, stateName}: UseManualMode
     };
 
     const handleJoyMove = useCallback((event: IJoystickUpdateEvent) => {
-        const linear = (event.y ?? 0) * MAX_LINEAR_MPS;
+        const linear = (event.y ?? 0) * linearCap;
         const angular = (event.x ?? 0) * -1 * MAX_ANGULAR_RAD_S;
         const msg: TwistStamped = {
             header: {stamp: {sec: 0, nanosec: 0}, frame_id: ""},
@@ -111,7 +126,7 @@ export function useManualMode({mowerAction, joyStream, stateName}: UseManualMode
         if (!joyIntervalRef.current) {
             startJoyInterval();
         }
-    }, [joyStream, startJoyInterval]);
+    }, [joyStream, startJoyInterval, linearCap]);
 
     const handleJoyStop = useCallback(() => {
         const msg: TwistStamped = {

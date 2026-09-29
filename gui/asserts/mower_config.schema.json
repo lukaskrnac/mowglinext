@@ -213,6 +213,16 @@
           "default": false,
           "description": "With the anchor enabled, also run and score the particle filter under RTK Fixed without ever applying a factor (calibrates the adaptive sigma floor, costs CPU). Default false (matches the template)."
         },
+        "primary_localization_source": {
+          "type": "string",
+          "title": "Primary localization source",
+          "default": "gps",
+          "enum": [
+            "gps",
+            "lidar"
+          ],
+          "description": "Which absolute-position source fusion_graph_node fuses: \"gps\" (RTK) or \"lidar\" (external lidar_localization_ros2 on the GLIM map, /pcl_pose). Set live from the GUI switch (ros2 param set) and persisted here; fusion_graph.launch.py injects it at start. \"lidar\" is refused without a valid LiDAR map calibration (lidar_map_calibration.yaml) and the node stays on gps. Default \"gps\" matches fusion_graph.yaml."
+        },
         "lidar_x": {
           "type": "number",
           "title": "LiDAR Offset X",
@@ -516,6 +526,14 @@
           "title": "Transit Speed",
           "default": 0.2,
           "description": "Robot speed when transiting between zones and to dock (m/s)."
+        },
+        "manual_mowing_speed": {
+          "type": "number",
+          "title": "Manual Mowing Speed",
+          "default": 0.25,
+          "minimum": 0.05,
+          "maximum": 0.5,
+          "description": "Maximum forward speed of the map joystick in manual mowing / area recording (m/s). GUI-side cap on /cmd_vel_teleop; the turn rate is not affected. Default 0.25 matches the previous hardcoded cap."
         },
         "blade_load_slowdown_enabled": {
           "type": "boolean",

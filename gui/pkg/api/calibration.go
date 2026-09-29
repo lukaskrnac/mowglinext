@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/mowglinext/mowglinext/pkg/msgs/mowgli"
 	"github.com/mowglinext/mowglinext/pkg/types"
-	"github.com/gin-gonic/gin"
 )
 
 // ---------------------------------------------------------------------------
@@ -21,18 +21,18 @@ type CalibrateImuYawRequest struct {
 
 // CalibrateImuYawResponse mirrors the ROS service response 1:1.
 type CalibrateImuYawResponse struct {
-	Success                 bool    `json:"success"`
-	Message                 string  `json:"message"`
-	ImuYawRad               float64 `json:"imu_yaw_rad"`
-	ImuYawDeg               float64 `json:"imu_yaw_deg"`
-	SamplesUsed             int32   `json:"samples_used"`
-	StdDevDeg               float64 `json:"std_dev_deg"`
-	ImuPitchRad             float64 `json:"imu_pitch_rad"`
-	ImuPitchDeg             float64 `json:"imu_pitch_deg"`
-	ImuRollRad              float64 `json:"imu_roll_rad"`
-	ImuRollDeg              float64 `json:"imu_roll_deg"`
-	StationarySamplesUsed   int32   `json:"stationary_samples_used"`
-	GravityMagMps2          float64 `json:"gravity_mag_mps2"`
+	Success               bool    `json:"success"`
+	Message               string  `json:"message"`
+	ImuYawRad             float64 `json:"imu_yaw_rad"`
+	ImuYawDeg             float64 `json:"imu_yaw_deg"`
+	SamplesUsed           int32   `json:"samples_used"`
+	StdDevDeg             float64 `json:"std_dev_deg"`
+	ImuPitchRad           float64 `json:"imu_pitch_rad"`
+	ImuPitchDeg           float64 `json:"imu_pitch_deg"`
+	ImuRollRad            float64 `json:"imu_roll_rad"`
+	ImuRollDeg            float64 `json:"imu_roll_deg"`
+	StationarySamplesUsed int32   `json:"stationary_samples_used"`
+	GravityMagMps2        float64 `json:"gravity_mag_mps2"`
 	// Dock fields populated when the service was invoked while
 	// charging (see calibrate_imu_yaw_node dock pre-phase). Null-ish
 	// when DockValid is false.
@@ -55,6 +55,8 @@ func CalibrationRoutes(r *gin.RouterGroup, rosProvider types.IRosProvider, dbPro
 	group.POST("/imu-yaw", postCalibrateImuYaw(rosProvider))
 	group.POST("/magnetometer", postCalibrateMagnetometer(rosProvider))
 	group.POST("/dock/start", postStartDockCalibration(rosProvider))
+	group.POST("/lidar-map/start", postLidarMapCalibrationTrigger(rosProvider, "/calibrate_lidar_map_node/start", "start"))
+	group.POST("/lidar-map/cancel", postLidarMapCalibrationTrigger(rosProvider, "/calibrate_lidar_map_node/cancel", "cancel"))
 	registerCalibrationStatusRoute(group, dbProvider)
 }
 
@@ -96,6 +98,34 @@ func postStartDockCalibration(rosProvider types.IRosProvider) gin.HandlerFunc {
 }
 
 // ---------------------------------------------------------------------------
+// POST /calibration/lidar-map/{start,cancel}
+// ---------------------------------------------------------------------------
+
+// postLidarMapCalibrationTrigger calls calibrate_lidar_map_node's
+// non-blocking std_srvs/Trigger start/cancel services. The node does not
+// drive the robot — the operator drives it (manual mode) while it collects
+// RTK-Fixed <-> /pcl_pose pairs; progress arrives on the
+// "lidarMapCalibrationStatus" stream. The node only runs on LiDAR builds, so
+// "service not advertised" is the expected error without LiDAR.
+func postLidarMapCalibrationTrigger(rosProvider types.IRosProvider, service, verb string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		defer cancel()
+		var res struct {
+			Success bool   `json:"success"`
+			Message string `json:"message"`
+		}
+		if err := rosProvider.CallService(ctx, service, &struct{}{}, &res, "std_srvs/srv/Trigger"); err != nil {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{
+				Error: "Failed to " + verb + " LiDAR map calibration: " + err.Error(),
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"success": res.Success, "message": res.Message})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // POST /calibration/imu-yaw
 // ---------------------------------------------------------------------------
 
@@ -106,6 +136,7 @@ func postStartDockCalibration(rosProvider types.IRosProvider) gin.HandlerFunc {
 //     the robot is on the dock)
 //   - ~20 s for the 3 forward-backward cycles (imu_yaw / pitch / roll)
 //   - optional 30 s mag rotation (disabled by default)
+//
 // We therefore budget 150 s total to leave headroom over the ROS-side
 // maximum (~75 s), independent of the client-provided duration_sec
 // (which is kept in the .srv but no longer drives the motion — it's

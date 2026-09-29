@@ -39,6 +39,33 @@ func TestGetParams_ReturnsList(t *testing.T) {
 	assert.Equal(t, "fusion_graph_node.node_period_s", resp.Parameters[0].Name)
 }
 
+func TestGetParams_ForwardsNamesQuery(t *testing.T) {
+	ros := types.NewMockRosProvider()
+	r := newParamsRouter(ros)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/api/params?names=fusion_graph_node.primary_localization_source,%20fusion_graph_node.lidar_pose_map_calibrated&names=a.b", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, ros.GetParamNames, 1)
+	assert.Equal(t, []string{
+		"fusion_graph_node.primary_localization_source",
+		"fusion_graph_node.lidar_pose_map_calibrated",
+		"a.b",
+	}, ros.GetParamNames[0])
+}
+
+func TestGetParams_NoNamesMeansAll(t *testing.T) {
+	ros := types.NewMockRosProvider()
+	r := newParamsRouter(ros)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/params", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, ros.GetParamNames, 1)
+	assert.Nil(t, ros.GetParamNames[0])
+}
+
 func TestGetParams_BridgeError(t *testing.T) {
 	ros := types.NewMockRosProvider()
 	ros.ParamErr = errors.New("not connected")

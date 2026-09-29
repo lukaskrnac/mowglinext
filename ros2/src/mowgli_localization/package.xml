@@ -29,6 +29,7 @@
   <depend>tf2_geometry_msgs</depend>
   <depend>mowgli_interfaces</depend>
   <depend>yaml-cpp</depend>
+  <depend>diagnostic_msgs</depend>
 
   <!-- robot_localization (ekf_node, navsat_transform_node) is launched by
        mowgli_bringup and not compiled against here. -->

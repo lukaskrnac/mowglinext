@@ -31,6 +31,12 @@ void FusionGraphNode::SetupCommunications(double node_period_s)
 
   // ── TF ────────────────────────────────────────────────────────────
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+  lidar_map_static_tf_ = std::make_unique<tf2_ros::StaticTransformBroadcaster>(*this);
+  PublishLidarMapStaticTf();
+  pub_primary_source_ =
+      create_publisher<std_msgs::msg::String>("/fusion_graph/primary_source",
+                                              rclcpp::QoS(1).reliable().transient_local());
+  PublishPrimarySource(primary_is_lidar_.load(std::memory_order_relaxed));
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
   tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
 
@@ -122,6 +128,13 @@ void FusionGraphNode::SetupCommunications(double node_period_s)
         lidar_pose_topic_,
         sensor_qos,
         std::bind(&FusionGraphNode::OnLidarPose, this, std::placeholders::_1));
+    pub_lidar_pose_map_ =
+        create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("/fusion_graph/lidar_pose",
+                                                                        rclcpp::QoS(10));
+    if (lidar_auto_seed_)
+      pub_lidar_initialpose_ =
+          create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(lidar_initialpose_topic_,
+                                                                          rclcpp::QoS(1));
     sub_lidar_alignment_status_ = create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
         lidar_alignment_status_topic_,
         rclcpp::QoS(10),

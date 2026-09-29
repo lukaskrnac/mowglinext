@@ -33,7 +33,9 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <tf2_ros/buffer.hpp>
+#include <tf2_ros/static_transform_broadcaster.hpp>
 #include <tf2_ros/transform_broadcaster.hpp>
 #include <tf2_ros/transform_listener.hpp>
 
@@ -50,10 +52,10 @@
 #include "fusion_graph/pose_extrapolator.hpp"
 #include <Eigen/Core>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
-#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <mowgli_interfaces/gnss_observation_freshness.hpp>
 #include <mowgli_interfaces/msg/high_level_status.hpp>
 #include <mowgli_interfaces/msg/status.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <sophus/se2.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
@@ -183,15 +185,15 @@ private:
   // dynamic-parameter callback (any executor thread) and OnGnss/OnLidarPose
   // (subscription callbacks) can't race. This is the manual switch.
   std::atomic<bool> primary_is_lidar_{false};
-  std::string lidar_pose_topic_;                 // empty = subscription not created
+  std::string lidar_pose_topic_;  // empty = subscription not created
   std::string lidar_alignment_status_topic_ = "/alignment_status";
-  double lidar_pose_max_sigma_reject_m_ = 0.75;   // reject a fix this imprecise outright
-  double lidar_pose_sigma_floor_m_ = 0.02;        // floor, mirrors gps_sigma_floor's role
-  double lidar_pose_max_age_s_ = 0.5;             // reject a stale /pcl_pose sample
+  double lidar_pose_max_sigma_reject_m_ = 0.75;  // reject a fix this imprecise outright
+  double lidar_pose_sigma_floor_m_ = 0.02;  // floor, mirrors gps_sigma_floor's role
+  double lidar_pose_max_age_s_ = 0.5;  // reject a stale /pcl_pose sample
   int64_t lidar_pose_max_consecutive_rejected_ = 5;  // from /alignment_status
-  bool lidar_pose_feed_yaw_ = true;               // also QueueYaw() from NDT heading
+  bool lidar_pose_feed_yaw_ = true;  // also QueueYaw() from NDT heading
   double lidar_pose_yaw_sigma_floor_rad_ = 0.02;
-  bool lidar_pose_robust_ = true;                 // Huber kernel, same reasoning as GPS
+  bool lidar_pose_robust_ = true;  // Huber kernel, same reasoning as GPS
   // Latest health snapshot from /alignment_status (diagnostic_msgs::DiagnosticArray,
   // status name "lidar_localization_ros2/alignment"). Defaults are the safe/closed
   // state: no factor is queued until at least one healthy status has been seen.
@@ -203,6 +205,46 @@ private:
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr
       sub_lidar_alignment_status_;
   OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
+  // lidar_map -> map calibration (calibrate_lidar_map_node, persisted in
+  // /ros2_ws/maps/lidar_map_calibration.yaml and injected by
+  // fusion_graph.launch.py). /pcl_pose arrives in lidar_pose_frame_ (the GLIM
+  // map's own local frame) and is mapped into map_frame_ with
+  //   p_map = R(yaw) * p_lidar_map + (x, y)
+  // before it is queued. Uncalibrated = every sample is dropped and the
+  // primary source cannot be switched to "lidar". Guarded by
+  // lidar_map_tf_mu_: written by the parameter callback, read by OnLidarPose.
+  struct LidarMapTransform
+  {
+    double x = 0.0;
+    double y = 0.0;
+    double yaw = 0.0;
+    bool calibrated = false;
+  };
+  std::string lidar_pose_frame_ = "lidar_map";
+  mutable std::mutex lidar_map_tf_mu_;
+  LidarMapTransform lidar_map_tf_;
+  std::unique_ptr<tf2_ros::StaticTransformBroadcaster> lidar_map_static_tf_;
+  void PublishLidarMapStaticTf();
+  // Automatic LiDAR start-up (no manual set_pose / 2D Pose Estimate):
+  //  * lidar_bootstrap_from_pose_: uninitialised graph + LiDAR primary ->
+  //    first healthy /pcl_pose becomes X_0;
+  //  * lidar_auto_seed_: localizer not tracking + graph initialised ->
+  //    publish the graph pose as /initialpose in lidar_map.
+  bool lidar_bootstrap_from_pose_ = true;
+  bool lidar_auto_seed_ = true;
+  std::string lidar_initialpose_topic_ = "/initialpose";
+  double lidar_seed_after_s_ = 3.0;
+  double lidar_seed_period_s_ = 10.0;
+  double lidar_unhealthy_since_s_ = -1.0;
+  double last_lidar_seed_s_ = -1e9;
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr
+      pub_lidar_initialpose_;
+  void MaybeSeedLidarLocalizer();
+  // /fusion_graph/primary_source (latched "gps"|"lidar") and
+  // /fusion_graph/lidar_pose (gated /pcl_pose in map_frame_).
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_primary_source_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pub_lidar_pose_map_;
+  void PublishPrimarySource(bool lidar);
 
   // Most recent wheel timestamp (for accumulator dt).
   std::optional<rclcpp::Time> last_wheel_stamp_;

@@ -315,6 +315,27 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// IsLocalizationPrecise — IsGPSFixed OR (LiDAR primary AND usable).
+// Used by GPSModeSelector so a LiDAR-localized robot runs in "precise" mode.
+// ---------------------------------------------------------------------------
+
+class IsLocalizationPrecise : public BT::ConditionNode
+{
+public:
+  IsLocalizationPrecise(const std::string& name, const BT::NodeConfig& config)
+      : BT::ConditionNode(name, config)
+  {
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {};
+  }
+
+  BT::NodeStatus tick() override;
+};
+
+// ---------------------------------------------------------------------------
 // ReplanNeeded
 // ---------------------------------------------------------------------------
 

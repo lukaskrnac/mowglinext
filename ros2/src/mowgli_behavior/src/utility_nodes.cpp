@@ -140,9 +140,17 @@ BT::NodeStatus WaitForGpsFix::onStart()
 
   auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
   uint8_t current_fix = 0;
+  bool lidar_ok = false;
   {
     std::lock_guard<std::mutex> lock(ctx->context_mutex);
     current_fix = ctx->gps_fix_type;
+    lidar_ok = ctx->lidar_localization_ok;
+  }
+  if (lidar_ok)
+  {
+    RCLCPP_INFO(ctx->node->get_logger(),
+                "WaitForGpsFix: LiDAR is the primary source and localized — proceeding");
+    return BT::NodeStatus::SUCCESS;
   }
 
   if (static_cast<int>(current_fix) >= min_fix_type_)
@@ -167,9 +175,17 @@ BT::NodeStatus WaitForGpsFix::onRunning()
   auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
 
   uint8_t current_fix = 0;
+  bool lidar_ok = false;
   {
     std::lock_guard<std::mutex> lock(ctx->context_mutex);
     current_fix = ctx->gps_fix_type;
+    lidar_ok = ctx->lidar_localization_ok;
+  }
+  if (lidar_ok)
+  {
+    RCLCPP_INFO(ctx->node->get_logger(),
+                "WaitForGpsFix: LiDAR is the primary source and localized — proceeding");
+    return BT::NodeStatus::SUCCESS;
   }
 
   if (static_cast<int>(current_fix) >= min_fix_type_)

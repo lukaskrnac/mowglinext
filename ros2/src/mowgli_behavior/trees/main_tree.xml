@@ -398,7 +398,7 @@
            ================================================================ -->
       <Fallback name="GPSModeSelector">
         <Sequence name="PreciseMode">
-          <IsGPSFixed/>
+          <IsLocalizationPrecise/>
           <SetNavMode mode="precise"/>
         </Sequence>
         <SetNavMode mode="degraded"/>

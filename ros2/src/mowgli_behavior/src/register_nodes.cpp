@@ -39,6 +39,7 @@ void registerAllNodes(BT::BehaviorTreeFactory& factory)
   factory.registerNodeType<IsCommand>("IsCommand");
 
   factory.registerNodeType<IsGPSFixed>("IsGPSFixed");
+  factory.registerNodeType<IsLocalizationPrecise>("IsLocalizationPrecise");
   factory.registerNodeType<IsCoverageComplete>("IsCoverageComplete");
   factory.registerNodeType<ReplanNeeded>("ReplanNeeded");
   factory.registerNodeType<IsBoundaryViolation>("IsBoundaryViolation");

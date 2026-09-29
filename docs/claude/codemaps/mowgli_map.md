@@ -26,7 +26,7 @@
 | Obstacle de-duplication rule (centroid ε = 0.10 m) | `include/mowgli_map/internal_helpers.hpp` `kObstacleDedupEpsilonM` (L41), `has_duplicate_obstacle` (L78) |
 | Dig keepout size floor / default | `internal_helpers.hpp` `kDefaultDigKeepoutSizeM` (L48), `kMinDigKeepoutSizeM` (L52) |
 | Mow-progress stamping (blade-verified swept disc) | `map_server_node.cpp` `on_odom` (L624-717), `stamp_mow_progress` (L881); gate `include/mowgli_map/mow_progress.hpp` `GetMowProgressInhibitReason` (L32) |
-| `~/mow_progress` publish throttle / cache | `map_server_node.cpp` `on_publish_timer` (L842), `rebuild_mow_progress_cache` (L947) |
+| `~/mow_progress` publish throttle / cache | `map_server_node.cpp` `on_publish_timer`, `rebuild_mow_progress_cache`; decision `include/mowgli_map/mow_progress.hpp` `ShouldPublishMowProgress` |
 | Boundary violation (soft debounce vs lethal) | `progress_tracker.cpp` `check_boundary_violation` (L63); pure classifier `include/mowgli_map/boundary_classifier.hpp` `ClassifyBoundary` (L45) |
 | `~/get_recovery_point` pose computation | `progress_tracker.cpp` `on_get_recovery_point` (L155) |
 | Map grid geometry / resize to fit areas | `area_manager.cpp` `init_map` (L178), `resize_map_to_areas` (L202, 5 m margin L227) |
@@ -48,7 +48,7 @@
 | **`include/mowgli_map/`** | | |
 | `map_server_node.hpp` | 893 | `MapServerNode` class: `AreaEntry`/`ObstacleEntry`, all members, test-only accessors (L96-239) |
 | `map_types.hpp` | 84 | `CellType` enum, `cell_type_name`, `layers::OCCUPANCY/CLASSIFICATION`, defaults |
-| `mow_progress.hpp` | 86 | Header-only `MowProgressInhibitReason`, `GetMowProgressInhibitReason`, `SweepStepCount` |
+| `mow_progress.hpp` | 115 | Header-only `MowProgressInhibitReason`, `GetMowProgressInhibitReason`, `ShouldPublishMowProgress`, `SweepStepCount` |
 | `boundary_classifier.hpp` | 71 | Header-only `ClassifyBoundary` (soft debounce + undebounced lethal) |
 | `internal_helpers.hpp` | 153 | Package-private: dedup ε, dig size constants, `polygon_centroid`, `closest_edge_point`, `point_to_polygon_distance` |
 | `obstacle_tracker_node.hpp` | 277 | `ObstacleTrackerNode` class + `TrackedObstacle` struct; friend `ObstacleTrackerAlgorithmTest` |
@@ -131,7 +131,7 @@ Defaults: `ros2/src/mowgli_map/config/map_server.yaml` (`map_params`, `full_syst
 | `areas_file_path` | `""` (yaml: `/ros2_ws/maps/areas.dat`) | L78 | empty = no persistence at all |
 | `datum_lat`, `datum_lon` | 0/0 | L83-84 | 0/0 disables stamp + migration |
 | `robot_yaml_path` | `/ros2_ws/config/mowgli_robot.yaml` | L85 | dock-pose splice target; tests redirect |
-| `publish_rate`, `mow_progress_publish_period_s` | 1.0, 2.0 | L86-87 | |
+| `publish_rate`, `mow_progress_publish_period_s`, `mow_progress_republish_period_s` | 1.0, 2.0, 30.0 | L86-89 | a CHANGED overlay publishes at most every `mow_progress_publish_period_s`; an UNCHANGED one only every `mow_progress_republish_period_s` (keep-alive for subscribers that missed the transient_local sample; ≤ 0 disables). Decision: `mow_progress.hpp` `ShouldPublishMowProgress`. Republishing the unchanged grid every 2 s saturated the GUI's WiFi link |
 | `mow_progress_tool_frame`, `mow_progress_min_blade_rpm`, `mow_progress_blade_telemetry_max_age_s` | `blade_link`, 1000, 1.0 | L88-92 | all three gate stamping |
 | `keepout_nav_margin` | 0.45 | L93 | only honoured when `lethal_outside_areas=false` |
 | `lethal_outside_areas`, `enforce_boundary_margin_m` | true, 0.40 | L101-102 | outside slack band = mask 50, not 0 |

@@ -38,6 +38,8 @@
 #include <mutex>
 #include <optional>
 
+#include <std_msgs/msg/string.hpp>
+
 #include "fusion_graph/fusion_graph_node.hpp"
 #include "fusion_graph/lidar_covariance.hpp"
 #include <Eigen/Eigenvalues>
@@ -305,6 +307,31 @@ void FusionGraphNode::OnLidarPose(geometry_msgs::msg::PoseWithCovarianceStamped:
   const double mx = lmt_c * lx - lmt_s * ly + lmt.x;
   const double my = lmt_s * lx + lmt_c * ly + lmt.y;
 
+  // Every sample that passed the gates above, re-expressed in map_frame_.
+  // Consumers: the BT (fresh = "LiDAR localization usable") and
+  // gps_dock_detection_node (robot position for the dock approach when
+  // LiDAR is the primary source). Published whatever the primary source is.
+  if (pub_lidar_pose_map_)
+  {
+    const auto& qp = msg->pose.pose.orientation;
+    const double yaw_lm =
+        std::atan2(2.0 * (qp.w * qp.z + qp.x * qp.y), 1.0 - 2.0 * (qp.y * qp.y + qp.z * qp.z));
+    const double yaw_m = std::atan2(std::sin(yaw_lm + lmt.yaw), std::cos(yaw_lm + lmt.yaw));
+    geometry_msgs::msg::PoseWithCovarianceStamped out;
+    out.header.stamp = msg->header.stamp;
+    out.header.frame_id = map_frame_;
+    out.pose.pose.position.x = mx;
+    out.pose.pose.position.y = my;
+    out.pose.pose.orientation.z = std::sin(yaw_m / 2.0);
+    out.pose.pose.orientation.w = std::cos(yaw_m / 2.0);
+    out.pose.covariance[0] = cov(0, 0);
+    out.pose.covariance[1] = cov(0, 1);
+    out.pose.covariance[6] = cov(1, 0);
+    out.pose.covariance[7] = cov(1, 1);
+    out.pose.covariance[35] = msg->pose.covariance[35];
+    pub_lidar_pose_map_->publish(out);
+  }
+
   // The manual switch: only actually fuse into the graph while LiDAR is the
   // selected primary source. Health/covariance bookkeeping above still ran
   // unconditionally, so /fusion_graph/diagnostics shows LiDAR quality live
@@ -440,11 +467,24 @@ rcl_interfaces::msg::SetParametersResult FusionGraphNode::OnSetParameters(
   if (want_lidar.has_value())
   {
     primary_is_lidar_.store(*want_lidar, std::memory_order_relaxed);
+    PublishPrimarySource(*want_lidar);
     RCLCPP_INFO(get_logger(),
                 "fusion_graph: primary_localization_source -> %s",
                 *want_lidar ? "lidar" : "gps");
   }
   return result;
+}
+
+// Latched "gps" | "lidar" on /fusion_graph/primary_source — the one place
+// the rest of the stack (BT guards, dock detection) learns which absolute
+// source the graph is running on.
+void FusionGraphNode::PublishPrimarySource(bool lidar)
+{
+  if (!pub_primary_source_)
+    return;
+  std_msgs::msg::String m;
+  m.data = lidar ? "lidar" : "gps";
+  pub_primary_source_->publish(m);
 }
 
 // Static map -> lidar_map TF so the GLIM map, /pcl_pose and /path of the

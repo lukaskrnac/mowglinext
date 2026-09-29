@@ -409,6 +409,21 @@ struct BTContext
   bool gps_is_fixed{false};
 
   // -----------------------------------------------------------------------
+  // External LiDAR localization (fork: lidar_localization_ros2 + GLIM map)
+  // -----------------------------------------------------------------------
+
+  /// fusion_graph runs on LiDAR (/fusion_graph/primary_source == "lidar").
+  bool lidar_primary{false};
+  /// lidar_primary AND a gated map-frame LiDAR pose (/fusion_graph/lidar_pose)
+  /// arrived within the last second. Where a node would demand an RTK fix,
+  /// this stands in for it: the GPS gates below accept either.
+  bool lidar_localization_ok{false};
+  /// Latest gated LiDAR position in map frame and its receipt time (ROS s).
+  double lidar_x{0.0};
+  double lidar_y{0.0};
+  double lidar_pose_rx_s{-1.0};
+
+  // -----------------------------------------------------------------------
   // Localization quality flags (set by boundary/replan monitors)
   // -----------------------------------------------------------------------
 
@@ -491,6 +506,9 @@ struct BTContext
   // -----------------------------------------------------------------------
   double undock_start_x{0.0};
   double undock_start_y{0.0};
+  /// LiDAR position at undock start (used instead of GPS when LiDAR is primary).
+  double undock_start_lidar_x{0.0};
+  double undock_start_lidar_y{0.0};
   bool undock_start_recorded{false};
 
   /// GPS samples (map-frame x, y) accumulated by the GPS subscriber while

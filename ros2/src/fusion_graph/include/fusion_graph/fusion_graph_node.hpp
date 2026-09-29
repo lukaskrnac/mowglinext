@@ -33,6 +33,7 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <tf2_ros/buffer.hpp>
 #include <tf2_ros/static_transform_broadcaster.hpp>
 #include <tf2_ros/transform_broadcaster.hpp>
@@ -239,6 +240,11 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr
       pub_lidar_initialpose_;
   void MaybeSeedLidarLocalizer();
+  // /fusion_graph/primary_source (latched "gps"|"lidar") and
+  // /fusion_graph/lidar_pose (gated /pcl_pose in map_frame_).
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_primary_source_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pub_lidar_pose_map_;
+  void PublishPrimarySource(bool lidar);
 
   // Most recent wheel timestamp (for accumulator dt).
   std::optional<rclcpp::Time> last_wheel_stamp_;

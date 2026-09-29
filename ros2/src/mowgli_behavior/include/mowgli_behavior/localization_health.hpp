@@ -100,6 +100,7 @@ enum class LocalizationFault : uint8_t
   kGnssFixLost,  ///< no accuracy available AND the receiver reports no RTK solution
   kGnssStale,  ///< /gps/status stopped arriving
   kSigmaBackstop,  ///< fused σ_xy implausible for long enough to mean divergence
+  kLidarLost,  ///< LiDAR is the primary source and its gated pose stopped/unhealthy
 };
 
 struct LocalizationHealthCfg
@@ -212,6 +213,12 @@ struct LocalizationObservation
   double gnss_accuracy_m = -1.0;
   /// σ_xy from the fused pose covariance [m]; negative when unavailable.
   double fused_sigma_xy_m = -1.0;
+  /// fusion_graph runs on the external LiDAR localizer (primary_source ==
+  /// "lidar"). The guard then judges THAT source instead of the receiver —
+  /// and stays active even with no GNSS receiver at all.
+  bool lidar_primary = false;
+  /// A gated LiDAR pose (/fusion_graph/lidar_pose) arrived recently.
+  bool lidar_ok = false;
 };
 
 /// Latches "absolute position is not trustworthy" from GNSS solution quality,
@@ -230,11 +237,17 @@ public:
     // A guard that cannot observe its input must not block a bladed robot
     // from operating. Legacy bring-ups without a /gps/status publisher keep
     // mowing; BoundaryGuard still covers "the robot left the area".
-    if (!obs.gnss_seen)
+    if (!obs.gnss_seen && !obs.lidar_primary)
     {
       fault_ = LocalizationFault::kNone;
       return false;
     }
+
+    // LiDAR primary: the absolute source is the LiDAR localizer, so its
+    // health replaces the GNSS solution quality in the same latch (same
+    // pause/resume persistence). The σ backstop below is shared.
+    if (obs.lidar_primary)
+      return UpdateWithLidar(now_s, obs);
 
     const bool stale = !obs.gnss_fresh;
     const bool has_acc = obs.gnss_accuracy_m >= 0.0 && std::isfinite(obs.gnss_accuracy_m);
@@ -282,34 +295,8 @@ public:
           now_s, gnss_bad, gnss_good, cfg_.gnss_pause_persist_s, cfg_.gnss_resume_persist_s);
     }
 
-    // Divergence backstop. Disabled at 0, and skipped when σ is unavailable
-    // so a missing covariance never latches on its own.
-    bool sigma_degraded = false;
-    const bool was_sigma = sigma_latch_.latched();
-    if (cfg_.sigma_backstop_pause_m > 0.0 && obs.fused_sigma_xy_m >= 0.0 &&
-        std::isfinite(obs.fused_sigma_xy_m))
-    {
-      sigma_degraded = sigma_latch_.Update(now_s,
-                                           obs.fused_sigma_xy_m > cfg_.sigma_backstop_pause_m,
-                                           obs.fused_sigma_xy_m < cfg_.sigma_backstop_resume_m,
-                                           cfg_.sigma_backstop_persist_s,
-                                           cfg_.gnss_resume_persist_s);
-    }
-    else
-    {
-      sigma_degraded = was_sigma;
-    }
-
-    // Attribute the fault to whichever latch just closed; keep the existing
-    // attribution while both stay closed.
-    if (gnss_degraded && !was_gnss)
-      fault_ = pending;
-    else if (sigma_degraded && !was_sigma)
-      fault_ = LocalizationFault::kSigmaBackstop;
-    else if (!gnss_degraded && !sigma_degraded)
-      fault_ = LocalizationFault::kNone;
-
-    return gnss_degraded || sigma_degraded;
+    const bool sigma_degraded = UpdateSigmaBackstop(now_s, obs);
+    return Attribute(gnss_degraded, was_gnss, sigma_degraded, pending);
   }
 
   bool degraded() const
@@ -326,6 +313,59 @@ public:
   }
 
 private:
+  bool UpdateWithLidar(double now_s, const LocalizationObservation& obs)
+  {
+    const bool was_primary = gnss_latch_.latched();
+    const bool primary_degraded = gnss_latch_.Update(
+        now_s, !obs.lidar_ok, obs.lidar_ok, cfg_.gnss_pause_persist_s, cfg_.gnss_resume_persist_s);
+    const bool sigma_degraded = UpdateSigmaBackstop(now_s, obs);
+    return Attribute(primary_degraded,
+                     was_primary,
+                     sigma_degraded,
+                     obs.lidar_ok ? LocalizationFault::kNone : LocalizationFault::kLidarLost);
+  }
+
+  // Divergence backstop. Disabled at 0, and skipped when σ is unavailable
+  // so a missing covariance never latches on its own.
+  bool UpdateSigmaBackstop(double now_s, const LocalizationObservation& obs)
+  {
+    bool sigma_degraded = false;
+    const bool was_sigma = sigma_latch_.latched();
+    if (cfg_.sigma_backstop_pause_m > 0.0 && obs.fused_sigma_xy_m >= 0.0 &&
+        std::isfinite(obs.fused_sigma_xy_m))
+    {
+      sigma_degraded = sigma_latch_.Update(now_s,
+                                           obs.fused_sigma_xy_m > cfg_.sigma_backstop_pause_m,
+                                           obs.fused_sigma_xy_m < cfg_.sigma_backstop_resume_m,
+                                           cfg_.sigma_backstop_persist_s,
+                                           cfg_.gnss_resume_persist_s);
+    }
+    else
+    {
+      sigma_degraded = was_sigma;
+    }
+    sigma_was_ = was_sigma;
+    return sigma_degraded;
+  }
+
+  // Attribute the fault to whichever latch just closed; keep the existing
+  // attribution while both stay closed.
+  bool Attribute(bool primary_degraded,
+                 bool was_primary,
+                 bool sigma_degraded,
+                 LocalizationFault pending)
+  {
+    if (primary_degraded && !was_primary)
+      fault_ = pending;
+    else if (sigma_degraded && !sigma_was_)
+      fault_ = LocalizationFault::kSigmaBackstop;
+    else if (!primary_degraded && !sigma_degraded)
+      fault_ = LocalizationFault::kNone;
+
+    return primary_degraded || sigma_degraded;
+  }
+
+  bool sigma_was_ = false;
   LocalizationHealthCfg cfg_{};
   PersistentLatch gnss_latch_{};
   PersistentLatch sigma_latch_{};
@@ -345,6 +385,8 @@ inline const char* LocalizationFaultName(LocalizationFault fault)
       return "GNSS feed stale";
     case LocalizationFault::kSigmaBackstop:
       return "fused-sigma divergence backstop";
+    case LocalizationFault::kLidarLost:
+      return "LiDAR localization lost";
     case LocalizationFault::kNone:
     default:
       return "none";

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -352,6 +353,39 @@ func PublisherRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 	})
 }
 
+// encodeMultiplexFrame builds one binary /multiplex frame: the MessagePack
+// encoding of {topic, data}, where data is the per-message snake_case JSON
+// produced upstream, decoded to a generic value so the browser does ONE fast
+// msgpack decode instead of JSON.parse(envelope) → atob → JSON.parse(payload)
+// on its main thread. Field names are preserved, so the frontend TS
+// interfaces are unchanged.
+//
+// Compact encoding is load-bearing: json.Unmarshal into interface{} turns
+// every number into a float64, which msgpack writes as 9 bytes by default. For
+// an OccupancyGrid (mowProgress: one int8 per cell, ~300k cells for a small
+// garden) that inflated a ~300 kB ROS message to a ~2.6 MB frame — 3.4× the
+// JSON and ~9× the ROS size — saturating the WiFi link, delaying teleop past
+// cmd_vel_ws_relay's command lease and stalling the browser's main thread.
+// UseCompactInts/UseCompactFloats write integral values in the smallest
+// msgpack int form (1 byte for 0..127) and are decoded to the same JS numbers.
+func encodeMultiplexFrame(topic string, data []byte) ([]byte, error) {
+	var obj interface{}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	enc := msgpack.NewEncoder(&buf)
+	enc.UseCompactInts(true)
+	enc.UseCompactFloats(true)
+	if err := enc.Encode(map[string]interface{}{
+		"topic": topic,
+		"data":  obj,
+	}); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 // MultiplexRoute multiplexes any number of topic subscriptions over one
 // WebSocket so a single browser tab does not need ~25 simultaneous TCP
 // connections. Wire format:
@@ -382,22 +416,9 @@ func MultiplexRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 
 		var writeMu sync.Mutex
 		writeFrame := func(topic string, data []byte) {
-			// Re-encode the frame as MessagePack and send it as a BINARY frame.
-			// `data` is the per-message snake_case JSON produced upstream; we
-			// decode it to a generic value and msgpack-encode {topic, data:obj}
-			// so the browser does ONE fast msgpack decode instead of
-			// JSON.parse(envelope) → atob → JSON.parse(payload) on the main
-			// thread. Field names (snake_case) are preserved, so the frontend
-			// TS interfaces are unchanged. The JSON→obj cost moves to Go (fast,
-			// off the browser's single thread).
-			var obj interface{}
-			if err := json.Unmarshal(data, &obj); err != nil {
-				return
-			}
-			payload, err := msgpack.Marshal(map[string]interface{}{
-				"topic": topic,
-				"data":  obj,
-			})
+			// Re-encode the frame as compact MessagePack and send it as a
+			// BINARY frame (see encodeMultiplexFrame).
+			payload, err := encodeMultiplexFrame(topic, data)
 			if err != nil {
 				return
 			}

@@ -102,3 +102,22 @@ stále a GLIM sa spúšťa len na požiadanie:
   `lidar_localization` a sprav kalibráciu LiDAR mapy znova.
 
 Lokalizátor sa pri mapovaní nevypína. Podmienky (GPS, dok) sa nekontrolujú.
+## Prevádzka bez GPS (LiDAR ako primárny zdroj)
+
+`fusion_graph` publikuje `/fusion_graph/primary_source` (`gps`|`lidar`, latched) a
+každú LiDAR pózu, ktorá prešla jeho kontrolami, ako `/fusion_graph/lidar_pose`
+(frame `map`). Keď je zdroj `lidar` a táto póza je čerstvá (< 1 s), berie sa to
+ako „lokalizácia v poriadku“ všade, kde MowgliNext inak žiada GPS:
+
+| Miesto | Pri zdroji `lidar` |
+|---|---|
+| `LocalizationGuard` | stráži LiDAR (výpadok > 3 s = pauza), funguje aj bez GPS prijímača; σ-backstop ostáva |
+| `PreFlightCheck` | GPS fix nie je potrebný |
+| `WaitForGpsFix` | hneď pokračuje |
+| `SeedYawFromMotion` | preskočí sa (smer pozná LiDAR) |
+| `CalibrateHeadingFromUndock` | len kontrola „zaseknutý v doku“ podľa LiDAR posunu, žiadne GPS spresnenie |
+| `GPSModeSelector` | `IsLocalizationPrecise` = RTK Fixed **alebo** LiDAR OK |
+| `gps_dock_detection_node` | poloha robota pre dokovanie z LiDARu namiesto RTK |
+
+Pri zdroji `gps` sa správanie nemení. Detektor zabárania (hardware_bridge) bez RTK
+naďalej stojí — chráni len anti-dig vo firmvéri.

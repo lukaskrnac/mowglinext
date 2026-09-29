@@ -254,6 +254,7 @@ target_link_libraries(gps_dock_detection_node
   ${tf2_TARGETS}
   ${tf2_ros_TARGETS}
   ${tf2_geometry_msgs_TARGETS}
+  ${std_msgs_TARGETS}
   ${mowgli_interfaces_TARGETS}
 )
 

@@ -87,6 +87,8 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
   robot_yaml_path_ = declare_parameter<std::string>("robot_yaml_path", kRuntimeRobotYaml);
   publish_rate_ = declare_parameter<double>("publish_rate", 1.0);
   mow_progress_publish_period_s_ = declare_parameter<double>("mow_progress_publish_period_s", 2.0);
+  mow_progress_republish_period_s_ =
+      declare_parameter<double>("mow_progress_republish_period_s", 30.0);
   mow_progress_tool_frame_ =
       declare_parameter<std::string>("mow_progress_tool_frame", "blade_link");
   mow_progress_min_blade_rpm_ = declare_parameter<double>("mow_progress_min_blade_rpm", 1000.0);
@@ -920,12 +922,21 @@ void MapServerNode::on_publish_timer()
       masks_dirty_ = false;
     }
 
-    // Rebuild the full-extent OccupancyGrid only after coverage changed, then
-    // republish that cached message at the existing throttle interval. Foxglove
-    // WebSocket reconnects do not reliably receive transient_local history.
+    // Rebuild and publish the full-extent OccupancyGrid only after coverage
+    // changed (throttled to mow_progress_publish_period_s), plus a slow
+    // keep-alive of the cached grid for subscribers that missed the
+    // transient_local sample (foxglove_bridge reconnects). See
+    // ShouldPublishMowProgress for why an unchanged grid is not republished at
+    // the fast period.
     const rclcpp::Time now_t = now();
-    if (last_mow_progress_pub_time_.nanoseconds() == 0 ||
-        (now_t - last_mow_progress_pub_time_).seconds() >= mow_progress_publish_period_s_)
+    const bool never_published = last_mow_progress_pub_time_.nanoseconds() == 0;
+    const double since_last_publish_s =
+        never_published ? 0.0 : (now_t - last_mow_progress_pub_time_).seconds();
+    if (ShouldPublishMowProgress(never_published,
+                                 mow_progress_dirty_,
+                                 since_last_publish_s,
+                                 mow_progress_publish_period_s_,
+                                 mow_progress_republish_period_s_))
     {
       if (mow_progress_dirty_)
       {

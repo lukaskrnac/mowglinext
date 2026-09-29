@@ -817,10 +817,13 @@ private:
   /// updates so reconnecting WebSocket clients receive the current overlay.
   nav_msgs::msg::OccupancyGrid mow_progress_cache_;
   bool mow_progress_cache_valid_{false};
-  /// Throttle for cached mowed-overlay publication. Conversion remains O(cells)
-  /// only when the progress map is dirty; unchanged cached grids are cheap to
-  /// republish at this interval for GUI reconnect reliability.
+  /// Minimum interval between publications of a CHANGED mowed overlay.
   double mow_progress_publish_period_s_{2.0};
+  /// Keep-alive interval for republishing an UNCHANGED cached overlay (for
+  /// subscribers that missed the transient_local sample). Each publication is
+  /// O(cells) on the wire, so this must stay much slower than the period
+  /// above; <= 0 disables it. See ShouldPublishMowProgress.
+  double mow_progress_republish_period_s_{30.0};
   rclcpp::Time last_mow_progress_pub_time_{0, 0, RCL_ROS_TIME};
 
   std::string mow_progress_tool_frame_{"blade_link"};

@@ -14,6 +14,7 @@ namespace
 
 using mowgli_map::GetMowProgressInhibitReason;
 using mowgli_map::MowProgressInhibitReason;
+using mowgli_map::ShouldPublishMowProgress;
 
 TEST(MowProgress, RequiresFreshVerifiedBladeActivity)
 {
@@ -78,6 +79,41 @@ TEST(MowProgress, DoesNotSweepAcrossAProgressReset)
   rclcpp::shutdown();
 }
 
+TEST(MowProgress, PublishesTheFirstGridImmediately)
+{
+  EXPECT_TRUE(ShouldPublishMowProgress(true, false, 0.0, 2.0, 30.0));
+  EXPECT_TRUE(ShouldPublishMowProgress(true, true, 0.0, 2.0, 30.0));
+}
+
+TEST(MowProgress, PublishesChangedCoverageAtTheFastPeriod)
+{
+  EXPECT_FALSE(ShouldPublishMowProgress(false, true, 1.9, 2.0, 30.0));
+  EXPECT_TRUE(ShouldPublishMowProgress(false, true, 2.0, 2.0, 30.0));
+  EXPECT_TRUE(ShouldPublishMowProgress(false, true, 45.0, 2.0, 30.0));
+}
+
+TEST(MowProgress, DoesNotRepublishAnUnchangedGridAtTheFastPeriod)
+{
+  // Regression: an unchanged full-extent grid republished every 2 s
+  // (~300 kB CDR, several MB per GUI frame) saturated the WiFi link with the
+  // robot idle on the dock.
+  EXPECT_FALSE(ShouldPublishMowProgress(false, false, 2.0, 2.0, 30.0));
+  EXPECT_FALSE(ShouldPublishMowProgress(false, false, 29.9, 2.0, 30.0));
+}
+
+TEST(MowProgress, RepublishesAnUnchangedGridOnTheKeepAlive)
+{
+  EXPECT_TRUE(ShouldPublishMowProgress(false, false, 30.0, 2.0, 30.0));
+}
+
+TEST(MowProgress, KeepAliveCanBeDisabled)
+{
+  EXPECT_FALSE(ShouldPublishMowProgress(false, false, 1.0e6, 2.0, 0.0));
+  EXPECT_FALSE(ShouldPublishMowProgress(false, false, 1.0e6, 2.0, -1.0));
+  // Changed coverage still publishes with the keep-alive off.
+  EXPECT_TRUE(ShouldPublishMowProgress(false, true, 2.0, 2.0, 0.0));
+}
+
 TEST(MowProgress, CachesChangedCoverageAndInvalidatesItOnReset)
 {
   rclcpp::init(0, nullptr);
@@ -89,8 +125,8 @@ TEST(MowProgress, CachesChangedCoverageAndInvalidatesItOnReset)
   node->publish_mow_progress_for_test();
   EXPECT_TRUE(node->mow_progress_cache_valid_for_test());
 
-  // No coverage changed, but the timer may still republish the cached grid for
-  // a reconnecting GUI. The cache remains valid and requires no rebuild.
+  // No coverage changed: the timer only republishes the cached grid on its
+  // slow keep-alive. The cache remains valid and requires no rebuild.
   node->publish_mow_progress_for_test();
   EXPECT_TRUE(node->mow_progress_cache_valid_for_test());
 

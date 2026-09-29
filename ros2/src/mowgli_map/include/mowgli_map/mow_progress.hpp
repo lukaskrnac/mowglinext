@@ -72,6 +72,35 @@ inline const char* ToString(MowProgressInhibitReason reason)
   return "unknown";
 }
 
+/// Decide whether the ~/mow_progress overlay is due for publication.
+///
+/// The overlay is a full-extent OccupancyGrid (bounding box of every area plus
+/// a 5 m margin, at map resolution), so every publication is O(cells) on the
+/// wire: ~300 kB for a small garden, >1 MB for a large one. It is therefore
+/// published when coverage changed (at most once per `publish_period_s`), plus
+/// a slow keep-alive every `republish_period_s` for subscribers that missed the
+/// transient_local sample (a foxglove_bridge reconnect). Republishing an
+/// unchanged grid at `publish_period_s` saturated the WiFi link of every open
+/// GUI tab even with the robot idle on the dock.
+///
+/// `republish_period_s <= 0` disables the keep-alive.
+inline bool ShouldPublishMowProgress(bool never_published,
+                                     bool dirty,
+                                     double since_last_publish_s,
+                                     double publish_period_s,
+                                     double republish_period_s)
+{
+  if (never_published)
+  {
+    return true;
+  }
+  if (dirty)
+  {
+    return since_last_publish_s >= publish_period_s;
+  }
+  return republish_period_s > 0.0 && since_last_publish_s >= republish_period_s;
+}
+
 /// Number of evenly spaced disc centres needed to cover a segment without a
 /// gap larger than one grid cell. The endpoint is included by callers.
 inline std::size_t SweepStepCount(double distance, double resolution)

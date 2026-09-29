@@ -219,6 +219,21 @@ var foxgloveAdapters = map[string]func([]byte) ([]byte, error){
 	"lidar":      adaptLidar,
 }
 
+// retainedTopics stay subscribed upstream, with their last message cached,
+// for the whole life of the process — even with no downstream listener —
+// instead of following the lazy subscribe/unsubscribe policy above.
+//
+// mowProgress is large (a full-extent OccupancyGrid) and changes rarely:
+// map_server_node publishes it only when coverage changed, plus a slow
+// keep-alive (mow_progress_republish_period_s). A lazily re-created upstream
+// subscription would leave a freshly opened map page without the mowed overlay
+// until the next change or keep-alive, because foxglove_bridge does not
+// reliably replay transient_local history on subscribe. Keeping it warm costs
+// one CDR→JSON decode per publication, i.e. nothing while the robot is idle.
+var retainedTopics = map[string]bool{
+	"mowProgress": true,
+}
+
 // upstreamDecimationMs caps the rate at which high-frequency topics are
 // deserialized from the foxglove bridge. The GUI throttles these to ~10 Hz
 // downstream anyway (topicSubscribeInterval), so deserializing /imu at 100 Hz
@@ -266,6 +281,7 @@ func NewRosProvider(dbProvider types2.IDBProvider) types2.IRosProvider {
 			logrus.Errorf("RosProvider: foxglove initial connect failed: %v", err)
 		}
 		r.initDockPoseSubscription()
+		r.initRetainedSubscriptions()
 		r.initMapPolling()
 	}()
 
@@ -314,6 +330,16 @@ func (r *RosProvider) ensureFoxgloveSubscribed(logicalKey string) {
 	logrus.Infof("RosProvider: subscribed to %s as '%s'", def.ROS2Topic, key)
 }
 
+// initRetainedSubscriptions subscribes every retainedTopics key upstream at
+// startup so its cache is warm before the first browser asks for it.
+func (r *RosProvider) initRetainedSubscriptions() {
+	r.mtx.Lock()
+	defer r.mtx.Unlock()
+	for key := range retainedTopics {
+		r.ensureFoxgloveSubscribed(key)
+	}
+}
+
 // maybeUnsubscribeFoxglove drops the upstream foxglove subscription for
 // logicalKey if no downstream listeners remain. Caller must hold r.mtx.
 func (r *RosProvider) maybeUnsubscribeFoxglove(logicalKey string) {
@@ -321,6 +347,9 @@ func (r *RosProvider) maybeUnsubscribeFoxglove(logicalKey string) {
 		return
 	}
 	if subs := r.subscribers[logicalKey]; len(subs) > 0 {
+		return
+	}
+	if retainedTopics[logicalKey] {
 		return
 	}
 	def, ok := topicMap[logicalKey]

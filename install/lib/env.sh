@@ -87,10 +87,18 @@ env_yaml_value() {
   printf '%s\n' "$value"
 }
 
+# The GNSS_NTRIP_* keys in docker/.env are fallback-only first-boot defaults
+# (the sidecar resolves mowgli_robot.yaml first). They mirror the runtime
+# yaml when it exists and the SPARSE SEED before the first write, so a
+# re-run never changes them: NTRIP is GUI-owned and the installer no longer
+# has an opinion of its own.
 load_gnss_ntrip_runtime_defaults() {
   local yaml_file="$DOCKER_DIR/config/mowgli/mowgli_robot.yaml"
   local yaml_enabled yaml_host yaml_port yaml_user yaml_password yaml_mountpoint
 
+  if [[ ! -f "$yaml_file" ]]; then
+    yaml_file="$INSTALL_DIR/config/mowgli/mowgli_robot.yaml"
+  fi
   if [[ ! -f "$yaml_file" ]]; then
     return 0
   fi
@@ -140,23 +148,16 @@ load_gnss_ntrip_runtime_defaults() {
 }
 
 sync_gnss_env_contract_values() {
-  local normalized_status_source
-
   load_gnss_ntrip_runtime_defaults
 
   GNSS_STACK="$(effective_gnss_stack 2>/dev/null || default_gnss_stack)"
-  normalized_status_source="$(normalize_gnss_status_source "${GNSS_STATUS_SOURCE:-$(default_gnss_status_source)}")"
 
   case "$GNSS_STACK" in
     disabled)
       GNSS_STATUS_SOURCE="external"
       ;;
     *)
-      if [[ "$normalized_status_source" == "external" && "${HARDWARE_BACKEND:-mowgli}" == "mavros" ]]; then
-        GNSS_STATUS_SOURCE="external"
-      else
-        GNSS_STATUS_SOURCE="universal"
-      fi
+      GNSS_STATUS_SOURCE="universal"
       ;;
   esac
 
@@ -165,8 +166,22 @@ sync_gnss_env_contract_values() {
   GNSS_SERIAL_DEVICE="$(gnss_serial_device_from_state)"
   GNSS_SERIAL_BAUD="$(gnss_serial_baud_from_state)"
   GNSS_FRAME_ID="${GNSS_FRAME_ID:-gps_link}"
+  # The sidecar opens whatever gnss_serial_device names in mowgli_robot.yaml;
+  # compose only needs the GROUP that owns that tty (dialout, normally 20).
+  : "${GNSS_DEVICE_GID:=20}"
+  if [[ -n "$GNSS_SERIAL_DEVICE" && -e "$GNSS_SERIAL_DEVICE" ]]; then
+    GNSS_DEVICE_GID="$(stat -Lc '%g' -- "$GNSS_SERIAL_DEVICE")"
+  fi
 
-  : "${GNSS_NTRIP_ENABLED:=${CONFIG_NTRIP_ENABLED:-true}}"
+  if [[ "${CONFIG_NTRIP_ENABLED_EXPLICIT:-false}" == "true" ]]; then
+    if [[ "${CONFIG_NTRIP_ENABLED_EXPLICIT:-false}" == "true" ]]; then
+    GNSS_NTRIP_ENABLED="${CONFIG_NTRIP_ENABLED:-true}"
+  else
+    : "${GNSS_NTRIP_ENABLED:=${CONFIG_NTRIP_ENABLED:-true}}"
+  fi
+  else
+    : "${GNSS_NTRIP_ENABLED:=${CONFIG_NTRIP_ENABLED:-true}}"
+  fi
   : "${GNSS_NTRIP_HOST:=${CONFIG_NTRIP_HOST:-crtk.net}}"
   : "${GNSS_NTRIP_PORT:=${CONFIG_NTRIP_PORT:-2101}}"
   GNSS_NTRIP_USERNAME="${GNSS_NTRIP_USERNAME:-${CONFIG_NTRIP_USER:-}}"
@@ -196,6 +211,7 @@ write_gnss_env_contract_keys() {
   upsert_env_key "$env_file" "GNSS_SERIAL_DEVICE" "$GNSS_SERIAL_DEVICE"
   upsert_env_key "$env_file" "GNSS_SERIAL_BAUD" "$GNSS_SERIAL_BAUD"
   upsert_env_key "$env_file" "GNSS_FRAME_ID" "$GNSS_FRAME_ID"
+  upsert_env_key "$env_file" "GNSS_DEVICE_GID" "$GNSS_DEVICE_GID"
   upsert_env_key "$env_file" "GNSS_NTRIP_ENABLED" "$GNSS_NTRIP_ENABLED"
   upsert_env_key "$env_file" "GNSS_NTRIP_HOST" "$GNSS_NTRIP_HOST"
   upsert_env_key "$env_file" "GNSS_NTRIP_PORT" "$GNSS_NTRIP_PORT"
@@ -217,6 +233,17 @@ setup_env() {
   : "${MOWER_IP:=10.0.0.161}"
   : "${DISABLE_BLUETOOTH:=true}"
   : "${ENABLE_FOXGLOVE:=true}"
+  # mosquitto broker (Home Assistant / MQTT integrations): opt-in on a fresh
+  # install, but an existing install keeps the broker it already runs — the
+  # toggle did not exist before 2026-09-29, so an absent key must not switch
+  # off a Home Assistant integration on the next update.
+  if [[ -z "${ENABLE_MQTT:-}" ]]; then
+    if grep -qs 'mowgli-mqtt' "$FINAL_COMPOSE_FILE" 2>/dev/null; then
+      ENABLE_MQTT="true"
+    else
+      ENABLE_MQTT="false"
+    fi
+  fi
 
   # Main GNSS receiver.
   # docker/.env now carries fallback-only GNSS defaults for first boot and
@@ -230,6 +257,7 @@ setup_env() {
   : "${GNSS_SERIAL_DEVICE:=}"
   : "${GNSS_SERIAL_BAUD:=}"
   : "${GNSS_FRAME_ID:=gps_link}"
+  : "${GNSS_DEVICE_GID:=20}"
   : "${GNSS_NTRIP_ENABLED:=}"
   : "${GNSS_NTRIP_HOST:=}"
   : "${GNSS_NTRIP_PORT:=}"
@@ -254,17 +282,6 @@ setup_env() {
     : "${LIDAR_BAUD:=230400}"
   fi
 
-  # TF-Luna
-  : "${TFLUNA_FRONT_ENABLED:=false}"
-  : "${TFLUNA_FRONT_PORT:=/dev/tfluna_front}"
-  : "${TFLUNA_FRONT_UART_DEVICE:=/dev/ttyAMA3}"
-  : "${TFLUNA_FRONT_BAUD:=115200}"
-
-  : "${TFLUNA_EDGE_ENABLED:=false}"
-  : "${TFLUNA_EDGE_PORT:=/dev/tfluna_edge}"
-  : "${TFLUNA_EDGE_UART_DEVICE:=/dev/ttyAMA2}"
-  : "${TFLUNA_EDGE_BAUD:=115200}"
-
   # Image tag — re-validate IMAGE_TAG (might have been loaded from .env
   # by load_env_defaults_file or set by --image-tag=/preset) and rebuild the
   # *_IMAGE_DEFAULT vars to match. mowglinext.sh unsets all *_IMAGE values
@@ -278,7 +295,7 @@ setup_env() {
 
   # Images — select LiDAR image based on type
   : "${MOWGLI_ROS2_IMAGE:=${MOWGLI_ROS2_IMAGE_DEFAULT}}"
-  : "${GPS_IMAGE:=${GPS_IMAGE_DEFAULT}}"
+  : "${UNIVERSAL_GNSS_IMAGE:=${UNIVERSAL_GNSS_IMAGE_DEFAULT}}"
   : "${GUI_IMAGE:=${GUI_IMAGE_DEFAULT}}"
   : "${MAVROS_IMAGE:=${MAVROS_IMAGE_DEFAULT}}"
   if [[ -z "${LIDAR_IMAGE:-}" ]]; then
@@ -299,11 +316,7 @@ setup_env() {
   : "${MAVROS_TGT_SYSTEM:=1}"
   : "${MAVROS_TGT_COMPONENT:=1}"
 
-  # Si MAVROS → GNSS backend désactivé
-  if [[ "$HARDWARE_BACKEND" == "mavros" ]]; then
-    GNSS_BACKEND="disabled"
-    GNSS_STACK="disabled"
-  elif [[ "${GNSS_BACKEND:-universal}" == "nmea" ]]; then
+  if [[ "${GNSS_BACKEND:-universal}" == "nmea" ]]; then
     warn_legacy_nmea_backend_once
     GNSS_BACKEND="universal"
     GNSS_RECEIVER_FAMILY="nmea"
@@ -326,6 +339,8 @@ setup_env() {
   upsert_env_key "$env_file" "MOWER_IP" "$MOWER_IP"
   upsert_env_key "$env_file" "DISABLE_BLUETOOTH" "$DISABLE_BLUETOOTH"
   upsert_env_key "$env_file" "ENABLE_FOXGLOVE" "$ENABLE_FOXGLOVE"
+  upsert_env_key "$env_file" "ENABLE_MQTT" "$ENABLE_MQTT"
+  remove_env_key "$env_file" "ENABLE_WATCHTOWER"
   upsert_env_key "$env_file" "IMAGE_TAG" "$IMAGE_TAG"
 
   upsert_env_key "$env_file" "GNSS_BACKEND" "$(effective_gnss_backend 2>/dev/null || printf 'universal\n')"
@@ -340,18 +355,16 @@ setup_env() {
   upsert_env_key "$env_file" "LIDAR_UART_DEVICE" "$LIDAR_UART_DEVICE"
   upsert_env_key "$env_file" "LIDAR_BAUD" "$LIDAR_BAUD"
 
-  upsert_env_key "$env_file" "TFLUNA_FRONT_ENABLED" "$TFLUNA_FRONT_ENABLED"
-  upsert_env_key "$env_file" "TFLUNA_FRONT_PORT" "$TFLUNA_FRONT_PORT"
-  upsert_env_key "$env_file" "TFLUNA_FRONT_UART_DEVICE" "$TFLUNA_FRONT_UART_DEVICE"
-  upsert_env_key "$env_file" "TFLUNA_FRONT_BAUD" "$TFLUNA_FRONT_BAUD"
-
-  upsert_env_key "$env_file" "TFLUNA_EDGE_ENABLED" "$TFLUNA_EDGE_ENABLED"
-  upsert_env_key "$env_file" "TFLUNA_EDGE_PORT" "$TFLUNA_EDGE_PORT"
-  upsert_env_key "$env_file" "TFLUNA_EDGE_UART_DEVICE" "$TFLUNA_EDGE_UART_DEVICE"
-  upsert_env_key "$env_file" "TFLUNA_EDGE_BAUD" "$TFLUNA_EDGE_BAUD"
+  # Retired hardware options (TF-Luna, VESC) are scrubbed from older .env
+  # files so a stale key can never re-select a fragment that no longer exists.
+  remove_env_keys_with_prefix "$env_file" "TFLUNA_"
+  remove_env_key "$env_file" "ENABLE_VESC"
+  remove_env_key "$env_file" "VESC_IMAGE"
+  remove_env_key "$env_file" "VESC_CAN_INTERFACE"
+  remove_env_key "$env_file" "RANGE_IMAGE"
 
   upsert_env_key "$env_file" "MOWGLI_ROS2_IMAGE" "$MOWGLI_ROS2_IMAGE"
-  upsert_env_key "$env_file" "GPS_IMAGE" "$GPS_IMAGE"
+  upsert_env_key "$env_file" "UNIVERSAL_GNSS_IMAGE" "$UNIVERSAL_GNSS_IMAGE"
   upsert_env_key "$env_file" "LIDAR_IMAGE" "$LIDAR_IMAGE"
   upsert_env_key "$env_file" "MAVROS_IMAGE" "$MAVROS_IMAGE"
   upsert_env_key "$env_file" "GUI_IMAGE" "$GUI_IMAGE"
@@ -367,8 +380,11 @@ setup_env() {
   upsert_env_key "$env_file" "MAVROS_AUTOPILOT" "$MAVROS_AUTOPILOT"
 
   remove_legacy_gnss_env_keys "$env_file"
+  remove_env_key "$env_file" "GPS_IMAGE"
   remove_env_key "$env_file" "NMEA_IMAGE"
-  
+
   info "Backend selection : HARDWARE_BACKEND=$HARDWARE_BACKEND GNSS_BACKEND=$GNSS_BACKEND GNSS_STACK=$GNSS_STACK"
   info "Updated $env_file"
+
+  prune_backup_if_unchanged "$env_file" "${MIGRATED_ENV_BACKUP:-}"
 }

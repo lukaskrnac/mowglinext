@@ -768,6 +768,37 @@ func TestApplyUniversalGnssCompatibility_DeletesEmptyNormalizedReceiverModel(t *
 	assert.False(t, exists)
 }
 
+func TestApplyUniversalGnssCompatibility_RemovesUnicoreOverridesForUblox(t *testing.T) {
+	flat := map[string]any{
+		"gnss_receiver_family":    "ublox",
+		"gnss_receiver_model":     "UM982",
+		"gnss_signal_group":       "3 6",
+		"gnss_rover_dynamic_mode": "uav",
+	}
+
+	applyUniversalGnssCompatibility(flat, gnssTestSchemaDefaults())
+
+	for _, key := range []string{"gnss_receiver_model", "gnss_signal_group", "gnss_rover_dynamic_mode"} {
+		_, exists := flat[key]
+		assert.False(t, exists, key)
+	}
+}
+
+func TestApplyUniversalGnssCompatibility_PreservesUnicoreOverridesForAuto(t *testing.T) {
+	flat := map[string]any{
+		"gnss_receiver_family":    "auto",
+		"gnss_receiver_model":     "UM982",
+		"gnss_signal_group":       "3 6",
+		"gnss_rover_dynamic_mode": "uav",
+	}
+
+	applyUniversalGnssCompatibility(flat, gnssTestSchemaDefaults())
+
+	assert.Equal(t, "UM982", flat["gnss_receiver_model"])
+	assert.Equal(t, "3 6", flat["gnss_signal_group"])
+	assert.Equal(t, "uav", flat["gnss_rover_dynamic_mode"])
+}
+
 func TestPostSettingsYAML_DoesNotMaterializeAbsentGnssDefaults(t *testing.T) {
 	// Use the real schema so this proves the fix against the actual schema
 	// defaults, not a test stub.
@@ -1079,6 +1110,77 @@ func TestPostSettingsYAML_ResetToDefault(t *testing.T) {
 	content, err := os.ReadFile(yamlFile)
 	require.NoError(t, err)
 	assert.NotContains(t, string(content), "mowing_speed:")
+	assert.Contains(t, string(content), "datum_lat: 48.123")
+}
+
+func TestPostSettingsYAML_ExplicitDeleteSchemaDefault(t *testing.T) {
+	chdirToGuiRoot(t)
+	resetSchemaCache()
+	t.Cleanup(resetSchemaCache)
+
+	yamlFile := createTempYAMLFileAtGuiRoot(t, `mowgli:
+  ros__parameters:
+    mowing_speed: 0.55
+    transit_speed: 0.25
+    datum_lat: 48.123
+`)
+	envFile := createTempConfigFileAtGuiRoot(t, "")
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+	db.Set("system.mower.runtimeEnvFile", []byte(envFile))
+	router := setupSettingsRouter(db)
+
+	body, err := json.Marshal(map[string]any{
+		"mowing_speed":  nil,
+		"transit_speed": 0.5,
+	})
+	require.NoError(t, err)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings/yaml", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	content, err := os.ReadFile(yamlFile)
+	require.NoError(t, err)
+	assert.NotContains(t, string(content), "mowing_speed:")
+	assert.Contains(t, string(content), "transit_speed: 0.5")
+	assert.Contains(t, string(content), "datum_lat: 48.123")
+}
+
+func TestPostSettingsYAML_ExplicitDeleteCustomKey(t *testing.T) {
+	chdirToGuiRoot(t)
+	resetSchemaCache()
+	t.Cleanup(resetSchemaCache)
+
+	yamlFile := createTempYAMLFileAtGuiRoot(t, `mowgli:
+  ros__parameters:
+    advanced_custom_parameter: 42
+    mowing_speed: 0.55
+    datum_lat: 48.123
+`)
+	envFile := createTempConfigFileAtGuiRoot(t, "")
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+	db.Set("system.mower.runtimeEnvFile", []byte(envFile))
+	router := setupSettingsRouter(db)
+
+	body, err := json.Marshal(map[string]any{"advanced_custom_parameter": nil})
+	require.NoError(t, err)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings/yaml", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	content, err := os.ReadFile(yamlFile)
+	require.NoError(t, err)
+	assert.NotContains(t, string(content), "advanced_custom_parameter:")
+	assert.Contains(t, string(content), "mowing_speed: 0.55")
 	assert.Contains(t, string(content), "datum_lat: 48.123")
 }
 

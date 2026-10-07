@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.22.1)
 project(mowgli_monitoring)
 
 # ---------------------------------------------------------------------------
@@ -22,6 +22,7 @@ find_package(rclcpp REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(nav2_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(mowgli_interfaces REQUIRED)
 
@@ -84,6 +85,7 @@ target_link_libraries(mowgli_monitoring_core
   ${diagnostic_msgs_TARGETS}
   ${sensor_msgs_TARGETS}
   ${nav_msgs_TARGETS}
+  ${nav2_msgs_TARGETS}
   ${geometry_msgs_TARGETS}
   ${mowgli_interfaces_TARGETS}
 )
@@ -112,6 +114,7 @@ target_link_libraries(diagnostics_node
   ${diagnostic_msgs_TARGETS}
   ${sensor_msgs_TARGETS}
   ${nav_msgs_TARGETS}
+  ${nav2_msgs_TARGETS}
   ${geometry_msgs_TARGETS}
   ${mowgli_interfaces_TARGETS}
 )
@@ -133,6 +136,7 @@ target_link_libraries(mqtt_bridge_node
   ${diagnostic_msgs_TARGETS}
   ${sensor_msgs_TARGETS}
   ${nav_msgs_TARGETS}
+  ${nav2_msgs_TARGETS}
   ${geometry_msgs_TARGETS}
   ${mowgli_interfaces_TARGETS}
 )
@@ -172,8 +176,12 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 
   find_package(ament_cmake_gtest REQUIRED)
+  # Every test that brings up rclcpp runs through ament_add_ros_isolated_gtest:
+  # colcon tests packages in parallel, and on one shared DDS domain the test
+  # processes discover each other's nodes (docs/claude/testing-ci.md).
+  find_package(ament_cmake_ros REQUIRED)
 
-  ament_add_gtest(test_diagnostics
+  ament_add_ros_isolated_gtest(test_diagnostics
     test/test_diagnostics.cpp
   )
 
@@ -186,13 +194,32 @@ if(BUILD_TESTING)
     ${diagnostic_msgs_TARGETS}
     ${sensor_msgs_TARGETS}
     ${nav_msgs_TARGETS}
+    ${nav2_msgs_TARGETS}
     ${geometry_msgs_TARGETS}
     ${mowgli_interfaces_TARGETS}
   )
 
-  ament_add_gtest(test_mqtt_bridge
+  # ROS-free: exercises the shared reduction header on its own.
+  ament_add_gtest(test_path_tracking_stats
+    test/test_path_tracking_stats.cpp
+  )
+
+  target_link_libraries(test_path_tracking_stats
+    ${mowgli_interfaces_TARGETS}
+  )
+
+  ament_add_ros_isolated_gtest(test_mqtt_bridge
     test/test_mqtt_bridge.cpp
   )
+  ament_add_ros_isolated_gtest(test_mqtt_map_poll
+    test/test_mqtt_map_poll.cpp
+  )
+  target_link_libraries(test_mqtt_map_poll mowgli_monitoring_core)
+
+  ament_add_ros_isolated_gtest(test_configured_battery
+    test/test_configured_battery.cpp
+  )
+  target_link_libraries(test_configured_battery mowgli_monitoring_core)
 
   target_link_libraries(test_mqtt_bridge
     mowgli_monitoring_core
@@ -203,9 +230,15 @@ if(BUILD_TESTING)
     ${diagnostic_msgs_TARGETS}
     ${sensor_msgs_TARGETS}
     ${nav_msgs_TARGETS}
+    ${nav2_msgs_TARGETS}
     ${geometry_msgs_TARGETS}
     ${mowgli_interfaces_TARGETS}
   )
+
+  ament_add_ros_isolated_gtest(test_retained_map_publication
+    test/test_retained_map_publication.cpp
+  )
+  target_link_libraries(test_retained_map_publication mowgli_monitoring_core)
 endif()
 
 # ---------------------------------------------------------------------------

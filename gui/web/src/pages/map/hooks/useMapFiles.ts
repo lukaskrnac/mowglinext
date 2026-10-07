@@ -2,10 +2,11 @@ import React, {ChangeEvent} from "react";
 import {useTranslation} from "react-i18next";
 import type {NotificationInstance} from "antd/es/notification/interface";
 import type {FeatureCollection} from "geojson";
-import type {Map as MapType} from "../../../types/ros.ts";
+import type {LidarIgnoreCorridor, Map as MapType} from "../../../types/ros.ts";
 import {
     MowingFeature,
     MowingAreaFeature,
+    MapAreaFeature,
     NavigationFeature,
     ObstacleFeature,
     DockFeatureBase,
@@ -14,6 +15,8 @@ import {
     type SerializedMapFeature,
 } from "../../../types/map.ts";
 import type {Api, MowgliMapArea, MowgliReplaceMapReq} from "../../../api/Api.ts";
+import {BACKUP_CORRIDORS_KEY, BACKUP_ORIGINALS_KEY, parseMapBackup} from "../utils/mapBackup.ts";
+import {originalsForObstacles, type ObstacleOriginal} from "../utils/obstacleOriginals.ts";
 import {dedupePoints, getQuaternionFromHeading, isRingInsidePolygon, itranspose} from "../../../utils/map.tsx";
 
 interface UseMapFilesOptions {
@@ -35,6 +38,16 @@ interface UseMapFilesOptions {
     // message. Needed by handleRestoreMap because the MapPage effect that
     // normally does this is intentionally skipped while editMap is true.
     buildFeaturesFromMap: (m: MapType) => Record<string, MowingFeature>;
+    // Outlines obstacles had before the recorded-obstacle shrink (kept in the
+    // GUI config store): without them a restored map could not undo a shrink.
+    obstacleOriginals: ObstacleOriginal[];
+    restoreObstacleOriginals: (next: ObstacleOriginal[]) => Promise<void>;
+    // The operator-drawn LiDAR-ignore lines. They live in map_server, not in the
+    // Map message, so the backup file carries them separately and a restore
+    // writes them back through restoreCorridors (applied immediately, like every
+    // other ignore-line change; Cancel reverts them with the edit session).
+    corridors: LidarIgnoreCorridor[];
+    restoreCorridors: (next: LidarIgnoreCorridor[]) => Promise<void>;
 }
 
 export function useMapFiles({
@@ -52,6 +65,10 @@ export function useMapFiles({
     dockDirty,
     setDockDirty,
     buildFeaturesFromMap,
+    obstacleOriginals,
+    restoreObstacleOriginals,
+    corridors,
+    restoreCorridors,
 }: UseMapFilesOptions) {
     const {t} = useTranslation();
 
@@ -103,6 +120,15 @@ export function useMapFiles({
             areas[type][index] = {
                 name: f.properties?.name ?? '',
                 area: {points},
+                // Round-trip the stable area id (mowglinext#637) the feature
+                // was loaded with, so map_server's on_add_area preserves it
+                // instead of minting a fresh one. PUT /mowglinext/map clears
+                // and re-adds every area on ANY edit, so omitting this would
+                // re-index the WHOLE map on every save, discarding all
+                // coverage-resume progress even for areas the operator never
+                // touched. Undefined for a genuinely new (never-saved) area,
+                // which is exactly when a fresh id should be minted.
+                id: f instanceof MapAreaFeature ? f.area?.id : undefined,
             };
         }
 
@@ -220,7 +246,16 @@ export function useMapFiles({
         const a = document.createElement("a");
         document.body.appendChild(a);
         a.style.display = "none";
-        const json = JSON.stringify(map),
+        const json = JSON.stringify({
+                ...map,
+                // Only the records that still describe an obstacle on this map.
+                [BACKUP_ORIGINALS_KEY]: originalsForObstacles(
+                    obstacleOriginals,
+                    (map?.working_area ?? []).flatMap((a) => (a.obstacles ?? []).map(
+                        (o) => (o.points ?? []).map((p) => ({x: p.x ?? 0, y: p.y ?? 0})))),
+                ),
+                [BACKUP_CORRIDORS_KEY]: corridors.map(({name, polyline, width_m}) => ({name, polyline, width_m})),
+            }),
             blob = new Blob([json], {type: "octet/stream"}),
             url = window.URL.createObjectURL(blob);
         a.href = url;
@@ -234,27 +269,69 @@ export function useMapFiles({
         input.type = "file";
         input.style.display = "none";
         document.body.appendChild(input);
-        input.addEventListener('change', (event) => {
-            setEditMap(true);
+        input.addEventListener('change', async (event) => {
             const file = (event as unknown as ChangeEvent<HTMLInputElement>).target?.files?.[0];
             if (!file) {
                 return;
             }
-            const reader = new FileReader();
-            reader.addEventListener('load', (event) => {
-                const content = event.target?.result as string;
-                const parts = content.split(",");
-                const newMap = JSON.parse(atob(parts[1])) as MapType;
-                setMap(newMap);
-                // The MapPage effect that turns a Map into editable features
-                // skips while editMap is true (set just above), so build them
-                // here — otherwise handleSaveMap would persist the stale
-                // features and the restored map would be silently discarded.
-                setFeatures(buildFeaturesFromMap(newMap));
-                setHasUnsavedChanges(true);
-                setDockDirty(true);
+            // Validate the whole candidate BEFORE touching any editor state
+            // (#704). file.text() decodes UTF-8; the old data-URL + atob()
+            // path yielded a byte string and corrupted names like "Ängen".
+            const fail = (reason: string) => notification.error({
+                message: t('mapFiles.restoreFailed'),
+                description: reason,
             });
-            reader.readAsDataURL(file);
+            const parsed = parseMapBackup(await file.text());
+            if (!parsed.ok) {
+                fail(parsed.reason);
+                return;
+            }
+            let restoredFeatures: Record<string, MowingFeature>;
+            try {
+                restoredFeatures = buildFeaturesFromMap(parsed.map);
+            } catch (e: any) {
+                fail(e?.message ?? String(e));
+                return;
+            }
+            // A backup without dock fields leaves the current dock alone: it
+            // is neither rebuilt at (0, 0, 0) nor marked dirty for Save.
+            const currentDock = features["dock"];
+            const nextFeatures = parsed.hasDock || !currentDock
+                ? restoredFeatures
+                : {...restoredFeatures, dock: currentDock};
+            setEditMap(true);
+            setMap(parsed.map);
+            // The MapPage effect that turns a Map into editable features
+            // skips while editMap is true (set just above), so build them
+            // here — otherwise handleSaveMap would persist the stale
+            // features and the restored map would be silently discarded.
+            setFeatures(nextFeatures);
+            setHasUnsavedChanges(true);
+            if (parsed.hasDock) {
+                setDockDirty(true);
+            }
+            if (parsed.obstacleOriginals !== null) {
+                try {
+                    await restoreObstacleOriginals(parsed.obstacleOriginals);
+                } catch (e: unknown) {
+                    notification.error({
+                        message: t('mapFiles.restoreOriginalsFailed'),
+                        description: e instanceof Error ? e.message : String(e),
+                    });
+                }
+            }
+            // A backup from before the ignore lines were included has no
+            // field: leave the current lines alone rather than wiping them.
+            if (parsed.corridors !== null) {
+                try {
+                    await restoreCorridors(parsed.corridors);
+                } catch (e: unknown) {
+                    notification.error({
+                        message: t('mapFiles.restoreCorridorsFailed'),
+                        description: e instanceof Error ? e.message : String(e),
+                    });
+                }
+            }
         });
         input.click();
     };

@@ -3,10 +3,13 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"math"
 	"sync"
 	"time"
 
 	"github.com/mowglinext/mowglinext/pkg/msgs/mowgli"
+	"github.com/mowglinext/mowglinext/pkg/msgs/std"
 	"github.com/mowglinext/mowglinext/pkg/types"
 	"github.com/sirupsen/logrus"
 )
@@ -14,8 +17,13 @@ import (
 // schedule mirrors api.Schedule exactly. It is redefined here to avoid an
 // import cycle (providers ← api). Keep fields in sync with api.Schedule.
 type schedule struct {
-	ID         string     `json:"id"`
-	Area       int        `json:"area"`
+	ID string `json:"id"`
+	// AreaID is the STABLE map area id (MapArea.id, mowglinext#637) this schedule
+	// mows; 0 means every area (a plain COMMAND_START). It is resolved to the
+	// current positional index only at fire time, because the index shifts
+	// whenever the area list is edited. AreaName is a display snapshot.
+	AreaID     uint32     `json:"areaId"`
+	AreaName   string     `json:"areaName,omitempty"`
 	Time       string     `json:"time"`
 	DaysOfWeek []int      `json:"daysOfWeek"`
 	Enabled    bool       `json:"enabled"`
@@ -29,6 +37,9 @@ type schedule struct {
 
 const schedulerKeyPrefix = "schedule:"
 
+// maxAreaEnumeration bounds the get_mowing_area walk, matching the GUI's map poll.
+const maxAreaEnumeration = 100
+
 // SchedulerProvider polls the database every minute and triggers autonomous
 // mowing via the high_level_control ROS2 service when a schedule fires.
 // Before triggering it checks that no emergency is active and the robot is
@@ -39,19 +50,28 @@ type SchedulerProvider struct {
 	dbProvider   types.IDBProvider
 	soilProvider types.ISoilProvider
 
-	mu                     sync.RWMutex
-	lastHighLevelState     uint8
-	lastHighLevelStateName string
-	lastEmergency          bool
+	mu                      sync.RWMutex
+	checkMu                 sync.Mutex
+	lastHighLevelState      uint8
+	lastHighLevelStateName  string
+	hasHighLevelStatus      bool
+	lastEmergency           bool
+	highLevelEmergency      bool
+	coverageSessionActive   bool
+	coverageSessionKnown    bool
+	coverageResumeAvailable bool
+	coverageResumeKnown     bool
+	statusUpdates           chan struct{}
 }
 
 // NewSchedulerProvider creates and starts the scheduler background goroutine.
 // soilProvider may be nil, in which case no soil gate is applied.
 func NewSchedulerProvider(rosProvider types.IRosProvider, dbProvider types.IDBProvider, soilProvider types.ISoilProvider) *SchedulerProvider {
 	s := &SchedulerProvider{
-		rosProvider:  rosProvider,
-		dbProvider:   dbProvider,
-		soilProvider: soilProvider,
+		rosProvider:   rosProvider,
+		dbProvider:    dbProvider,
+		soilProvider:  soilProvider,
+		statusUpdates: make(chan struct{}, 1),
 	}
 	s.subscribeToStatus()
 	go s.run()
@@ -61,7 +81,9 @@ func NewSchedulerProvider(rosProvider types.IRosProvider, dbProvider types.IDBPr
 // subscribeToStatus subscribes to highLevelStatus and emergency so that the
 // scheduler can perform pre-flight safety checks without an extra service call.
 func (s *SchedulerProvider) subscribeToStatus() {
-	// highLevelStatus — tracks robot operational state (idle/autonomous/recording)
+	// highLevelStatus — tracks robot operational state and its co-reported
+	// emergency snapshot. Keep it separate from the hardware emergency topic so
+	// an older HLS snapshot can never clear a newer hardware emergency.
 	if err := s.rosProvider.Subscribe("highLevelStatus", "scheduler-hls", 0, func(msg []byte) {
 		var hls mowgli.HighLevelStatus
 		if err := json.Unmarshal(msg, &hls); err != nil {
@@ -88,7 +110,10 @@ func (s *SchedulerProvider) subscribeToStatus() {
 		s.mu.Lock()
 		s.lastHighLevelState = hls.State
 		s.lastHighLevelStateName = hls.StateName
+		s.highLevelEmergency = hls.Emergency
+		s.hasHighLevelStatus = true
 		s.mu.Unlock()
+		s.wakeStartupRetry()
 	}); err != nil {
 		logrus.Warnf("Scheduler: failed to subscribe to highLevelStatus: %v", err)
 	}
@@ -111,27 +136,104 @@ func (s *SchedulerProvider) subscribeToStatus() {
 		s.mu.Lock()
 		s.lastEmergency = emg.ActiveEmergency
 		s.mu.Unlock()
+		s.wakeStartupRetry()
 	}); err != nil {
 		logrus.Warnf("Scheduler: failed to subscribe to emergency: %v", err)
+	}
+
+	// coverageSession identifies a live COMMAND_START session even while its
+	// high-level state is IDLE (for example, a mid-session recharge hold).
+	if err := s.rosProvider.Subscribe("coverageSession", "scheduler-session", 0, func(msg []byte) {
+		var session mowgli.CoverageSession
+		if err := json.Unmarshal(msg, &session); err != nil {
+			return
+		}
+		s.mu.Lock()
+		s.coverageSessionActive = session.SessionActive
+		s.coverageSessionKnown = true
+		s.mu.Unlock()
+		s.wakeStartupRetry()
+	}); err != nil {
+		logrus.Warnf("Scheduler: failed to subscribe to coverageSession: %v", err)
+	}
+
+	// coverageResumeAvailable is latched by the behavior tree. It is the
+	// session identity needed to distinguish a fresh IDLE status from a paused
+	// mow that COMMAND_START would resume.
+	if err := s.rosProvider.Subscribe("coverageResumeAvailable", "scheduler-resume", 0, func(msg []byte) {
+		var available std.Bool
+		if err := json.Unmarshal(msg, &available); err != nil {
+			return
+		}
+		s.mu.Lock()
+		s.coverageResumeAvailable = available.Data
+		s.coverageResumeKnown = true
+		s.mu.Unlock()
+		s.wakeStartupRetry()
+	}); err != nil {
+		logrus.Warnf("Scheduler: failed to subscribe to coverageResumeAvailable: %v", err)
+	}
+}
+
+// wakeStartupRetry rechecks the bounded startup minute when any input to
+// safeToStart changes. The retained high-level status and coverage provenance
+// can arrive in either order, so waking only for status could leave an on-time
+// schedule blocked after its final required input becomes known.
+func (s *SchedulerProvider) wakeStartupRetry() {
+	select {
+	case s.statusUpdates <- struct{}{}:
+	default:
 	}
 }
 
 func (s *SchedulerProvider) run() {
+	startedAt := time.Now()
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		s.checkSchedules()
+
+	// Do not wait a full minute after startup: schedules are evaluated for the
+	// current minute immediately. safeToStart keeps this fail-closed until the
+	// first high-level status is received.
+	s.checkSchedulesAt(startedAt)
+	for {
+		select {
+		case <-ticker.C:
+			s.checkSchedules()
+		case <-s.statusUpdates:
+			s.checkStartupUpdateAt(startedAt, time.Now())
+		}
 	}
 }
 
 func (s *SchedulerProvider) checkSchedules() {
+	s.checkSchedulesAt(time.Now())
+}
+
+// checkSchedulesAt evaluates schedules at now. Keeping the clock explicit
+// makes the minute-boundary policy deterministic to test.
+func (s *SchedulerProvider) checkSchedulesAt(now time.Time) {
+	s.checkMu.Lock()
+	defer s.checkMu.Unlock()
+	s.checkSchedulesAtLocked(now)
+}
+
+// checkStartupUpdateAt retries a startup check only while it remains in the
+// calendar minute in which the backend started. This lets delayed admission
+// inputs unlock an on-time run without backfilling missed schedules.
+func (s *SchedulerProvider) checkStartupUpdateAt(startedAt, now time.Time) {
+	if startedAt.Format("2006-01-02 15:04") != now.Format("2006-01-02 15:04") {
+		return
+	}
+	s.checkSchedulesAt(now)
+}
+
+func (s *SchedulerProvider) checkSchedulesAtLocked(now time.Time) {
 	keys, err := s.dbProvider.KeysWithSuffix(schedulerKeyPrefix)
 	if err != nil {
 		logrus.Warnf("Scheduler: failed to list schedules: %v", err)
 		return
 	}
 
-	now := time.Now()
 	currentDay := int(now.Weekday())
 	currentTime := now.Format("15:04")
 
@@ -167,29 +269,139 @@ func (s *SchedulerProvider) checkSchedules() {
 			continue
 		}
 
-		logrus.Infof("Scheduler: triggering autonomous mowing for schedule %s (area %d)", sched.ID, sched.Area)
+		// "All areas" (AreaID 0) is a plain COMMAND_START; a schedule bound to
+		// one area goes through start_in_area instead, which mows that single
+		// area and then docks.
+		areaIndex := uint32(0)
+		if sched.AreaID != 0 {
+			index, reason := s.resolveAreaIndex(sched.AreaID)
+			if reason != "" {
+				logrus.Warnf("Scheduler: skipping schedule %s — %s", sched.ID, reason)
+				s.persistSkip(sched, reason, now)
+				continue
+			}
+			areaIndex = index
+		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err = s.rosProvider.CallService(
-			ctx,
-			"/behavior_tree_node/high_level_control",
-			&mowgli.HighLevelControlReq{Command: 1}, // 1 = COMMAND_START
-			&mowgli.HighLevelControlRes{},
-		)
-		cancel()
+		if sched.AreaID == 0 {
+			logrus.Infof("Scheduler: triggering autonomous mowing for schedule %s (all areas)", sched.ID)
+		} else {
+			logrus.Infof("Scheduler: triggering autonomous mowing for schedule %s (area id %d, index %d)",
+				sched.ID, sched.AreaID, areaIndex)
+		}
 
+		accepted, err := s.startMowing(sched.AreaID != 0, areaIndex)
 		if err != nil {
-			logrus.Errorf("Scheduler: failed to call high_level_control for schedule %s: %v", sched.ID, err)
+			logrus.Errorf("Scheduler: failed to start mowing for schedule %s: %v", sched.ID, err)
+			continue
+		}
+		// A delivered call is not an accepted one: behavior_tree_node answers
+		// success=false while it refuses START (update maintenance). Nothing
+		// ran, so LastRun stays untouched and the next tick may retry (#702).
+		if !accepted {
+			logrus.Warnf("Scheduler: behavior tree rejected START for schedule %s", sched.ID)
 			continue
 		}
 
 		// Persist last-run time so double-execution within the same minute is prevented.
-		sched.LastRun = &now
-		if updated, err := json.Marshal(&sched); err == nil {
-			if putErr := s.dbProvider.Set(schedulerKeyPrefix+sched.ID, updated); putErr != nil {
-				logrus.Warnf("Scheduler: failed to persist last-run for schedule %s: %v", sched.ID, putErr)
-			}
+		// LastRun means "START was accepted", not "the mow completed".
+		s.updateRunMetadata(sched.ID, func(current *schedule) {
+			current.LastRun = &now
+		})
+	}
+}
+
+// startMowing sends the start command: start_in_area for one area, plain
+// COMMAND_START (high_level_control) for all of them. It reports whether the
+// behavior tree ACCEPTED the command.
+func (s *SchedulerProvider) startMowing(singleArea bool, areaIndex uint32) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if singleArea {
+		var res mowgli.StartInAreaRes
+		err := s.rosProvider.CallService(
+			ctx,
+			"/behavior_tree_node/start_in_area",
+			&mowgli.StartInAreaReq{Area: uint8(areaIndex)},
+			&res,
+			"mowgli_interfaces/srv/StartInArea",
+		)
+		return res.Success, err
+	}
+
+	var res mowgli.HighLevelControlRes
+	err := s.rosProvider.CallService(
+		ctx,
+		"/behavior_tree_node/high_level_control",
+		&mowgli.HighLevelControlReq{Command: 1}, // 1 = COMMAND_START
+		&res,
+	)
+	return res.Success, err
+}
+
+// resolveAreaIndex maps a stable area id to map_server's CURRENT positional
+// index, asking the map server itself (not a cached snapshot) because the
+// index shifts whenever the area list is edited. A non-empty reason means
+// the run must be skipped, and says why.
+func (s *SchedulerProvider) resolveAreaIndex(areaID uint32) (uint32, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for i := uint32(0); i < maxAreaEnumeration; i++ {
+		var res mowgli.GetMowingAreaRes
+		err := s.rosProvider.CallService(
+			ctx,
+			"/map_server_node/get_mowing_area",
+			&mowgli.GetMowingAreaReq{Index: i},
+			&res,
+			"mowgli_interfaces/srv/GetMowingArea",
+		)
+		if err != nil {
+			return 0, fmt.Sprintf("could not look up the area (%v)", err)
 		}
+		if !res.Success {
+			break // end of the area list
+		}
+		if res.Area.Id != areaID {
+			continue
+		}
+		if res.Area.IsNavigationArea {
+			return 0, "the scheduled area is a navigation area and cannot be mowed"
+		}
+		if i > math.MaxUint8 {
+			return 0, "the scheduled area index is out of range for start_in_area"
+		}
+		return i, ""
+	}
+	return 0, "the scheduled area no longer exists"
+}
+
+// updateRunMetadata applies mutate to the schedule AS STORED NOW, never to
+// the snapshot read at the top of checkSchedules: the START call in between
+// can take up to 30 s, and writing the snapshot back resurrected a schedule
+// deleted meanwhile and reverted an edit or a disable (#702). A record that
+// is gone stays gone. mutate must only touch execution metadata.
+func (s *SchedulerProvider) updateRunMetadata(id string, mutate func(current *schedule)) {
+	key := schedulerKeyPrefix + id
+	data, err := s.dbProvider.Get(key)
+	if err != nil {
+		logrus.Infof("Scheduler: schedule %s no longer exists, not recording run metadata", id)
+		return
+	}
+	var current schedule
+	if err := json.Unmarshal(data, &current); err != nil {
+		logrus.Warnf("Scheduler: failed to parse schedule %s: %v", id, err)
+		return
+	}
+	mutate(&current)
+	updated, err := json.Marshal(&current)
+	if err != nil {
+		logrus.Warnf("Scheduler: failed to encode schedule %s: %v", id, err)
+		return
+	}
+	if err := s.dbProvider.Set(key, updated); err != nil {
+		logrus.Warnf("Scheduler: failed to persist run metadata for schedule %s: %v", id, err)
 	}
 }
 
@@ -209,24 +421,17 @@ func (s *SchedulerProvider) soilBlocksStart() (bool, string) {
 
 // persistSkip records why a due run was not started, so the GUI can show it.
 func (s *SchedulerProvider) persistSkip(sched schedule, reason string, now time.Time) {
-	sched.LastSkipReason = reason
-	sched.LastSkippedAt = &now
-	updated, err := json.Marshal(&sched)
-	if err != nil {
-		logrus.Warnf("Scheduler: failed to encode skip for schedule %s: %v", sched.ID, err)
-		return
-	}
-	if err := s.dbProvider.Set(schedulerKeyPrefix+sched.ID, updated); err != nil {
-		logrus.Warnf("Scheduler: failed to persist skip for schedule %s: %v", sched.ID, err)
-	}
+	s.updateRunMetadata(sched.ID, func(current *schedule) {
+		current.LastSkipReason = reason
+		current.LastSkippedAt = &now
+	})
 }
 
 // safeToStart returns true when it is safe to send COMMAND_START.
-// It blocks mowing when:
-//   - an emergency is active (latched or active), or
-//   - the robot is already in autonomous (2) or recording (3) state,
-//     EXCEPT the post-mow dock transit (state 2, state_name MOWING_COMPLETE),
-//     which reports autonomous only to keep the firmware wheel gate open.
+// It admits starts only from known, non-resumable idle status and coverage
+// provenance. A charge hold belongs to a live session only when
+// CoverageSession.session_active is true; only then would COMMAND_START be an
+// operator manual-resume request.
 //
 // HIGH_LEVEL_STATE constants:
 //
@@ -239,33 +444,28 @@ func (s *SchedulerProvider) safeToStart() bool {
 	s.mu.RLock()
 	state := s.lastHighLevelState
 	stateName := s.lastHighLevelStateName
-	emergency := s.lastEmergency
+	hasHighLevelStatus := s.hasHighLevelStatus
+	emergency := s.lastEmergency || s.highLevelEmergency
+	sessionActive := s.coverageSessionActive
+	sessionKnown := s.coverageSessionKnown
+	resumeAvailable := s.coverageResumeAvailable
+	resumeKnown := s.coverageResumeKnown
 	s.mu.RUnlock()
 
-	if emergency {
+	if !hasHighLevelStatus || emergency || !sessionKnown || !resumeKnown {
 		return false
 	}
-	// The blade-off dock transit that follows a FINISHED mow stays startable:
-	// the run is over, the robot is only trundling home, and a schedule due in
-	// that window should not be silently skipped. It reports AUTONOMOUS purely
-	// so the firmware will move the wheels (HL_MODE_IDLE is a wheel hard stop),
-	// not because a session is still running.
-	//
-	// Deliberately MOWING_COMPLETE only. The other transits that report
-	// AUTONOMOUS must stay blocked: RETURNING_HOME is an explicit operator
-	// "go home", and LOW_BATTERY_DOCKING / CRITICAL_BATTERY_DOCKING /
-	// RAIN_DETECTED_DOCKING are the robot protecting itself — starting a mow
-	// on a flat battery or in the rain is exactly what they exist to prevent.
-	if state == 2 && stateName == "MOWING_COMPLETE" {
+	if state != 1 || sessionActive || resumeAvailable {
+		return false
+	}
+	switch stateName {
+	case "IDLE", "IDLE_DOCKED", "CHARGING":
 		return true
-	}
-	// Do not interrupt an already-running autonomous session or an ongoing
-	// area recording. State 0 (NULL/emergency) is also blocked.
-	switch state {
-	case 0, 2, 3:
+	case "CRITICAL_BATTERY_CHARGING", "RAIN_WAITING":
+		return false
+	default:
 		return false
 	}
-	return true
 }
 
 func (s *SchedulerProvider) shouldRun(sched *schedule, currentDay int, currentTime string, now time.Time) bool {

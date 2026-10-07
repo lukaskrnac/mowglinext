@@ -24,7 +24,7 @@
 | No-LiDAR global costmap "never current" | `scripts/empty_static_map_pub.py` (`/no_lidar_static_map`, transient_local) launched `navigation.launch.py` L1040–1046; consumed by `nav2_params_no_lidar.yaml` L35–40, L48–53 |
 | BT operator params (speeds, undock, LocalizationGuard, battery, start-pose escape) | `full_system.launch.py` L216–354 (every `robot_params.get(...)` there is an injection) |
 | Hardware bridge wiring (serial, final command slew, PID push, dig detector, remaps) | `mowgli.launch.py` L184–268; static `config/hardware_bridge.yaml` |
-| GUI/Foxglove bridge + manual-mow relay | `full_system.launch.py` L557–583 (foxglove :8765, GNSS-internal topic whitelist L66–68); `scripts/cmd_vel_ws_relay.py` (ws :8766 → `/cmd_vel_teleop`) |
+| GUI/Foxglove bridge + manual-mow relay | `full_system.launch.py` includes `foxglove_bridge.launch.py` (foxglove :8765, shared GNSS-internal topic whitelist); `scripts/cmd_vel_ws_relay.py` (ws :8766 → `/cmd_vel_teleop`) |
 | fusion_graph launch args from this package | `navigation.launch.py`: `use_magnetometer`, LiDAR-gated `use_lidar_map_anchor` / `lidar_anchor_shadow_mode`, `primary_mode`, `tf_publish_lead_s`, `node_period_s` |
 | Simulation stack | `launch/sim_full_system.launch.py` (Webots include L141–153, sim TF/cadence overrides L182–183, injected 9×6 m test polygon L219–231, sim helper nodes L297–505) |
 | LED ring launch gate + params | `full_system.launch.py` L97–100, L147–151, L668–707; template L721–739 |
@@ -44,7 +44,7 @@
 | `launch/mowgli.launch.py` | 298 | Tier-1 hardware: robot_state_publisher (xacro args from robot config), hardware_bridge, twist_mux |
 | `launch/nav2_navigation_launch.py` | 358 | Vendored nav2_bringup `navigation_launch.py` (Jazzy) minus route_server, plus `docking_server` + `coverage_server` |
 | `launch/sim_full_system.launch.py` | 535 | Webots full stack (sim_time=true), sim helpers, own twist_mux/navsat/map_server |
-| `launch/foxglove_bridge.launch.py` | 93 | Standalone foxglove_bridge (1 MB send buffer) — NOT included by `full_system` |
+| `launch/foxglove_bridge.launch.py` | 129 | Shared foxglove_bridge (1 MB send buffer, 2 s respawn), included by `full_system`; 2 production threads, automatic selection standalone |
 | **`config/`** | | |
 | `config/mowgli_robot.yaml` | 739 | TEMPLATE of every robot-param default (Invariant 15); installed sparse twin is `install/config/mowgli/mowgli_robot.yaml` |
 | `config/nav2_params_base.yaml` | ~1.2k | Shared Nav2 base: bt_navigator, controller_server (FollowPath RPP / FollowCoveragePath FTC / goal+progress checkers), planner, smoother, behavior_server, costmaps, docking_server, collision_monitor I/O, coverage_server |
@@ -57,6 +57,7 @@
 | `scripts/wait_for_tf.py` | 70 | `--parent map --child odom --timeout 120`; exit 0 when TF resolvable, 1 on timeout |
 | `scripts/empty_static_map_pub.py` | 61 | Latched empty `OccupancyGrid` on `/no_lidar_static_map` (params `size_m` 200, `resolution` 0.5, `frame_id` map) |
 | `scripts/cmd_vel_ws_relay.py` | 121 | WebSocket 127.0.0.1:8766 JSON → `/cmd_vel_teleop` (`TwistStamped`, clamps ±2.0 m/s / ±5.0 rad/s) |
+| `scripts/fleet_peer_obstacles.py` | 158 | Fleet coordination (commit `4bc36b74`, 2026-09-15): subs `/fleet/peers`, publishes `/fleet/peer_obstacles` consumed by both Nav2 costmap variants as an obstacle source; launched unconditionally from `full_system.launch.py` |
 | **`urdf/`** | | |
 | `urdf/mowgli.urdf.xacro` | 408 | Frames + visuals only (no sim plugins): base_footprint→base_link→wheels/casters/blade/imu/gps/lidar; all dims are xacro args |
 | **`test/`** | | |
@@ -65,6 +66,10 @@
 | `test/test_launch_injection.py` | 262 | AST guards: `num_headland_passes` unclamped, `mowing_enabled` → hardware_bridge only, `dock_max_retries`/`dock_use_charger_detection` → docking_server |
 | `test/test_tf_ownership.py` | 100 | Only fusion_graph + wheel_odometry construct `TransformBroadcaster`; `wheel_odometry.yaml publish_tf: false`; no launch file sets `publish_tf` |
 | `test/test_gnss_launch_config.py` | 61 | `full_system` declares no `use_universal_gnss`, includes no `universal_gnss.launch.py`, passes no legacy `gnss_backend`/`gps_protocol` params |
+| `test/test_fleet_peer_obstacles.py` | 63 | Guards `fleet_peer_obstacles.py`'s `/fleet/peers` sub / `/fleet/peer_obstacles` pub wiring |
+| `test/test_drive_pid_defaults.py` | 167 | Drive PID/yaw-tuning template defaults |
+| `test/test_fusion_graph_launch_types.py` | 146 | `fusion_graph.launch.py` param type/coercion guards |
+| `test/test_gnss_sidecar_launcher.py` | 178 | Guards the Universal GNSS sidecar inline launcher (`docker-compose.gps.yml`'s Python `command:` block) reads `mowgli_robot.yaml` correctly |
 | `test/test_urdf_xacro.py` | 49 | `chassis_mass_kg` reaches base_link inertial; `blade_joint` is fixed base_link→blade_link |
 | `test/test_nodes_startup.launch.py` | 257 | launch_test: 5 nodes stay alive 5 s, `/wheel_odom` `/diagnostics` `/mowgli_behavior_node/high_level_status` advertised, map_server/BT services present, exit 0 |
 | `test/test_navsat_status_universal.launch.py` | 138 | launch_test: `navsat_to_absolute_pose_node` publishes `/gps/absolute_pose` + `/gps/pose_cov`, never `/gps/status` |
@@ -95,7 +100,7 @@
 | `localization_monitor_node`, `calibrate_imu_yaw_node` | mowgli_localization | `full_system.launch.py` L471, L485 | calibrate node gets `undock_*` + 9 `dock_calib_*` keys |
 | `diagnostics_node` | mowgli_monitoring | `full_system.launch.py` L520; sim L238 | `lidar_enabled` = `use_lidar` (bool) |
 | `mqtt_bridge_node` | mowgli_monitoring | `full_system.launch.py` L539 | `enable_mqtt` |
-| `foxglove_bridge` | foxglove_bridge | `full_system.launch.py` L557; sim L256 | `enable_foxglove`; port `foxglove_port`; capabilities incl. `parameters`/`parametersSubscribe` |
+| `foxglove_bridge` | foxglove_bridge | `full_system.launch.py` includes `foxglove_bridge.launch.py`; sim L256 | `enable_foxglove`; port `foxglove_port`; capabilities incl. `parameters`/`parametersSubscribe` |
 | `led_ring_node` | mowgli_leds | `full_system.launch.py` L668 | `led_enabled`; 12 `led_*` keys from template |
 | `cmd_vel_ws_relay` | mowgli_bringup/`cmd_vel_ws_relay.py` | `full_system.launch.py` L598 | always |
 | `fake_hardware_bridge`, `sim_navsat_rtk_fix`, `sim_wheel_slip`, `sim_imu_noise`, `sim_actuation` | mowgli_simulation | `sim_full_system.launch.py` L297–505 | sim only; Webots via `mowgli_simulation/launch/webots_minimal.launch.py` |
@@ -120,7 +125,7 @@
 | `mowgli` | `use_sim_time`, `serial_port` | `false`, `/dev/mowgli` | RSP/bridge/mux |
 | `nav2_navigation_launch` | `namespace`, `use_sim_time`, `params_file`, `autostart`, `use_composition`, `container_name`, `use_respawn`, `log_level` | `''`, `false`, `nav2_params_base.yaml` (vestigial), `true`, `False`, `nav2_container`, `False`, `info` | `navigation.launch.py` always passes `params_file` (merged temp yaml) + `use_composition: False` |
 | `sim_full_system` | `world` / `use_rviz` / `headless` / `use_lidar` / `mode` | `mowgli_garden.wbt` / `false` / `true` (**ignored**) / `true` / `realtime` | Webots world; `headless` is a Gazebo-era shim; `use_lidar` NOT read from yaml here |
-| `foxglove_bridge` | `port` / `send_buffer_limit` | `8765` / `1000000` | standalone bridge only |
+| `foxglove_bridge` | `port` / `send_buffer_limit` / `num_threads` | `8765` / `1000000` / `0` (automatic) | shared bridge; full-system forwards `foxglove_port` and `num_threads=2` |
 
 ### Topics wired by this package
 
@@ -154,15 +159,15 @@ All injection is READ ONCE at launch (container restart required); exceptions: `
 | `chassis_length/width/center_x` | Nav2 `footprint` (+0.05 m margin) | `navigation.launch.py` L304–317, L973–974 |
 | `dock_pose_x/y/yaw`, `imu_yaw`, `wheel_track`, `ticks_per_meter`, `wheel_pid_kp/ki/kd/integral_limit/pwm_per_mps`, `imu_cal_*`, `lift_recovery_mode`, `lift_blade_resume_delay_sec`, `mowing_enabled`, `yaw_kp/ki`, `yaw_trim_limit_mps`, `yaw_loop_enabled`, `yaw_gyro_sign` | hardware_bridge params | `mowgli.launch.py` L200–253 |
 | `tick_rate`, `bt_debug_logging`, `undock_speed/distance`, `idle_nav2_suspend`, `transit_speed`, `mowing_speed`, `mow_angle_deg`, `area_simplification_tolerance`, `area_record_rate_hz`, `loc_gnss_*`, `loc_sigma_*`, `start_blocked_escape_*`, `battery_*` | behavior_tree_node params | `full_system.launch.py` L226–352 |
-| `dock_pose_*`, `dock_body_length_m/width_m`, `chassis_width`, `max_obstacle_avoidance_distance`, `obstacle_margin` (clamp 0–1), `lethal_outside_areas`, `enforce_boundary_margin_m`, `boundary_inner_margin_m`, `dock_inner_margin_exempt_radius_m`, `tool_width`, `datum_lat/lon` | map_server_node params | `full_system.launch.py` L380–434 |
-| `datum_lat/lon` | navsat_to_absolute_pose + cog_to_imu | `full_system.launch.py` L460–463; `navigation.launch.py` L1121–1122 |
+| `dock_pose_*`, `dock_body_length_m/width_m`, `chassis_width`, `max_obstacle_avoidance_distance`, `keepout_obstacle_margin` (DERIVED: `robot_config_util.keepout_obstacle_margin`, not a yaml key), `lethal_outside_areas`, `enforce_boundary_margin_m`, `boundary_inner_margin_m`, `dock_inner_margin_exempt_radius_m`, `tool_width`, `datum_lat/lon` | map_server_node params | `full_system.launch.py` L380–434 |
+| `datum_lat/lon` | navsat_to_absolute_pose + cog_to_imu + mqtt_bridge_node (labels `<prefix>/area_boundary`) | `full_system.launch.py` L460–463; `navigation.launch.py` L1121–1122 |
 | `undock_*`, `dock_calib_*` (9 keys) | calibrate_imu_yaw_node | `full_system.launch.py` L492–513 |
 | `led_*` (12 keys) | led_ring_node | `full_system.launch.py` L679–704 |
 | `transit_speed` | `FollowPath.desired_linear_vel` | `navigation.launch.py` L745 |
 | `mowing_speed`, `turn_speed_ratio` | `FollowCoveragePath.speed_fast`, `.speed_slow` (= `derive_turn_speed`), raises `.max_cmd_vel_speed` if needed | L755–781 |
 | `blade_load_slowdown_enabled`, `blade_load_rpm_full`, `blade_load_rpm_min`, `blade_load_min_speed_ratio` [0.1,1] (= `derive_blade_load_params`; empty ramp → disabled + WARN) | `FollowCoveragePath.blade_load_*` | after `speed_slow` |
 | `max_obstacle_avoidance_distance` [0.5,10], `obstacle_detection_range_m` [0.2,5]→poses/0.05 (≥4), `obstacle_clearance_margin` [0,0.5], `obstacle_wait_timeout_s` [0.5,60], `obstacle_reverse_enabled`, `obstacle_reverse_max_dist_m` [0,1], `obstacle_reverse_speed_mps` [0,0.3] | `FollowCoveragePath.max_lateral_deviation`, `.obstacle_lookahead`, `.obstacle_clearance_margin`, `.obstacle_wait_timeout_s`, `.obstacle_reverse_*` | L811–848 |
-| `obstacle_inflation_radius` [0.58,1.5] | `local_costmap.inflation_layer.inflation_radius` ONLY (global 0.20 pinned) | L855–860 |
+| `obstacle_inflation_radius` (setting default 0.58; effective floor defaults to the live chassis circumscribed radius, or uses `local_inflation_inscribed_radius` when enabled; cap 1.50) | `local_costmap.inflation_layer.inflation_radius` ONLY (the GLOBAL radius is derived separately: `global_inflation_radius` = circumscribed + one cell, 0.677 m) | L925–960 |
 | `obstacle_slowdown_ratio` [0.05,1] | `collision_monitor.PolygonSlow.slowdown_ratio` (LiDAR merge only) | L864–868 |
 | `xy_goal_tolerance`, `yaw_goal_tolerance` | `stopped_goal_checker.*` | L877–879 |
 | `coverage_xy_tolerance` (floored at FTC `max_goal_distance_error` 0.50) | `coverage_goal_checker.xy_goal_tolerance` | L880–905 |
@@ -173,7 +178,7 @@ All injection is READ ONCE at launch (container restart required); exceptions: `
 | `enable_mag_cal`, `mag_calibration_path`, `declination_deg`, `min_horizontal_uT`, `mag_yaw_variance` | cog_to_imu (`mag_calibration_path`) / mag_yaw_publisher (`yaw_variance`; its `calibration_path` is the hardcoded L1155 path, NOT the template key) | L1129–1130, L1167–1170 |
 | `lidar_z`, `lidar_yaw`, `imu_yaw` | `costmap_scan_filter.lidar_height_m`, `.lidar_mount_yaw` | L302–303, L1234–1235 |
 
-Static (non-template) defaults that matter: `controller_server.odom_topic: /wheel_odom` (base L77); `controller_frequency: 10` (L83); FTC block L338–546 (`max_goal_distance_error: 0.50` L410, `forward_only: true` L420, `use_footprint_clearance: false` L450, `require_clear_exit: true` L468, `ignore_obstacles_outside_zone: true` L508); RPP lookahead L293–296; `behavior_server.max_rotational_vel: 1.0` / `rotational_acc_lim: 2.0` (L643, L650); global costmap 70×70 m @0.08 (L715, L741–742), `keepout_filter` enabled (L782–785); local 12×12 m @0.05 (L812, L821–822); `docking_server.controller.*` L901–1023; `collision_monitor.source_timeout: 1.5` (L1116); hardware_bridge final command slew and `dig_*` (`hardware_bridge.yaml`).
+Static (non-template) defaults that matter: `controller_server.odom_topic: /wheel_odom` (base L77); `controller_frequency: 10` (L83); FTC block L338–546 (`max_goal_distance_error: 0.50` L410, `forward_only: true` L420, `use_footprint_clearance: false` L450, `require_clear_exit: true` L468); RPP lookahead L293–296; `behavior_server.max_rotational_vel: 1.0` / `rotational_acc_lim: 2.0` (L643, L650); global costmap 70×70 m @0.08 (L715, L741–742), `keepout_filter` enabled (L782–785); local 12×12 m @0.05 (L812, L821–822); `docking_server.controller.*` L901–1023; `collision_monitor.source_timeout: 1.5` (L1116); hardware_bridge final command slew and `dig_*` (`hardware_bridge.yaml`).
 
 ### TF frames
 URDF (`urdf/mowgli.urdf.xacro`): `base_footprint` →(z=`wheel_radius`, L142–146) `base_link` → `left/right_wheel_link` (continuous, L199–206), `front_left/right_caster_link` (L250–256), `blade_link` (fixed, at `chassis_center_x`, L293–298), `imu_link` (rpy = `imu_roll/pitch/yaw`, L327–332), `gps_link` (L361–365), `lidar_link` (yaw = `lidar_yaw`, L394–399). `gps_link→gps` identity alias from `navigation.launch.py` L1055. `map→odom` and `odom→base_footprint` come from `fusion_graph_node` (Invariant 2; pinned by `test_tf_ownership.py`). Nav2: global frame `map`, local/behavior/docking frame `odom`, robot frame `base_footprint` everywhere.
@@ -220,9 +225,9 @@ Deployment entry points: `install/compose/docker-compose.base.yml` L42–44 `ros
 - Do NOT rebind `coverage_xy_tolerance` inside the nested injector — it becomes function-local and the launch crashes with `UnboundLocalError` (L891–896, guarded by `test_nav2_params.py` L180).
 - Template keys with NO template default: `lidar_enabled` (deliberate, L146–172 of `robot_config_util.py`), `connector_turn_radius` (fallback 0.20 only in `navigation.launch.py` L403) and `fusion_graph_node_period_s` (fallback 0.04, L139) — the GUI cannot "reset" the last two, and `check_config_drift.py` flags installed structural keys with no template default.
 - Injected but NOT declared by the target node: `map_server_node.chassis_safety_inset` (`full_system.launch.py` L395–398; no `chassis_safety_inset` in `ros2/src/mowgli_map`), `hardware_bridge.imu_yaw` (`mowgli.launch.py` L203; node comment L622 says URDF-only). Both are inert.
-- Declared by a node but NOT injected from the template: hardware_bridge `max_mps`, `max_charge_voltage/current`, `*_emergency_ms` (template L49–63; node declares them at `hardware_bridge_node.cpp` L379–392; absent from `mowgli.launch.py` L194–254); behavior_tree_node `rain_mode`, `rain_delay_minutes`, `rain_debounce_sec` (template L508–510; node defaults `behavior_tree_node.cpp` L877–891 — `rain_debounce_sec` default 0.0 vs template 10.0). Editing these template keys changes nothing on the robot until an injection is added.
+- `rain_mode`, `rain_delay_minutes`, `rain_debounce_sec` (template L508–510) ARE now injected into `behavior_tree_node` from the merged robot config by `full_system.launch.py:335–337` (commit `e77ed83f`, 2026-09-24, "#758") — editing them in the template/GUI does change the running robot. `rain_debounce_sec` resolves to the template's 10.0, not the node's compiled default of 0.0 (`behavior_tree_node.cpp` L891).
 - Orphan template keys with no consumer anywhere in `ros2/src`: `gps_wait_after_undock_sec`, `gps_timeout_sec`. (`path_spacing` and `ticks_per_revolution` were the other two and were DELETED from the template on 2026-09-05; `path_spacing` survives in the GUI schema only, allow-listed in `schema_template_parity_test.go`.) `dock_pose_yaw_sigma_rad` is read by `navigation.launch.py` L574 but injected nowhere there — `fusion_graph.launch.py` reads it itself (its L154).
-- `config/foxglove_bridge.yaml` is dead: both `full_system.launch.py` L563–582 and `foxglove_bridge.launch.py` inline their params. The whitelist regex lives in `full_system.launch.py` L66–68.
+- `config/foxglove_bridge.yaml` is dead: `foxglove_bridge.launch.py` defines the shared parameters and whitelist inline; `full_system.launch.py` includes that definition.
 - `hardware_bridge.yaml`, `twist_mux.yaml` are loaded from the PACKAGE share dir (`mowgli.launch.py` L185–187, L271), never from `/ros2_ws/config/`; the copies in `install/config/mowgli/` differ and are not read. Only `mowgli_robot.yaml` is read from `/ros2_ws/config` (`robot_config_util.py` L31).
 - `test_nav2_params.py` L579–600 forbids `min_turning_radius` in the STATIC `coverage_server` block, yet `navigation.launch.py` L944 injects it at launch — keep it out of the yaml, inject only.
 - `num_headland_passes` is a three-way sentinel (<0 none, 0 auto, >0 forced); any `max/min/abs` on its path breaks NONE (`test_launch_injection.py` L134).

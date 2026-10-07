@@ -2,7 +2,7 @@
 
 > The rosidl package that owns every MowgliNext `.msg` / `.srv` / `.action` definition plus five
 > header-only helpers shared by several packages (WGS84↔ENU projection, `mowgli_robot.yaml`
-> scalar splicing, GNSS status helpers, GPS motion-yaw fit, the coverage transit-gap constant).
+> scalar splicing, GNSS status helpers, GPS motion-yaw fit, and coverage-path constants).
 > Ten ROS packages depend on it, and three out-of-tree generators (firmware `sync_ros_lib.py`,
 > GUI `generate_go_msgs.sh` / `generate_ts_types.sh`) read its `msg/` and `srv/` directories.
 > Index generated 2026-09-03 at f21729e9; regenerate when files are added/removed.
@@ -22,9 +22,10 @@
 | Persist `dock_pose_x/y/yaw` into `mowgli_robot.yaml` without losing comments | `include/mowgli_interfaces/robot_yaml_scalar.hpp` (`UpdateDockPose`, `PersistScalar`, `SpliceScalar`) |
 | Straight-line heading fit from GPS samples (dock-yaw calibration) | `include/mowgli_interfaces/motion_yaw_fit.hpp` (`FitMotionYaw`) |
 | Blade-off transit vs blade-on join threshold (FollowStrip execution side) | `include/mowgli_interfaces/coverage_geometry.hpp:26` (`kSegmentTransitGapM = 0.6`) |
+| Coverage resume replay vs goal-checker short-path threshold | `include/mowgli_interfaces/coverage_path_invariants.hpp` (`kCoverageShortPathPoses`, `kCoverageResumeReplayPoses`) |
 | Coverage plan payload (`segments`, `drivable_subpaths`, `full_path`) | `ros2/src/mowgli_interfaces/action/PlanCoverage.action`; server `ros2/src/mowgli_coverage/src/coverage_server.cpp:110`; client `ros2/src/mowgli_behavior/src/coverage_nodes.cpp:1914` |
 | One-click dock calibration contract | `action/CalibrateDock.action` (server `ros2/src/mowgli_localization/src/calibrate_imu_yaw_node.cpp:316`) + its GUI façade `msg/DockCalibrationStatus.msg` (publisher `:335`, Trigger `~/dock_calibration/start` `:338`) |
-| Dig detector event → pending keepout | `msg/DigEvent.msg` (pub `ros2/src/mowgli_hardware/src/hardware_bridge_node.cpp:731`, sub `ros2/src/mowgli_map/src/map_server_node.cpp:398`); accept/discard via `srv/PromoteObstacle.srv` / `srv/ClearObstacle.srv` |
+| Dig detector event → inert map proposal + BT dig skip zone | `msg/DigEvent.msg` (pub `ros2/src/mowgli_hardware/src/hardware_bridge_node.cpp`, subs `ros2/src/mowgli_map/src/map_server_node.cpp` and `ros2/src/mowgli_behavior/src/behavior_tree_node.cpp`); proposals travel in `msg/MapArea.msg` `proposed_obstacles` / `proposed_obstacle_info` (never in `obstacles`); accept/discard via `srv/PromoteObstacle.srv` / `srv/ClearObstacle.srv` |
 | Obstacle identity carried with a `MapArea` | `msg/MapObstacleInfo.msg` (index-aligned with `MapArea.obstacles`, `SOURCE_USER/TRACKER/DIG`, `pending`, `id`) |
 | Dock pose set semantics (`PRESERVE` / `REQUEST` / `MOTION` yaw source) | `srv/SetDockingPoint.srv`; server `ros2/src/mowgli_map/src/map_server_node.cpp:330` |
 | Firmware version handshake fields | `msg/Status.msg:36-45` (`firmware_version`, `firmware_protocol_version`, `firmware_compatible`); filled at `ros2/src/mowgli_hardware/src/hardware_bridge_node.cpp:1297-1299` |
@@ -41,6 +42,7 @@
 | `package.xml` | 30 | Deps: `builtin_interfaces`, `std_msgs`, `geometry_msgs`, `nav_msgs`; member of `rosidl_interface_packages` |
 | **`include/mowgli_interfaces/`** | | |
 | `coverage_geometry.hpp` | 28 | `kSegmentTransitGapM` — FollowStrip's transit-vs-drive-through threshold for gaps between `drivable_subpaths` (the planner includes the header but no longer splits on it) |
+| `coverage_path_invariants.hpp` | 22 | Shared short-path and minimum resume-replay pose counts; prevents an interrupted near-end replay from taking the goal checker's proximity-only path |
 | `gnss_status_utils.hpp` | 153 | `HasCapability/HasValue`, `IsRtkFixed/Float`, `AbsolutePoseFlags`, `BehaviorTreeFixType`, `NormalizedQuality`, `HardwareQualityPercent`, `BehaviorTreeRtkFixed` |
 | `motion_yaw_fit.hpp` | 102 | `FitMotionYaw(samples) → (yaw, sigma)` total-least-squares line fit, ±π resolved chronologically |
 | `robot_yaml_scalar.hpp` | 151 | `SpliceScalar`, `FormatScalar` (6 dp), `ReadEditWrite` (tmp+rename), `UpdateDockPose`, `PersistScalar` |
@@ -52,7 +54,7 @@
 | `DockCalibrationStatus.msg` | 28 | `PHASE_*` (0-7 incl. `IDLE`/`DONE`), `progress`, `cog_std_deg`, `displacement_m`, `charging`, `running`, `success`, `retry_reason`, `message` |
 | `Emergency.msg` | 6 | `active_emergency`, `latched_emergency`, `lift_warning`, `lift_duration_sec`, `reason` |
 | `ESCStatus.msg` | 12 | `ESC_STATUS_*` codes, `current`, `tacho`, `rpm`, temps — no ROS producer |
-| `GnssStatus.msg` | 120 | `FIX_TYPE_*`, `RTK_MODE_*`, `BASELINE_STATUS_*`, `CORRECTION_STREAM_STATUS_*`, 25 `CAP_*` bits; `capability_flags` vs `value_flags`; dual-antenna baseline; MSM summary |
+| `GnssStatus.msg` | 172 | `FIX_TYPE_*`, `RTK_MODE_*`, `BASELINE_STATUS_*`, `CORRECTION_STREAM_STATUS_*`, 28 `CAP_*` bits; `capability_flags` vs `value_flags`; dual-antenna baseline; MSM summary; `position_observation_sequence` (freshness provenance, commit `b8c5a290`, 2026-09-05; used by `localization_monitor_node`, see CLAUDE.md Invariant 1); and three enum groups added by commit `212ee599` (2026-09-05, correction transport/flow/semantic diagnostics) not yet consumed anywhere in `ros2/src`: `CORRECTION_TRANSPORT_STATUS_*` (7 values), `CORRECTION_FLOW_STATUS_*` (6), `CORRECTION_SEMANTIC_STATUS_*` (6), plus fields `correction_transport_status`, `correction_response_accepted`, `correction_flow_status`, `correction_semantic_status`, `correction_source`, `correction_forwarding_source`, `msm_summary_source` |
 | `HighLevelStatus.msg` | 22 | `HIGH_LEVEL_STATE_*` (0-4), `state_name`, `sub_state_name`, area/path/swath counters, `coverage_percent`, `gps_quality_percent`, `battery_percent`, `is_charging`, `emergency` |
 | `ImuRaw.msg` | 10 | `dt`, ax..gz, mx..mz — no ROS producer |
 | `MapArea.msg` | 10 | `name`, `area` polygon, `obstacles[]`, `is_navigation_area`, `obstacle_info[]` |
@@ -74,7 +76,7 @@
 | `HighLevelControl.srv` | 18 | `COMMAND_*` (1-8, 254, 255) → `success` |
 | `MowerControl.srv` | 4 | `mow_enabled`, `mow_direction` → `success` |
 | `PromoteObstacle.srv` | 59 | `area_index`, `obstacle_id` \| `polygon` \| `pending_id`, `name` → `success`, `message` |
-| `SetDockingPoint.srv` | 37 | `docking_pose`, `use_gps_position`, `yaw_source` (`PRESERVE/REQUEST/MOTION`), `yaw_rad` → `success` |
+| `SetDockingPoint.srv` | 76 | `docking_pose`, `yaw_source` (`PRESERVE/REQUEST/MOTION`), `yaw_rad`, and at most ONE position flag: `use_gps_position` (live on-dock raw-antenna capture), `use_pending_antenna` (antenna from `~/capture_dock_antenna` + MOTION yaw — the calibration's normal write), `preserve_position` (yaw-only MOTION fallback); the last two are the only requests exempt from the charging gate → `success`, `message`, `stored_pose` |
 | `StartInArea.srv` | 13 | `area` (uint8 index) → `success` |
 | `TriggerReplan.srv` | 4 | `reason` → `success`, `message` — no ROS server |
 | **`action/`** | | |
@@ -95,7 +97,7 @@ None — this package builds no executables. Every type below is served/publishe
 | `/hardware_bridge/status` | `Status` | `ros2/src/mowgli_hardware/src/hardware_bridge_node.cpp:704` (`~/status`); sim `ros2/src/mowgli_simulation/src/fake_hardware_bridge_node.cpp:93` | `ros2/src/fusion_graph/src/fusion_graph_node_setup_comms.cpp:151`, `ros2/src/mowgli_localization/src/calibrate_imu_yaw_node.cpp:219`, `ros2/src/mowgli_localization/src/costmap_scan_filter_node.cpp:141` (param `status_topic`), `ros2/src/mowgli_map/src/map_server_node.cpp:223`, `ros2/src/mowgli_monitoring/src/diagnostics_node.cpp:153`, `ros2/src/mowgli_monitoring/src/mqtt_bridge_node.cpp:435`, GUI `gui/pkg/providers/ros.go:29` | reliable 10 (map_server subscribes depth 1) |
 | `/hardware_bridge/emergency` | `Emergency` | `hardware_bridge_node.cpp:706`; sim `:98` | `calibrate_imu_yaw_node.cpp:227`, `diagnostics_node.cpp:161`, `mqtt_bridge_node.cpp:451`, GUI `ros.go:51` | reliable 10 |
 | `/hardware_bridge/power` | `Power` | `hardware_bridge_node.cpp:707`; sim `:96` | `diagnostics_node.cpp:169`, `mqtt_bridge_node.cpp:443`, `ros2/src/mowgli_leds/src/led_ring_node.cpp:152`, GUI `ros.go:50` | reliable 10 |
-| `/hardware_bridge/dig_event` | `DigEvent` | `hardware_bridge_node.cpp:731` (`~/dig_event`) | `map_server_node.cpp:398` (only if `dig_obstacle_enabled_`) | **transient_local** both ends |
+| `/hardware_bridge/dig_event` | `DigEvent` | `hardware_bridge_node.cpp:731` (`~/dig_event`) | `map_server_node.cpp` (only if `dig_obstacle_enabled_`, transient_local) + `behavior_tree_node.cpp` (**volatile** on purpose) | publisher **transient_local** |
 | `/wheel_ticks` | `WheelTick` | `ros2/src/mowgli_hardware/src/odometry_publisher.cpp:40` (`~/wheel_ticks`, remapped `mowgli.launch.py:261`) | GUI `ros.go:45`; `ros2/src/mowgli_localization/src/wheel_odometry_node.cpp:102` (node not launched — `full_system.launch.py:438-446`) | reliable 10 |
 | `/behavior_tree_node/high_level_status` | `HighLevelStatus` | `ros2/src/mowgli_behavior/src/status_nodes.cpp:58` (`~/high_level_status`) | `hardware_bridge_node.cpp:771`, `fusion_graph_node_setup_comms.cpp:166`, `calibrate_imu_yaw_node.cpp:235`, `led_ring_node.cpp:128`, GUI `ros.go:30`, `ros2/src/e2e_test.py:56` | depth 10 |
 | `/gps/status` | `GnssStatus` | `sensors/gps/universal_gnss_topic_bridge.py:167` (converts `universal_gnss_ros2/GnssStatus`) | `hardware_bridge_node.cpp:753`, `ros2/src/mowgli_localization/src/navsat_to_absolute_pose_node.cpp:127`, `ros2/src/mowgli_behavior/src/behavior_tree_node.cpp:427`, `led_ring_node.cpp:137`, GUI `ros.go:35` | reliable 10 |
@@ -167,7 +169,7 @@ CI gates outside colcon: `.github/workflows/msg-codegen-drift.yml` (firmware `--
 - **`GnssStatus.msg` enums / `CAP_*` bits** ↔ the mapping tables in `sensors/gps/universal_gnss_topic_bridge.py:19-24` (and `sensors/gps/mowgli_gnss_bridge/`) that translate `universal_gnss_ros2/GnssStatus`; `sensors-gps.yml` rebuilds on any change here.
 - **`wgs84_projection.hpp`** ↔ `ros2/src/mowgli_localization/src/navsat_to_absolute_pose_node.cpp` (`wgs84_to_enu`) and `gui/web/src/utils/map.tsx` (`transpose` / `itranspose`) — header comment lines 11-15 requires the three stay identical.
 - **`coverage_geometry.hpp` `kSegmentTransitGapM`** ↔ `ros2/src/mowgli_behavior/include/mowgli_behavior/coverage_nodes.hpp:159-160` (`FollowStrip::kSegmentTransitGap`); `test_coverage_transit_gap.cpp` fails if that side stops using it. `mowgli_coverage`'s `buildContinuousSubPaths` includes the header but no longer splits on this value — its split is now connector-drivability (`coverage_planning.cpp:1589-1605`).
-- **`robot_yaml_scalar.hpp`** is the ONLY dock-pose writer path, and it now has exactly TWO callers: `calibrate_imu_yaw_node.cpp:43/723` (dock pre-phase) and `area_manager.cpp:37` — `UpdateDockPose` at `:916` (map_server's `on_set_docking_point`) and `:1673` (datum migration). `mowgli_behavior/src/calibration_nodes.cpp` no longer persists dock yaw (`:40-49` — the `PersistScalar` EMA writeback was removed so there is exactly one file writer), so `PersistScalar` currently has no in-repo caller. Changing key names here changes what lands in the installed `mowgli_robot.yaml` (Invariant 15).
+- **`robot_yaml_scalar.hpp`** is the ONLY dock-pose writer path, and it now has exactly ONE caller file: `area_manager.cpp` — `UpdateDockPose` in map_server's `on_set_docking_point` and in the datum migration. `calibrate_imu_yaw_node.cpp` no longer includes it (both its dock calibrations persist through `/set_docking_point`). `mowgli_behavior/src/calibration_nodes.cpp` no longer persists dock yaw (`:40-49` — the `PersistScalar` EMA writeback was removed so there is exactly one file writer), so `PersistScalar` currently has no in-repo caller. Changing key names here changes what lands in the installed `mowgli_robot.yaml` (Invariant 15).
 - **`MapArea.obstacle_info`** must stay index-aligned with `obstacles` (`MapObstacleInfo.msg:3-6`); GUI `gui/pkg/api/mowglinext.go` and `area_manager.cpp` both rely on the "empty = all user keepouts" fallback.
 - **Adding a package that includes a header from here** → `<depend>mowgli_interfaces</depend>` in its `package.xml` + `ament_target_dependencies(... mowgli_interfaces)`; currently: `mowgli_behavior`, `mowgli_bringup`, `mowgli_coverage`, `mowgli_localization`, `fusion_graph`, `mowgli_hardware`, `mowgli_leds`, `mowgli_monitoring`, `mowgli_map`, `mowgli_simulation`.
 

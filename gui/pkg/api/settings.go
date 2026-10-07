@@ -2,17 +2,18 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
-
-	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -45,17 +46,23 @@ func (f fixedPrecisionFloat) MarshalYAML() (any, error) {
 	}, nil
 }
 
-// writePreservingPerms writes content to path, preserving the existing
-// file's mode and uid/gid when the file already exists. When the file
-// is being created for the first time, it is written owner- and
-// group-writable (0664) so other processes (ROS containers) sharing the
-// file's group can still update it. NOTE: 0664 is NOT world-writable, so
-// the ROS-side line-splice writers (calibration service, set_docking_point,
-// drive-tuning rollback) only persist if their container shares the file's
-// gid; if the containers run with a different uid AND gid, those write-backs
-// fail with EACCES. The previous behavior would silently rewrite the file as
-// owned by the GUI process with mode 0644, which locked out those writers.
+// writePreservingPerms atomically replaces path while preserving the existing
+// file's mode and uid/gid when available. New files are owner- and
+// group-writable (0664) so other processes (ROS containers) sharing the file's
+// group can still update it. NOTE: 0664 is NOT world-writable, so the ROS-side
+// line-splice writers (calibration service, set_docking_point, drive-tuning
+// rollback) only persist if their container shares the file's gid; if the
+// containers run with a different uid AND gid, those write-backs fail with
+// EACCES. Replacing the file in its own directory keeps the rename on the same
+// filesystem; the installed config directory is shared as a directory mount
+// between the GUI and ROS containers.
 func writePreservingPerms(path string, content []byte) error {
+	return writePreservingPermsWithWriter(path, content, (*os.File).Write)
+}
+
+// writePreservingPermsWithWriter accepts the write operation so tests can
+// inject a failure after writing part of the temporary file.
+func writePreservingPermsWithWriter(path string, content []byte, write func(*os.File, []byte) (int, error)) error {
 	mode := os.FileMode(0664)
 	var uid, gid int = -1, -1
 	if info, err := os.Stat(path); err == nil {
@@ -64,21 +71,66 @@ func writePreservingPerms(path string, content []byte) error {
 			uid = int(stat.Uid)
 			gid = int(stat.Gid)
 		}
-	}
-	if err := os.WriteFile(path, content, mode); err != nil {
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	// os.WriteFile only applies the mode on creation; force it after
-	// every write so an externally-changed mode does not stick.
-	if err := os.Chmod(path, mode); err != nil {
+
+	temp, err := os.CreateTemp(filepath.Dir(path), ".mowgli-settings-*.tmp")
+	if err != nil {
 		return err
 	}
+	tempPath := temp.Name()
+	closed := false
+	replaced := false
+	defer func() {
+		if !closed {
+			_ = temp.Close()
+		}
+		if !replaced {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	written, err := write(temp, content)
+	if err != nil {
+		return err
+	}
+	if written != len(content) {
+		return io.ErrShortWrite
+	}
+
 	if uid >= 0 && gid >= 0 {
-		// Best-effort: chown can fail when the GUI process is not root
-		// (e.g. running directly on the host). In that case the file
-		// was opened in-place so ownership is already preserved.
-		_ = os.Chown(path, uid, gid)
+		info, err := temp.Stat()
+		if err != nil {
+			return err
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("cannot inspect temporary settings file ownership")
+		}
+		if int(stat.Uid) != uid || int(stat.Gid) != gid {
+			// If ownership cannot be copied, keep the old file rather than
+			// installing a replacement that could lock out ROS-side writers.
+			if err := temp.Chown(uid, gid); err != nil {
+				return err
+			}
+		}
 	}
+	if err := temp.Chmod(mode); err != nil {
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		closed = true
+		return err
+	}
+	closed = true
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	replaced = true
 	return nil
 }
 
@@ -274,20 +326,42 @@ func flattenROS2YAML(yamlData map[string]any) map[string]any {
 	return flat
 }
 
+// cloneNestedMaps returns a copy of node with its direct child maps copied too
+// (one level deeper than a shallow copy), so a caller can write into the result
+// without touching the source document.
+func cloneNestedMaps(node map[string]any) map[string]any {
+	cloned := make(map[string]any, len(node))
+	for key, value := range node {
+		if child, isMap := value.(map[string]any); isMap {
+			clonedChild := make(map[string]any, len(child))
+			for childKey, childValue := range child {
+				clonedChild[childKey] = childValue
+			}
+			cloned[key] = clonedChild
+			continue
+		}
+		cloned[key] = value
+	}
+	return cloned
+}
+
 // nestToROS2YAML takes a flat param map and node mappings, and produces
 // nested ROS2 YAML structure. It preserves any existing YAML content that
 // is not covered by the schema.
 func nestToROS2YAML(flat map[string]any, nodeMappings map[string]string, existingYAML map[string]any) map[string]any {
 	result := map[string]any{}
 
-	// Preserve existing top-level structure
+	// Preserve existing top-level structure. The nested maps (ros__parameters)
+	// are CLONED, not aliased: the merge below writes the payload's values into
+	// them, and sharing them with the caller silently rewrote the document the
+	// caller still holds. That is what made the write-time number-type hints
+	// read an "on-disk" document that had already been overwritten with the
+	// payload's float64s, so every key neither the schema nor the template
+	// declares came out as a float (lidar_map_radius_tiles: 3 -> 3.0, which
+	// aborts a declare_parameter<int> node).
 	for nodeName, nodeData := range existingYAML {
 		if nodeMap, ok := nodeData.(map[string]any); ok {
-			cloned := map[string]any{}
-			for k, v := range nodeMap {
-				cloned[k] = v
-			}
-			result[nodeName] = cloned
+			result[nodeName] = cloneNestedMaps(nodeMap)
 		}
 	}
 
@@ -523,33 +597,16 @@ func serializeShellSettingValue(key string, value any) string {
 	return fmt.Sprintf("%#v", value)
 }
 
-func applyFixedPrecisionGeoScalars(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(typed))
-		for key, child := range typed {
-			if fixedPrecisionYAMLKeys[key] {
-				if f, ok := asFloat64(child); ok {
-					out[key] = fixedPrecisionFloat(f)
-					continue
-				}
-			}
-			out[key] = applyFixedPrecisionGeoScalars(child)
-		}
-		return out
-	case []any:
-		out := make([]any, len(typed))
-		for i, child := range typed {
-			out[i] = applyFixedPrecisionGeoScalars(child)
-		}
-		return out
-	default:
-		return value
+// loadYAMLTypeHints builds the number-type hints for one write of the
+// installed mowgli_robot.yaml: JSON-schema types first, the types already on
+// disk second. See settings_yaml_types.go for why every writer needs them.
+func loadYAMLTypeHints(dbProvider types.IDBProvider, existingYAML map[string]any) yamlTypeHints {
+	schema, err := getSchema(dbProvider)
+	if err != nil {
+		log.Printf("settings: schema unavailable for YAML type hints (%v); falling back to on-disk types", err)
+		schema = nil
 	}
-}
-
-func marshalROS2YAMLWithGeoPrecision(nested map[string]any) ([]byte, error) {
-	return yaml.Marshal(applyFixedPrecisionGeoScalars(nested))
+	return newYAMLTypeHints(schema, existingYAML)
 }
 
 func stringValue(value any, defaultValue string) string {
@@ -870,7 +927,13 @@ func applyUniversalGnssCompatibility(flat map[string]any, schemaDefaults map[str
 	setGnssIntIfNeeded(flat, "gnss_config_baud", compat["GNSS_CONFIG_BAUD"], schemaDefaults)
 	setGnssStringIfNeeded(flat, "gnss_profile", compat["GNSS_PROFILE"], schemaDefaults)
 	setGnssStringIfNeeded(flat, "gnss_signal_profile", compat["GNSS_SIGNAL_PROFILE"], schemaDefaults)
-	if _, exists := flat["gnss_receiver_model"]; exists {
+	if compat["GNSS_RECEIVER_FAMILY"] == "ublox" || compat["GNSS_RECEIVER_FAMILY"] == "nmea" {
+		// These are Unicore-only expert overrides. Keep a stale value from a
+		// previous receiver selection from becoming effective for u-blox/NMEA.
+		delete(flat, "gnss_receiver_model")
+		delete(flat, "gnss_signal_group")
+		delete(flat, "gnss_rover_dynamic_mode")
+	} else if _, exists := flat["gnss_receiver_model"]; exists {
 		if model := normalizeGnssReceiverModel(flat["gnss_receiver_model"]); model != "" {
 			flat["gnss_receiver_model"] = model
 		} else {
@@ -881,7 +944,16 @@ func applyUniversalGnssCompatibility(flat map[string]any, schemaDefaults map[str
 		}
 	}
 	setGnssIntIfNeeded(flat, "gnss_profile_rate_hz", compat["GNSS_PROFILE_RATE_HZ"], schemaDefaults)
-	setGnssStringIfNeeded(flat, "gnss_signal_group", normalizeGnssSignalGroup(flat["gnss_signal_group"]), schemaDefaults)
+	if compat["GNSS_RECEIVER_FAMILY"] == "unicore" {
+		setGnssStringIfNeeded(flat, "gnss_signal_group", normalizeGnssSignalGroup(flat["gnss_signal_group"]), schemaDefaults)
+		if _, exists := flat["gnss_rover_dynamic_mode"]; exists {
+			if mode := normalizeGnssRoverDynamicMode(flat["gnss_rover_dynamic_mode"]); mode != "" {
+				flat["gnss_rover_dynamic_mode"] = mode
+			} else {
+				delete(flat, "gnss_rover_dynamic_mode")
+			}
+		}
+	}
 	delete(flat, "gnss_rate_hz")
 
 	return compat
@@ -1399,8 +1471,19 @@ func PostSettingsYAML(r *gin.RouterGroup, dbProvider types.IDBProvider) gin.IRou
 		existingYAML := map[string]any{}
 		file, err := os.ReadFile(string(configFilePath))
 		if err == nil {
-			_ = yaml.Unmarshal(file, &existingYAML)
+			if err := yaml.Unmarshal(file, &existingYAML); err != nil {
+				c.JSON(500, ErrorResponse{Error: "failed to parse existing YAML; repair the configuration before saving: " + err.Error()})
+				return
+			}
+		} else if !os.IsNotExist(err) {
+			c.JSON(500, ErrorResponse{Error: "failed to read existing YAML: " + err.Error()})
+			return
 		}
+
+		// Number-type hints must be captured from the document as it was READ,
+		// BEFORE the payload is merged in — they are what keeps a key neither
+		// the schema nor the template declares at the type it already has.
+		typeHints := newYAMLTypeHints(nil, existingYAML)
 
 		// Flatten existing to get current values
 		existing := flattenROS2YAML(existingYAML)
@@ -1417,6 +1500,7 @@ func PostSettingsYAML(r *gin.RouterGroup, dbProvider types.IDBProvider) gin.IRou
 				}
 			}
 			nodeMappings = extractNodeMappings(schema)
+			typeHints = typeHints.withSchema(schema)
 		}
 
 		// Merge payload on top. A null value is an explicit delete request
@@ -1424,9 +1508,11 @@ func PostSettingsYAML(r *gin.RouterGroup, dbProvider types.IDBProvider) gin.IRou
 		// "reset to default" for a key that has no schema default) — drop the
 		// key so it is removed from the YAML rather than written back as
 		// "key: null".
+		explicitlyDeletedKeys := map[string]bool{}
 		for key, value := range payload {
 			if value == nil {
 				delete(existing, key)
+				explicitlyDeletedKeys[key] = true
 			} else {
 				existing[key] = value
 			}
@@ -1446,13 +1532,19 @@ func PostSettingsYAML(r *gin.RouterGroup, dbProvider types.IDBProvider) gin.IRou
 			delete(existing, key)
 			prunedKeys[key] = true
 		}
+		// nestToROS2YAML clones the on-disk YAML, so explicit deletes must also
+		// reach the nested prune step or the clone would restore their old values.
+		for key := range explicitlyDeletedKeys {
+			prunedKeys[key] = true
+		}
 
 		// Nest back into ROS2 YAML structure
 		nested := nestToROS2YAML(existing, nodeMappings, existingYAML)
 		pruneNestedKeys(nested, prunedKeys)
 
-		// Marshal with YAML comments header
-		out, err := marshalROS2YAMLWithGeoPrecision(nested)
+		// Marshal with YAML comments header, using the hints captured from the
+		// document as it was read.
+		out, err := marshalROS2YAML(nested, typeHints)
 		if err != nil {
 			c.JSON(500, ErrorResponse{Error: "failed to marshal YAML: " + err.Error()})
 			return

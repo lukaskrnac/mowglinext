@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.22.1)
 project(mowgli_hardware)
 
 # ---------------------------------------------------------------------------
@@ -109,6 +109,10 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 
   find_package(ament_cmake_gtest REQUIRED)
+  # Every test that brings up rclcpp runs through ament_add_ros_isolated_gtest:
+  # colcon tests packages in parallel, and on one shared DDS domain the test
+  # processes discover each other's nodes (docs/claude/testing-ci.md).
+  find_package(ament_cmake_ros REQUIRED)
 
   # ---- test_cobs ----
   ament_add_gtest(test_cobs
@@ -149,6 +153,17 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_clock_fit
     mowgli_hardware_core
+  )
+
+  # ---- test_odometry_publisher ----
+  ament_add_ros_isolated_gtest(test_odometry_publisher
+    test/test_odometry_publisher.cpp
+    src/odometry_publisher.cpp
+  )
+  target_link_libraries(test_odometry_publisher
+    mowgli_hardware_core
+    ${nav_msgs_TARGETS}
+    ${mowgli_interfaces_TARGETS}
   )
 
   # ---- test_dig_detector ----
@@ -198,6 +213,16 @@ if(BUILD_TESTING)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   )
 
+  # ---- test_blade_reassert ----
+  # Header-only pure logic (blade_reassert.hpp), same as test_blade_gate.
+  ament_add_gtest(test_blade_reassert
+    test/test_blade_reassert.cpp
+  )
+  target_include_directories(test_blade_reassert
+    PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+
   # ---- test_heartbeat_emergency_policy ----
   # The firmware's pure heartbeat safety policy is compiled here directly so
   # all stop/release combinations are verified without physical hardware.
@@ -205,6 +230,26 @@ if(BUILD_TESTING)
     test/test_heartbeat_emergency_policy.cpp
   )
   target_include_directories(test_heartbeat_emergency_policy
+    PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/stm32/ros_usbnode/include
+  )
+
+  # The firmware's pure physical-input clear policy is compiled here directly
+  # so each safety input is covered without physical hardware.
+  ament_add_gtest(test_emergency_clear_policy
+    test/test_emergency_clear_policy.cpp
+  )
+  target_include_directories(test_emergency_clear_policy
+    PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/stm32/ros_usbnode/include
+  )
+
+  # The firmware's pure blade-intent policy is compiled here directly to
+  # verify emergency, recovery, explicit-command, and IDLE transitions.
+  ament_add_gtest(test_blade_emergency_policy
+    test/test_blade_emergency_policy.cpp
+  )
+  target_include_directories(test_blade_emergency_policy
     PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/stm32/ros_usbnode/include
   )
@@ -256,10 +301,38 @@ if(BUILD_TESTING)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   )
 
+  # ---- STM32 runtime parameters (protocol v7) ----
+  # The firmware's pure flash-log format and parameter catalog are compiled
+  # here directly (like the heartbeat/emergency policies) so the append-only
+  # persistence rules and the envelope are verified without hardware, and the
+  # host mirror in ll_datatypes.hpp is pinned id for id.
+  ament_add_gtest(test_fw_param_log
+    test/test_fw_param_log.cpp
+  )
+  target_include_directories(test_fw_param_log
+    PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/stm32/ros_usbnode/include
+  )
+  ament_add_gtest(test_fw_param_catalog
+    test/test_fw_param_catalog.cpp
+  )
+  target_include_directories(test_fw_param_catalog
+    PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/stm32/ros_usbnode/include
+  )
+  ament_add_gtest(test_firmware_params
+    test/test_firmware_params.cpp
+  )
+  target_include_directories(test_firmware_params
+    PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+
   # ---- test_hardware_bridge_parameters ----
   # Includes the node implementation to exercise ROS's actual read-only
   # parameter contract while a missing serial device keeps the test hardware-free.
-  ament_add_gtest(test_hardware_bridge_parameters
+  ament_add_ros_isolated_gtest(test_hardware_bridge_parameters
     test/test_hardware_bridge_parameters.cpp
     src/odometry_publisher.cpp
   )

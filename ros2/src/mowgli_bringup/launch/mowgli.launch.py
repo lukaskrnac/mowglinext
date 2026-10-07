@@ -46,7 +46,7 @@ from launch_ros.substitutions import FindPackageShare
 # file). Deep-merges the SPARSE installed mowgli_robot.yaml over the in-package
 # template defaults, so a missing key falls through to its versioned default.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from robot_config_util import load_robot_params  # noqa: E402
+from robot_config_util import dig_detector_params, load_robot_params  # noqa: E402
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -204,11 +204,32 @@ def generate_launch_description() -> LaunchDescription:
             # Forward configured charge ceilings; firmware enforces its board limits.
             {"max_charge_voltage": float(robot_params.get("max_charge_voltage", 29.4))},
             {"max_charge_current": float(robot_params.get("max_charge_current", 1.2))},
+            # Runtime motion cap, e-stop timings and tilt threshold, pushed to
+            # the STM32 in the same reconnect burst (protocol v7 SET_PARAM) and
+            # persisted in its flash. Until these were injected the bridge
+            # always sent its own compiled-in defaults and the template / GUI
+            # values never reached the board.
+            {"max_mps": float(robot_params.get("max_mps", 0.5))},
+            {"one_wheel_lift_emergency_ms": int(robot_params.get(
+                "one_wheel_lift_emergency_ms", 2000))},
+            {"both_wheels_lift_emergency_ms": int(robot_params.get(
+                "both_wheels_lift_emergency_ms", 1000))},
+            {"tilt_emergency_ms": int(robot_params.get("tilt_emergency_ms", 500))},
+            {"stop_button_emergency_ms": int(robot_params.get(
+                "stop_button_emergency_ms", 100))},
+            {"play_button_clear_emergency_ms": int(robot_params.get(
+                "play_button_clear_emergency_ms", 2000))},
+            {"imu_inclination_threshold": int(robot_params.get(
+                "imu_inclination_threshold", 56))},
             # Pass dock pose from robot config for dock position anchoring
             {"dock_pose_x": float(robot_params.get("dock_pose_x", 0.0))},
             {"dock_pose_y": float(robot_params.get("dock_pose_y", 0.0))},
             {"dock_pose_yaw": float(robot_params.get("dock_pose_yaw", 0.0))},
             {"imu_yaw": float(robot_params.get("imu_yaw", 0.0))},
+            # Wheel-slip dig detector: ONE operator knob (dig_sensitivity:
+            # off|low|medium|high) expanded into the detector + escalation
+            # parameters by robot_config_util; "medium" == the compiled defaults.
+            dig_detector_params(robot_params),
             # Wheel odometry kinematics — single source of truth in
             # mowgli_robot.yaml. hardware_bridge uses ticks_per_meter for
             # host-side odometry and also re-sends it to the STM32 so the
@@ -255,8 +276,8 @@ def generate_launch_description() -> LaunchDescription:
             # is REMOVED — the yaw-rate loop now runs in firmware (task #33),
             # closing on the same gyro without the host's USB round-trip
             # latency. hardware_bridge now sends wz straight through; these
-            # tune the firmware loop instead, pushed via PACKET_ID_LL_SET_YAW_PID
-            # (a separate packet from SET_DRIVE_PID — Firmware-2's #33 report).
+            # tune the firmware loop instead, pushed via protocol v7 SET_PARAM
+            # (yaw_* parameter ids, fw_param_catalog.h).
             # Defaults match the firmware's own power-on fallback.
             {"yaw_kp": float(robot_params.get("yaw_kp", 0.12))},
             {"yaw_ki": float(robot_params.get("yaw_ki", 0.40))},
@@ -274,6 +295,7 @@ def generate_launch_description() -> LaunchDescription:
             ("~/wheel_odom", "/wheel_odom"),
             ("~/wheel_ticks", "/wheel_ticks"),
             ("~/emergency", "/hardware_bridge/emergency"),
+            ("~/firmware_params", "/hardware_bridge/firmware_params"),
             ("~/power", "/hardware_bridge/power"),
             ("~/status", "/hardware_bridge/status"),
             ("~/cmd_vel", "/cmd_vel"),

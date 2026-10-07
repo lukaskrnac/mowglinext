@@ -31,9 +31,18 @@ warn()  { echo -e "  ${YELLOW}!!${NC}  $*"; }
 error() { echo -e "${RED}[x]${NC} $*" >&2; }
 step()  { echo -e "\n${CYAN}${BOLD}── $* ──${NC}"; }
 
+# Tracked modifications only — same rule as install/lib/deploy.sh. Untracked
+# files never block a fast-forward, and the installer, GUI and host updater
+# write many of them under docker/; submodule state is irrelevant on a robot,
+# which runs published images and builds nothing from ros2/src.
+repo_local_changes() {
+  local repo_dir="${1:?repo_local_changes: missing repo dir}"
+  git -C "$repo_dir" status --porcelain --untracked-files=no --ignore-submodules=all 2>/dev/null || true
+}
+
 repo_has_local_changes() {
   local repo_dir="${1:?repo_has_local_changes: missing repo dir}"
-  [ -n "$(git -C "$repo_dir" status --porcelain --untracked-files=all 2>/dev/null || true)" ]
+  [ -n "$(repo_local_changes "$repo_dir")" ]
 }
 
 repo_current_branch() {
@@ -50,7 +59,9 @@ update_existing_repo_checkout() {
   info "Found existing git repository at $repo_dir"
 
   if repo_has_local_changes "$repo_dir"; then
-    warn "Local changes detected in $repo_dir — skipping bootstrap git update."
+    warn "Local changes detected in $repo_dir — skipping bootstrap git update:"
+    repo_local_changes "$repo_dir" | sed 's/^/        /'
+    warn "The installer will offer to stash them and update. Robot configuration under docker/ is never touched."
     return 0
   fi
 
@@ -60,7 +71,9 @@ update_existing_repo_checkout() {
     return 0
   fi
 
-  if ! git -C "$repo_dir" fetch --quiet origin "$REPO_BRANCH"; then
+  # --no-recurse-submodules: git otherwise fetches initialised submodules on
+  # demand and fails the whole update when one moved to another URL.
+  if ! git -C "$repo_dir" fetch --quiet --no-recurse-submodules origin "$REPO_BRANCH"; then
     warn "Could not fetch origin/$REPO_BRANCH — continuing with the current checkout."
     return 0
   fi
@@ -77,7 +90,7 @@ update_existing_repo_checkout() {
     return 0
   fi
 
-  if git -C "$repo_dir" merge --ff-only "origin/$REPO_BRANCH" >/dev/null 2>&1; then
+  if git -C "$repo_dir" -c submodule.recurse=false merge --ff-only "origin/$REPO_BRANCH" >/dev/null 2>&1; then
     info "Fast-forwarded existing installation to origin/$REPO_BRANCH"
     return 0
   fi
@@ -90,9 +103,14 @@ GNSS_FLAG=""
 GNSS_RECEIVER_FAMILY_FLAG=""
 GNSS_CONNECTION_FLAG=""
 LIDAR_FLAG=""
-TFLUNA_FLAG=""
+LIDAR_UART_FLAG=""
+GNSS_DEVICE_FLAG=""
+GNSS_BAUD_FLAG=""
 BACKEND_FLAG=""
 IMAGE_TAG_FLAG=""
+NON_INTERACTIVE_FLAG=false
+MQTT_FLAG=""
+NO_UPDATER_FLAG=false
 
 REPO_URL="https://github.com/mowglinext/mowglinext.git"
 REPO_BRANCH="main"
@@ -139,7 +157,13 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --lidar=*)   LIDAR_FLAG="${1#--lidar=}"; shift ;;
-    --tfluna=*)  TFLUNA_FLAG="${1#--tfluna=}"; shift ;;  # deprecated, kept for backward compat
+    --lidar-uart=*) LIDAR_UART_FLAG="${1#--lidar-uart=}"; shift ;;
+    --gnss-device=*) GNSS_DEVICE_FLAG="${1#--gnss-device=}"; shift ;;
+    --gnss-baud=*)   GNSS_BAUD_FLAG="${1#--gnss-baud=}"; shift ;;
+    --non-interactive|--yes|-y) NON_INTERACTIVE_FLAG=true; shift ;;
+    --mqtt=*) MQTT_FLAG="${1#--mqtt=}"; shift ;;
+    --no-updater) NO_UPDATER_FLAG=true; shift ;;
+    --tfluna=*)  warn "TF-Luna rangefinders are no longer configured by the installer; ignoring $1"; shift ;;
     --branch=*)  REPO_BRANCH="${1#--branch=}"; shift ;;
     --image-tag=*) IMAGE_TAG_FLAG="${1#--image-tag=}"; shift ;;
     --help|-h)
@@ -153,10 +177,17 @@ while [[ $# -gt 0 ]]; do
       echo "                     (the installer still asks for the actual device path and baud; active runtime GNSS config later lives in YAML/GUI)"
       echo "  --lidar=PRESET     LiDAR config: none, ldlidar-usb, ldlidar-uart,"
       echo "                     rplidar-usb, rplidar-uart, stl27l-usb, stl27l-uart"
+      echo "  --gnss-device=PATH GNSS serial device (default: /dev/ttyAMA4 for uart, first USB by-id otherwise)"
+      echo "  --gnss-baud=N      GNSS serial baud first-boot default (default: 921600)"
+      echo "  --lidar-uart=PATH  LiDAR UART device (default: /dev/ttyAMA5)"
       echo "  --branch=BRANCH    Git branch (default: main)"
       echo "  --image-tag=TAG    Container image tag/channel for the installer"
+      echo "  --non-interactive  Never prompt: every unset choice takes its default"
+      echo "  --no-updater       Skip the host updater service (manual updates only)"
+      echo "  --mqtt=on|off      Run the mosquitto MQTT broker (Home Assistant integrations; default: off)"
       echo ""
-      echo "Without flags, the full interactive installer runs."
+      echo "Without flags, the full interactive installer runs. Datum, NTRIP and the"
+      echo "GNSS receiver profile are configured in the GUI after the first start."
       exit 0
       ;;
     *)
@@ -303,17 +334,25 @@ if [[ -n "$LIDAR_FLAG" ]]; then
   esac
 fi
 
-if [[ -n "$TFLUNA_FLAG" ]]; then
-  case "$TFLUNA_FLAG" in
-    none|front|edge|both)
-      INSTALLER_ARGS+=("--tfluna=$TFLUNA_FLAG")
-      HAS_INSTALLER_PRESET_ARGS=true
-      info "Rangefinders: $TFLUNA_FLAG"
-      ;;
-    *)
-      warn "Unknown TF-Luna preset: $TFLUNA_FLAG — installer will ask interactively"
-      ;;
-  esac
+if [[ -n "$LIDAR_UART_FLAG" ]]; then
+  INSTALLER_ARGS+=("--lidar-uart=$LIDAR_UART_FLAG")
+fi
+if [[ -n "$GNSS_DEVICE_FLAG" ]]; then
+  INSTALLER_ARGS+=("--gnss-device=$GNSS_DEVICE_FLAG")
+  HAS_INSTALLER_PRESET_ARGS=true
+fi
+if [[ -n "$GNSS_BAUD_FLAG" ]]; then
+  INSTALLER_ARGS+=("--gnss-baud=$GNSS_BAUD_FLAG")
+fi
+if [[ -n "$MQTT_FLAG" ]]; then
+  INSTALLER_ARGS+=("--mqtt=$MQTT_FLAG")
+fi
+if $NO_UPDATER_FLAG; then
+  INSTALLER_ARGS+=("--no-updater")
+fi
+if $NON_INTERACTIVE_FLAG; then
+  INSTALLER_ARGS+=("--non-interactive")
+  info "Non-interactive: every unset choice takes its default."
 fi
 
 echo ""

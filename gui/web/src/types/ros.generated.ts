@@ -159,6 +159,20 @@ export type CoveragePath = {
   path?: Path;
 };
 
+export type CoveragePlanPreview = {
+  header?: { stamp: { sec: number; nanosec: number }; frame_id: string };
+  xy?: number[];
+  subpath_offsets?: number[];
+};
+
+export type CoverageSession = {
+  session_active?: boolean;
+  current_area?: number;
+  completed_areas?: number[];
+  attempted_areas?: number[];
+  excluded_areas?: number[];
+};
+
 export type DigEvent = {
   header?: { stamp: { sec: number; nanosec: number }; frame_id: string };
   position?: Point;
@@ -176,6 +190,7 @@ export const enum DockCalibrationStatusConstants {
   PHASE_PERSIST = 5,
   PHASE_IDLE = 6,
   PHASE_DONE = 7,
+  PHASE_CAPTURE_POSITION = 8,
 };
 
 export type DockCalibrationStatus = {
@@ -214,6 +229,50 @@ export type Emergency = {
   lift_warning?: boolean;
   lift_duration_sec?: number;
   reason?: string;
+};
+
+export const enum FirmwareParamConstants {
+  STATUS_OK = 0,
+  STATUS_CLAMPED = 1,
+  STATUS_UNKNOWN_ID = 2,
+  STATUS_REJECTED = 3,
+};
+
+export type FirmwareParam = {
+  id?: number;
+  name?: string;
+  requested_valid?: boolean;
+  requested?: number;
+  reported?: boolean;
+  applied?: number;
+  default_value?: number;
+  min_value?: number;
+  max_value?: number;
+  status?: number;
+  persisted?: boolean;
+  is_volatile?: boolean;
+};
+
+export const enum FirmwareParamsConstants {
+  BOOT_UNKNOWN = 255,
+  BOOT_DEFAULTS = 0,
+  BOOT_FLASH = 1,
+  BOOT_FLASH_ERASED = 2,
+  COMMIT_NONE = 0,
+  COMMIT_WRITTEN = 1,
+  COMMIT_UNCHANGED = 2,
+  COMMIT_PENDING = 3,
+  COMMIT_LOG_FULL = 4,
+  COMMIT_ERROR = 5,
+};
+
+export type FirmwareParams = {
+  stamp?: { sec: number; nanosec: number };
+  firmware_incompatible?: boolean;
+  boot_source?: number;
+  last_commit?: number;
+  records_left?: number;
+  params?: FirmwareParam[];
 };
 
 export const enum GnssStatusConstants {
@@ -383,12 +442,27 @@ export type ImuRaw = {
   mz?: number;
 };
 
+export type LidarIgnoreCorridor = {
+  name?: string;
+  polyline?: Polygon;
+  width_m?: number;
+  id?: number;
+};
+
+export type LidarIgnoreCorridorArray = {
+  header?: { stamp: { sec: number; nanosec: number }; frame_id: string };
+  corridors?: LidarIgnoreCorridor[];
+};
+
 export type MapArea = {
   name?: string;
   area?: Polygon;
   obstacles?: Polygon[];
   is_navigation_area?: boolean;
   obstacle_info?: MapObstacleInfo[];
+  proposed_obstacles?: Polygon[];
+  proposed_obstacle_info?: MapObstacleInfo[];
+  id?: number;
 };
 
 export const enum MapObstacleInfoConstants {
@@ -418,6 +492,15 @@ export type Power = {
   charger_status?: string;
 };
 
+export type RecordedAreaPolygon = {
+  area?: Polygon;
+};
+
+export type RecordedAreaPolygonArray = {
+  header?: { stamp: { sec: number; nanosec: number }; frame_id: string };
+  areas?: RecordedAreaPolygon[];
+};
+
 export const enum StatusConstants {
   MOWER_STATUS_INITIALIZING = 0,
   MOWER_STATUS_OK = 255,
@@ -445,12 +528,16 @@ export type Status = {
   ui_board_available?: boolean;
   mow_enabled?: boolean;
   firmware_debug_enabled?: boolean;
+  dig_escalated?: boolean;
+  dig_escalated_distance_m?: number;
+  dig_escalated_required_distance_m?: number;
   mower_esc_status?: number;
   mower_esc_temperature?: number;
   mower_esc_current?: number;
   mower_motor_temperature?: number;
   mower_motor_rpm?: number;
   blade_status_stamp?: { sec: number; nanosec: number };
+  blade_requested_direction?: string;
   firmware_version?: string;
   firmware_protocol_version?: number;
   firmware_compatible?: boolean;

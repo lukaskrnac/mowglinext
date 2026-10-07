@@ -92,7 +92,21 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
       declare_parameter<double>("adaptive_noise_residual_floor_rad", 0.005);
 
   // RTK wrong-fix detection (handled in OnGnss, not in graph_manager).
-  rtk_wrongfix_max_jump_m_ = declare_parameter<double>("rtk_wrongfix_max_jump_m", 0.05);
+  // Default 0.08 — see fusion_graph_node.hpp's rtk_wrongfix_max_jump_m_ doc
+  // comment / mowglinext#738 for the field-data justification.
+  rtk_wrongfix_max_jump_m_ = declare_parameter<double>("rtk_wrongfix_max_jump_m", 0.08);
+  // Stuck-receiver payload-value gate (mowglinext#694, gps_stuck_gate.hpp).
+  // Wheel travel accumulated since /gps/fix's reported lat/lon last actually
+  // changed, above which the sample is withheld as stuck rather than fused.
+  // 1.0 m is generous — a genuinely live receiver's per-sample RTK jitter
+  // (mm-level) resets the accumulator on essentially every sample, so this
+  // only fires on a receiver that is truly not updating; field-observed
+  // sessions accumulated 2.7-4.5 m before anyone noticed.
+  gps_stuck_min_wheel_dist_m_ = declare_parameter<double>("gps_stuck_min_wheel_dist_m", 1.0);
+  // Stand-down threshold: above this much accumulated rotation since the
+  // value last changed, net translation is not a reliable "should have
+  // moved" signal (Invariant 16 turn-exclusion reasoning) — 60 degrees.
+  gps_stuck_max_yaw_rad_ = declare_parameter<double>("gps_stuck_max_yaw_rad", 1.047);
   // Speed-dependent GPS σ inflation (OnGnss): σ_eff = sqrt(σ_msg² + (coeff·v)²).
   // Accounts for GPS-latency × velocity + lever-arm sweep that the receiver
   // covariance omits. 0 = disabled (raw receiver σ, prior behaviour).

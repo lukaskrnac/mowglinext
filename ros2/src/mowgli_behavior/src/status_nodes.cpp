@@ -196,6 +196,7 @@ BT::NodeStatus EndSession::tick()
               ctx->undock_start_recorded ? "true" : "false",
               ctx->obstacle_backoff_count);
   ctx->yaw_seeded_this_session = false;
+  ctx->blade_direction.endSession();
   ctx->skipped_swaths = 0;
   ctx->undock_start_recorded = false;
   ctx->obstacle_backoff_count = 0;
@@ -203,6 +204,7 @@ BT::NodeStatus EndSession::tick()
   // Clear the per-session "already planned" set and attempt counters
   // so the next COMMAND_START can plan + mow each area afresh.
   ctx->attempted_areas.clear();
+  ctx->incomplete_retired_areas.clear();
   ctx->area_attempt_count.clear();
   // Also clear the per-area coverage high-water mark (documented in
   // bt_context.hpp as "Cleared by EndSession"). Leaking it across sessions
@@ -223,6 +225,9 @@ BT::NodeStatus EndSession::tick()
   // pause that happened last session.
   ctx->guard_halted_reason.reset();
   ctx->area_guard_halt_count.clear();
+  ctx->coverage_scan_paused = false;
+  // A fleet yield describes ONE pass of the session that just ended.
+  ctx->fleet_yielded_areas.clear();
   // SAFETY (issue #487 escape motion): disarm the escape and forget the
   // last-motion direction at the session boundary. A token or a direction that
   // survived into the next session would describe a pose the robot may no
@@ -231,6 +236,22 @@ BT::NodeStatus EndSession::tick()
   ctx->start_blocked_escape_armed = false;
   ctx->last_motion_valid = false;
   ctx->last_motion_cmd_vx = 0.0;
+  // Dig skip zones are SESSION state (dig_skip.hpp): a patch that made the
+  // wheels slip on wet grass today deserves another try next session, and the
+  // operator has the proposal in the GUI if it is a real hole. Written by a
+  // subscriber callback, hence the lock. dig_event_count is NOT reset — it is
+  // a monotonic edge counter, not session state.
+  {
+    std::lock_guard<std::mutex> lock(ctx->context_mutex);
+    ctx->session_dig_points.clear();
+  }
+  // Failed-transit-target avoidance (issue #732) is SESSION state, same
+  // rationale as the dig skip zones above: a target blocked today (a person
+  // standing there, a parked vehicle) deserves another try next session.
+  // Written only from FollowStrip's own BT action-node callbacks, so — unlike
+  // session_dig_points — no context_mutex lock is needed here (see the
+  // context_mutex doc comment in bt_context.hpp).
+  ctx->session_failed_transit_targets.clear();
   // Swath-completion model (replaces the cell coverage grid): clear the
   // per-area completed-swath sets, swath counts, and the completed-area set so
   // the next COMMAND_START re-plans and re-mows every area from swath 0.
@@ -243,6 +264,10 @@ BT::NodeStatus EndSession::tick()
   ctx->area_path_pose_count.clear();
   ctx->area_plan_fingerprint.clear();
   ctx->completed_areas.clear();
+  // Issue #680: a plausibility warning belongs to the session that raised
+  // it. Leaking it into the next session would show a stale
+  // COVERAGE_INCOMPLETE for a mow that hasn't run yet.
+  ctx->coverage_plausibility_warning = false;
   // Drop any "mow only area N" constraint from a targeted run (~/start_in_area)
   // at the same boundary as every other per-session set, so the next plain
   // COMMAND_START mows the whole lawn again. The clip is session state (it must

@@ -14,8 +14,8 @@ from mowgli_interfaces.msg import GnssStatus as PublicGnssStatus
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rtcm_msgs.msg import Message as PublicRtcmMessage
-from universal_gnss_ros2.msg import GnssStatus as UniversalGnssStatus
-from universal_gnss_ros2.msg import RtcmFrame
+from universal_gnss_msgs.msg import GnssStatus as UniversalGnssStatus
+from universal_gnss_msgs.msg import RtcmFrame
 
 
 UNIVERSAL_TO_PUBLIC_FIX_TYPE = {
@@ -358,8 +358,10 @@ class CorrectionDiagnosticTracker:
             and msm_fresh
             and (msm.get("malformed_count") or 0) == 0
         )
+        # Both observations must carry a station id and agree. Id 0 is a real RTCM reference
+        # station, so it is the PRESENCE of the id that counts, not a non-zero value.
         station_matches = (
-            (base.get("station_id") or 0) > 0
+            base.get("station_id") is not None
             and base.get("station_id") == msm.get("station_id")
         )
         if correction_available is True and parser_healthy is True and base_usable and msm_usable and station_matches:

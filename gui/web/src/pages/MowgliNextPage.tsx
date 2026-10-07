@@ -1,3 +1,4 @@
+import {liveAreaLabel} from "../utils/areaLabel.ts";
 import type {ReactNode} from "react";
 import {useMemo} from "react";
 import {App, Button} from "antd";
@@ -9,8 +10,10 @@ import {Sparkles, ChevronRight, Wifi, Droplets, Thermometer} from "lucide-react"
 
 import {useIsMobile} from "../hooks/useIsMobile";
 import {useHighLevelStatus} from "../hooks/useHighLevelStatus.ts";
+import {useCoverageSession} from "../hooks/useCoverageSession.ts";
 import {usePower} from "../hooks/usePower.ts";
 import {useStatus} from "../hooks/useStatus.ts";
+import {BladeDirectionDisplay} from "../components/BladeDirectionDisplay.tsx";
 import {useGnssStatus} from "../hooks/useGnssStatus.ts";
 import {useEmergency} from "../hooks/useEmergency.ts";
 import {useSettings} from "../hooks/useSettings.ts";
@@ -25,15 +28,18 @@ import {deriveGpsStatus} from "../utils/gpsStatus.ts";
 import {deriveIsMoving} from "../utils/mowerMotion.ts";
 import {parseBoolish} from "../utils/settingsValues.ts";
 import {LocalizationSourceSwitch} from "../components/LocalizationSourceSwitch.tsx";
+import {deriveChargeHold} from "../utils/chargeHold.ts";
 
 import {GlassCard} from "../concept/components/GlassCard.tsx";
 import {BatteryRing} from "../concept/components/BatteryRing.tsx";
 import {StatusOrb} from "../concept/components/StatusOrb.tsx";
-import {ActionCluster} from "../concept/components/ActionCluster.tsx";
+import {ActionCluster, type ChargeHold} from "../concept/components/ActionCluster.tsx";
 import {LiveMapMini} from "../concept/components/LiveMapMini.tsx";
 import type {MiniArea, MiniProgress} from "../concept/components/LiveMapMini.tsx";
 import {ProgressRibbon} from "../concept/components/ProgressRibbon.tsx";
 import {SoilWetBanner} from "../components/dashboard/SoilWetBanner.tsx";
+import {DigEscalationBanner} from "../components/dashboard/DigEscalationBanner.tsx";
+import {isCoverageScanPaused} from "../components/dashboard/scanPaused.ts";
 import {WeatherChip} from "../concept/components/WeatherChip.tsx";
 import {useWeather} from "../hooks/useWeather.ts";
 import {NoiseTexture} from "../concept/components/NoiseTexture.tsx";
@@ -50,11 +56,13 @@ import {staggerParent, riseFade, popIn, springSnap} from "../concept/motion.ts";
 function useMowerData() {
   const {t} = useTranslation();
   const {highLevelStatus} = useHighLevelStatus();
+  const coverageSession = useCoverageSession();
   const power = usePower();
   const status = useStatus();
   const gnss = useGnssStatus();
   const emergency = useEmergency();
   const {settings} = useSettings();
+  const areaMap = useMowingMap();
 
   const isCharging = highLevelStatus.is_charging ?? status.is_charging ?? false;
   const isEmergency = highLevelStatus.emergency ?? emergency.active_emergency ?? false;
@@ -73,6 +81,7 @@ function useMowerData() {
   // OBSTACLE_BACKOFF, DYNAMIC_OBSTACLE_CLEARED, AREA_UNREACHABLE) and carried a
   // phantom SKIP_STRIP, so every planning/backoff phase read as "idle" mid-mow.
   const stateNum = highLevelStatus.state ?? -1;
+  const scanPaused = isCoverageScanPaused(highLevelStatus);
   const isMoving = deriveIsMoving(stateNum, isCharging);
 
   return {
@@ -93,10 +102,15 @@ function useMowerData() {
     motorTemp: status.mower_motor_temperature ?? 0,
     rain: status.rain_detected ?? false,
     isMoving,
+    scanPaused,
     toolWidth: (settings?.tool_width as number | undefined) ?? 0.18,
+    batteryFullPercent: (settings?.battery_full_percent as number | undefined) ?? 95,
+    batteryManualResumePercent: (settings?.battery_manual_resume_percent as number | undefined) ?? 30,
+    batteryLowPercent: (settings?.battery_low_percent as number | undefined) ?? 20,
+    coverageSessionActive: coverageSession.session_active ?? false,
     currentAreaIndex: highLevelStatus.current_area ?? null,
     currentArea: highLevelStatus.current_area != null
-      ? t('mowgliNextPage.areaN', {number: highLevelStatus.current_area + 1})
+      ? liveAreaLabel(t, areaMap, highLevelStatus.current_area)
       : undefined,
     // Firmware <-> image compatibility (from the hardware_bridge handshake).
     // null until the first Status arrives, so the health card stays quiet
@@ -204,6 +218,10 @@ export const MowgliNextPage = () => {
     data.emergency ? "alert" :
     data.state === "RETURNING_HOME" ? "returning" :
     data.isMoving ? "playing" : "idle";
+  const chargeHold: ChargeHold | undefined = deriveChargeHold(
+    data.state, data.battery, data.batteryManualResumePercent, data.batteryLowPercent,
+    data.batteryFullPercent, data.coverageSessionActive,
+  );
 
   // ── ETA estimate ──
   //
@@ -222,11 +240,12 @@ export const MowgliNextPage = () => {
     ? Math.max(1, Math.round(remainingM2 / rateM2PerSec / 60))
     : 0;
 
-  // Headline mirrors the subline's branch ORDER (moving first) so the two never
-  // contradict. When moving WITH a usable ETA we show the countdown; when moving
-  // but the coverage snapshot hasn't arrived yet (remainingMin === 0) we still
-  // say "en tonte" instead of falling through to the idle "au repos" text.
-  const headline = data.isMoving
+  // Headline mirrors the subline's branch order: SCAN_PAUSED gets the operator
+  // explanation first while the mission remains active; otherwise a moving mower
+  // gets its ETA/mowing copy instead of falling through to the idle text.
+  const headline = data.scanPaused
+    ? <>{t('mowgliNextPage.headlineScanPausedPrefix')}<em style={{fontStyle: 'italic', color: 'var(--amber, #FFB84D)'}}>{t('mowgliNextPage.headlineScanPausedEmphasis')}</em>{t('mowgliNextPage.headlineScanPausedSuffix')}</>
+    : data.isMoving
     ? (remainingMin > 0
         ? <>{t('mowgliNextPage.headlineUntilHomePrefix')}<span style={{
             background: 'var(--grad-primary, linear-gradient(135deg, #7CFFB2, #2BAA66))',
@@ -234,7 +253,13 @@ export const MowgliNextPage = () => {
             WebkitTextFillColor: 'transparent', color: 'transparent',
           }}>{t('mowgliNextPage.headlineMinutes', {value: remainingMin})}</span>{t('mowgliNextPage.headlineUntilHomeSuffix')}</>
         : <>{t('mowgliNextPage.headlineMowingPrefix')}<em style={{fontStyle: 'italic', color: 'var(--lime, #7CFFB2)'}}>{t('mowgliNextPage.headlineMowingEmphasis')}</em>{t('mowgliNextPage.headlineMowingSuffix')}</>)
-    : data.state === "CHARGING"
+    : chargeHold
+      ? <>{t('mowgliNextPage.headlineMowingPausedPrefix')}<span style={{
+          background: 'var(--grad-primary, linear-gradient(135deg, #7CFFB2, #2BAA66))',
+          WebkitBackgroundClip: 'text', backgroundClip: 'text',
+          WebkitTextFillColor: 'transparent', color: 'transparent',
+        }}>{t('mowgliNextPage.headlinePercent', {value: Math.round(data.battery)})}</span></>
+    : data.charging
       ? <>{t('mowgliNextPage.headlineChargingPrefix')}<span style={{
           background: 'var(--grad-primary, linear-gradient(135deg, #7CFFB2, #2BAA66))',
           WebkitBackgroundClip: 'text', backgroundClip: 'text',
@@ -244,9 +269,15 @@ export const MowgliNextPage = () => {
         ? <span style={{color: 'var(--rose, #FF6B7A)'}}>{t('mowgliNextPage.emergencyStop')}</span>
         : <>{t('mowgliNextPage.headlineIdlePrefix')}<em style={{fontStyle: 'italic', color: 'var(--lime, #7CFFB2)'}}>{t('mowgliNextPage.headlineIdleEmphasis')}</em>{t('mowgliNextPage.headlineIdleSuffix')}</>;
 
-  const subline = data.isMoving
-    ? t('mowgliNextPage.sublineMoving', {gps: data.gpsLabel.toLowerCase(), area: data.currentArea ?? t('mowgliNextPage.activeZone')})
-    : data.charging
+  const subline = data.scanPaused
+    ? t('mowgliNextPage.sublineScanPaused')
+    : data.isMoving
+      ? t('mowgliNextPage.sublineMoving', {gps: data.gpsLabel.toLowerCase(), area: data.currentArea ?? t('mowgliNextPage.activeZone')})
+      : chargeHold
+        ? chargeHold.autoResume
+          ? t('mowgliNextPage.sublineChargeHold', {full: data.batteryFullPercent, manual: chargeHold.manualResumePercent})
+          : t('mowgliNextPage.sublineManualChargeHold')
+        : data.charging
       ? t('mowgliNextPage.sublineCharging', {current: data.current.toFixed(1)})
       : data.emergency
         ? t('mowgliNextPage.sublineEmergency')
@@ -288,6 +319,8 @@ export const MowgliNextPage = () => {
     // Nav2 left up so the mission can resume via START, no dock drive). The
     // separate Home control keeps HOME (Command 2 → return to dock).
     onPause: withFeedback(mowerAction("high_level_control", {Command: 8})),
+    onResume: withFeedback(mowerAction("high_level_control", {Command: 1})),
+    onCancelMowing: withFeedback(mowerAction("high_level_control", {Command: 8})),
     onHome: withFeedback(mowerAction("high_level_control", {Command: 2})),
     onStop: confirmEmergency,
     // Clear a latched emergency from the Dashboard. Without this the robot is
@@ -325,15 +358,19 @@ export const MowgliNextPage = () => {
               color: 'var(--ink, #ECFFF4)', fontWeight: 400,
               letterSpacing: '-0.02em', lineHeight: 1.05, marginTop: 4,
             }}>
-              {data.isMoving ? t('mowgliNextPage.mowgliMowing') : data.charging ? t('mowgliNextPage.mowgliCharging') : t('mowgliNextPage.welcomeBack')}
+              {data.scanPaused ? t('mowgliNextPage.mowgliScanPaused') : data.isMoving ? t('mowgliNextPage.mowgliMowing') : data.charging ? t('mowgliNextPage.mowgliCharging') : t('mowgliNextPage.welcomeBack')}
             </div>
           </div>
           <StatusOrb
             tone={data.emergency ? "alert" : data.isMoving ? "live" : data.charging ? "charging" : "resting"}
             size={10}
-            label={data.isMoving ? t('mowgliNextPage.orbMowing') : data.charging ? t('mowgliNextPage.orbCharging') : data.emergency ? t('mowgliNextPage.orbAlert') : t('mowgliNextPage.orbIdle')}
+            label={data.scanPaused ? t('mowgliNextPage.orbScanPaused') : data.isMoving ? t('mowgliNextPage.orbMowing') : data.charging ? t('mowgliNextPage.orbCharging') : data.emergency ? t('mowgliNextPage.orbAlert') : t('mowgliNextPage.orbIdle')}
           />
         </motion.header>
+
+        {/* Repeat-dig escalation: hardware_bridge halted the mission — the
+            operator needs to know why nothing is moving and how to clear it */}
+        <DigEscalationBanner variants={riseFade}/>
 
         {/* IrriSense: the garden is wet — warn before anyone starts a mow */}
         <SoilWetBanner variants={riseFade}/>
@@ -343,7 +380,7 @@ export const MowgliNextPage = () => {
           <div style={{display: 'flex', flexDirection: 'column', gap: 14}}>
             <motion.div variants={popIn}>
               <HeroCard
-                data={data} phase={phase} actions={actions}
+                data={data} phase={phase} actions={actions} chargeHold={chargeHold}
                 headline={headline} subline={subline}
                 coveragePct={coveragePct}
                 todayMowedM2={todayMowedM2} totalArea={totalArea}
@@ -358,7 +395,7 @@ export const MowgliNextPage = () => {
             <div style={{display: 'flex', flexDirection: 'column', gap: 18}}>
               <motion.div variants={popIn}>
                 <HeroCard
-                  data={data} phase={phase} actions={actions}
+                  data={data} phase={phase} actions={actions} chargeHold={chargeHold}
                   headline={headline} subline={subline}
                   coveragePct={coveragePct}
                   todayMowedM2={todayMowedM2} totalArea={totalArea}
@@ -388,7 +425,9 @@ interface HeroCardProps {
   actions: {
     onStart: () => void; onPause: () => void;
     onHome: () => void; onStop: () => void; onRearm: () => void;
+    onResume: () => void; onCancelMowing: () => void;
   };
+  chargeHold?: ChargeHold;
   headline: React.ReactNode;
   subline: string;
   coveragePct: number;
@@ -398,7 +437,7 @@ interface HeroCardProps {
 }
 
 function HeroCard({
-  data, phase, actions, headline, subline, coveragePct, todayMowedM2, totalArea, large,
+  data, phase, actions, chargeHold, headline, subline, coveragePct, todayMowedM2, totalArea, large,
 }: HeroCardProps) {
   const {t} = useTranslation();
   return (
@@ -483,7 +522,7 @@ function HeroCard({
         })()}
 
         <div style={{marginTop: large ? 28 : 22}}>
-          <ActionCluster phase={phase} {...actions}/>
+          <ActionCluster phase={phase} chargeHold={chargeHold} {...actions}/>
         </div>
       </div>
     </GlassCard>
@@ -568,7 +607,7 @@ function TilesRow({data}: {data: ReturnType<typeof useMowerData>}) {
       <StatTile label="GPS" value={`${Math.round(data.gps)}`} unit="%"
                 hint={data.gpsLabel} accent="cyan" icon={<Wifi size={14}/>}/>
       <StatTile label={t('mowgliNextPage.blades')} value={data.rpm > 0 ? Math.round(data.rpm).toString() : t('mowgliNextPage.bladesOff')}
-                unit={data.rpm > 0 ? 'rpm' : ''} hint={`${data.bladeCurrent.toFixed(1)} A`}
+                unit={data.rpm > 0 ? 'rpm' : ''} hint={<>{data.bladeCurrent.toFixed(1)} A · <BladeDirectionDisplay compact/></>}
                 accent="amber" icon={<Sparkles size={14}/>}/>
       <StatTile label={t('mowgliNextPage.motor')} value={data.motorTemp.toFixed(0)} unit="°c"
                 hint={`ESC ${data.escTemp.toFixed(0)} °C`}
@@ -586,7 +625,7 @@ interface StatTileProps {
   label: string;
   value: string;
   unit: string;
-  hint: string;
+  hint: ReactNode;
   accent: "lime" | "cyan" | "amber" | "rose";
   icon: React.ReactNode;
 }
@@ -669,7 +708,7 @@ function HealthCard({data}: {data: ReturnType<typeof useMowerData>}) {
         <Button
           type="primary"
           size="small"
-          onClick={() => navigate('/onboarding?step=firmware&flash=1')}
+          onClick={() => navigate('/settings?section=updates')}
         >
           {t('mowgliNextPage.firmwareFlashCta')}
         </Button>

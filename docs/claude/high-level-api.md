@@ -25,6 +25,13 @@
 | 3 | `HIGH_LEVEL_STATE_RECORDING` | Area recording in progress |
 | 4 | `HIGH_LEVEL_STATE_MANUAL_MOWING` | Manual mowing via teleop |
 
+While cached state is `AUTONOMOUS` / `MOWING`, `sub_state_name="SCAN_PAUSED"` is a live-only
+overlay: `FollowStrip` has cut the blade for a short stale LiDAR interval while preserving the
+same coverage goal. It clears after 0.5 s of fresh scans (or on every FollowStrip/session terminal
+path); both edges publish immediately, with the normal 1 Hz republisher as a liveness fallback.
+It does not change the numeric state, main state name, or command semantics. It takes priority over
+the live `TRANSIT` sub-state if a transit completion discovers the stale scan in the same tick.
+
 ## Area Recording Flow
 1. GUI sends `COMMAND_RECORD_AREA` (3) to start recording
 2. BT enters `RecordArea` node — samples position at `area_record_rate_hz` (default **10 Hz**, from `mowgli_robot.yaml` via the blackboard; points closer than `kMinSampleSpacingM` = 0.05 m are dropped). Live preview is republished on `~/recording_trajectory` at `kPreviewPublishRateHz` = 2 Hz
@@ -51,8 +58,13 @@ The GUI's scheduler (`gui/pkg/providers/scheduler.go`) polls its `schedule:*` DB
 
 Published with **numeric state 1 (IDLE)** and `state_name="DIG_OBSTRUCTION"` while `hardware_bridge` holds `~/dig_escalated`. The IDLE value is deliberate: the firmware maps it to a wheel + blade hard stop, so a wedged robot cannot grind on. Exits:
 
-- **HOME (command 2)** — `HomeSequence` publishes `RETURNING_HOME` (state 2, firmware unlocked), then, gated on `IsDigEscalated`, calls `/map_server_node/discard_dig_keepouts_near_robot` to drop the PENDING dig proposals that contain / lie within 0.60 m of the robot before `DockRobot` plans (otherwise Smac starts in a lethal cell → START_OCCUPIED → "HOME never moves"). Accepted keepouts and farther proposals stay.
+- **HOME (command 2)** — `HomeSequence` publishes `RETURNING_HOME` (state 2, firmware unlocked), then goes straight to `SaveObstacles` / `ClearCostmap` / `DockRobot`. There is no dig-keepout clean-up step any more (`DiscardNearbyDigKeepouts` and `/map_server_node/discard_dig_keepouts_near_robot` were removed): a dig is only an inert PROPOSAL in map_server and never stamps the keepout mask, so a HOME out of `DIG_OBSTRUCTION` can always plan from the robot's pose.
 - **Lift the robot clear, then Play** — the bridge releases the latch once the fused pose is 2 × `dig_escalate_radius_m` (1.0 m by default) from the escalation point; Play (command 1) is refused by `DigObstructionGuard` until then.
+- **Operator clear** — the dashboard's dig-escalation banner calls `/hardware_bridge/clear_dig_escalation` (`std_srvs/Trigger`); the bridge refuses it until the fused pose is more than `dig_escalate_clear_distance_m` (0.50 m default, floored at 0.30 m) from the escalation point, and `Status.dig_escalated_distance_m` / `.dig_escalated_required_distance_m` drive the banner's live progress.
 - Reaching the charger also clears the latch. Manual / recording modes (3/5/6/7) are never blocked by the guard.
 
 The GUI shows the state as "Dig obstruction" with the recovery hint, and the map toolbar offers Continue (Play) rather than Pause while it is held.
+
+### MANUAL_CHARGING (`ManualChargeGuard`, mid-mow charge detection)
+
+Distinct from the end-of-mow `CHARGING` / `CRITICAL_BATTERY_CHARGING` states above: this fires while a `FollowCoveragePath`/`FollowPath` goal is actively running, if the robot is detected charging (e.g. it drifted onto or near the dock mid-coverage). `ManualChargeGuard` (inside `StripGuards`, `main_tree.xml:972-1000`) debounces the charger bit 3.0 s to survive dock-contact bounce, then publishes **numeric state 1 (IDLE)** with `state_name="MANUAL_CHARGING"` and pauses — no auto-undock. It waits up to 24 h (17280 × 5 s) for the operator to physically undock the robot; on timeout the run is treated as finished. Exposed on the GUI dashboard as a charge hold (commits `c8da653c`/`fb2b18cb`/`3762f1f4`, 2026-09-04 to 09-24).

@@ -23,6 +23,20 @@ bool ui_board_available
 bool mow_enabled
 bool firmware_debug_enabled
 
+# Repeat-dig escalation (mowgli_hardware/dig_escalation.hpp): true once the
+# hardware bridge has seen enough dig latches in one spot to conclude the
+# robot cannot free itself, and stays true until either the robot reaches the
+# charger or an operator confirms via ~/clear_dig_escalation that it has
+# moved dig_escalated_distance_m past the obstruction. dig_escalated_distance_m
+# is the live distance (m) from the spot the escalation latched at; 0 when
+# dig_escalated is false. dig_escalated_required_distance_m is the configured
+# dig_escalate_clear_distance_m ~/clear_dig_escalation requires exceeding
+# (floored at 0.30 m server-side regardless of configuration) — published
+# unconditionally so the GUI never hardcodes the threshold.
+bool dig_escalated
+float32 dig_escalated_distance_m
+float32 dig_escalated_required_distance_m
+
 uint8 mower_esc_status
 float32 mower_esc_temperature
 float32 mower_esc_current
@@ -32,6 +46,12 @@ float32 mower_motor_rpm
 # `stamp`, which is refreshed for every mainboard status packet even when the
 # blade telemetry stream has stopped. A zero stamp means no report received.
 builtin_interfaces/Time blade_status_stamp
+
+# Last blade request successfully written to the firmware link:
+# unknown (also the empty default), off, forward, or reverse.
+# Command intent only: unsigned RPM cannot confirm physical direction, and
+# firmware may inhibit the request or wait for a stopped reversal.
+string blade_requested_direction
 
 # Firmware version handshake (image <-> firmware compatibility). Populated by
 # hardware_bridge from the STM32's CONFIG_RSP reply. firmware_compatible is

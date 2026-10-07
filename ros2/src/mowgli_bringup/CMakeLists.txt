@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.22.1)
 project(mowgli_bringup)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -25,6 +25,7 @@ install(
     scripts/wait_for_tf.py
     scripts/empty_static_map_pub.py
     scripts/cmd_vel_ws_relay.py
+    scripts/fleet_peer_obstacles.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -63,6 +64,14 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_gnss_launch_config test/test_gnss_launch_config.py
     TIMEOUT 30
   )
+  ament_add_pytest_test(test_foxglove_launch_config test/test_foxglove_launch_config.py
+    TIMEOUT 30
+  )
+  # The GNSS sidecar's embedded launcher (install/compose/docker-compose.gps.yml)
+  # keeps its defaults equal to the template and needs no host-side config.
+  ament_add_pytest_test(test_gnss_sidecar_launcher test/test_gnss_sidecar_launcher.py
+    TIMEOUT 30
+  )
   # Verifies the sparse-installed-config deep-merge (robot_config_util):
   # template-only defaults, sparse overrides + fall-through, reset-to-default,
   # and full-config backward compat.
@@ -73,6 +82,11 @@ if(BUILD_TESTING)
     TIMEOUT 30
   )
   ament_add_pytest_test(test_cmd_vel_ws_relay test/test_cmd_vel_ws_relay.py
+    TIMEOUT 30
+  )
+  # Pure helpers of the fleet peer → costmap point-cloud node
+  # (docs/MULTI_ROBOT.md): ring geometry, staleness, PointCloud2 packing.
+  ament_add_pytest_test(test_fleet_peer_obstacles test/test_fleet_peer_obstacles.py
     TIMEOUT 30
   )
 
@@ -88,11 +102,23 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_launch_injection test/test_launch_injection.py
     TIMEOUT 30
   )
+  ament_add_pytest_test(test_battery_launch_config test/test_battery_launch_config.py
+    TIMEOUT 30
+  )
 
   # Lockstep guard for the firmware wheel-PI defaults: template ==
   # mowgli.launch.py fallback == hardware_bridge_node.cpp declared default, and
   # the set clears the template's deadband_pwm (2026-09-15 stiction lock).
   ament_add_pytest_test(test_drive_pid_defaults test/test_drive_pid_defaults.py
+    TIMEOUT 30
+  )
+
+  # Type guard for the LiDAR map geometry fusion_graph.launch.py forwards:
+  # declare_parameter<double> aborts the localizer on an int, which is how a
+  # GUI settings save bricked the robot on 2026-09-15. Executes the launch
+  # file's own pure helper out of its AST, no ROS2 runtime.
+  ament_add_pytest_test(test_fusion_graph_launch_types
+    test/test_fusion_graph_launch_types.py
     TIMEOUT 30
   )
 

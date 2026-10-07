@@ -29,9 +29,15 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description() -> LaunchDescription:
+    # Expose the public graph, keeping sidecar-internal GNSS channels out of
+    # both subscriptions and client publishing (including older prefixes).
+    internal_gnss_topic_whitelist = (
+        r"^(?!/(?:_gps_internal|gps_internal|universal_gnss)(?:/.*)?$).*"
+    )
     # ------------------------------------------------------------------
     # Declared arguments
     # ------------------------------------------------------------------
@@ -57,11 +63,18 @@ def generate_launch_description() -> LaunchDescription:
         description="Maximum bytes buffered per client before dropping messages.",
     )
 
+    num_threads_arg = DeclareLaunchArgument(
+        "num_threads",
+        default_value="0",
+        description="Bridge worker threads (0 selects automatically).",
+    )
+
     # ------------------------------------------------------------------
     # Resolved substitutions
     # ------------------------------------------------------------------
     port = LaunchConfiguration("port")
     send_buffer_limit = LaunchConfiguration("send_buffer_limit")
+    num_threads = LaunchConfiguration("num_threads")
 
     # ------------------------------------------------------------------
     # foxglove_bridge node
@@ -71,12 +84,34 @@ def generate_launch_description() -> LaunchDescription:
         executable="foxglove_bridge",
         name="foxglove_bridge",
         output="screen",
+        # RESPAWN: this bridge is the GUI's ONLY link to ROS (gui/pkg/providers/
+        # ros.go connects to ws://localhost:8765 and every topic, service and
+        # parameter the operator sees goes through it). When it dies the web UI
+        # silently shows no robot on the map and "no GPS" while the robot is
+        # perfectly localised and still mowing — field 2026-09-18, where it
+        # segfaulted (exit -11) moments after the GUI backend connected and was
+        # never restarted, leaving the operator blind for a whole run.
+        # It is outside the motion path, so restarting it can only restore
+        # observability; a crash loop is bounded by respawn_delay.
+        respawn=True,
+        respawn_delay=2.0,
         parameters=[
             {
-                "port": port,
+                "port": ParameterValue(port, value_type=int),
                 "address": "0.0.0.0",
-                "send_buffer_limit": send_buffer_limit,
-                "num_threads": 0,
+                "send_buffer_limit": ParameterValue(send_buffer_limit, value_type=int),
+                "num_threads": ParameterValue(num_threads, value_type=int),
+                "topic_whitelist": [internal_gnss_topic_whitelist],
+                "client_topic_whitelist": [internal_gnss_topic_whitelist],
+                "capabilities": [
+                    "clientPublish",
+                    "services",
+                    "connectionGraph",
+                    # Preserve live parameter access used by Foxglove Studio.
+                    # param_whitelist (default '.*') still gates those params.
+                    "parameters",
+                    "parametersSubscribe",
+                ],
             },
         ],
     )
@@ -88,6 +123,7 @@ def generate_launch_description() -> LaunchDescription:
         [
             port_arg,
             send_buffer_limit_arg,
+            num_threads_arg,
             foxglove_bridge_node,
         ]
     )

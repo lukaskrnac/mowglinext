@@ -1,6 +1,7 @@
 package updater
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -114,13 +115,22 @@ type containerInfo struct {
 	} `json:"Mounts"`
 }
 
+// command returns the command's STDOUT only. Callers parse it (JSON from
+// `docker compose config`, `docker inspect`, ...), and docker writes warnings
+// to stderr on a perfectly successful run — `time="..." level=warning msg="The
+// \"X\" variable is not set"` whenever a release's Compose file names a
+// variable the local .env does not have yet. Merged into the output that line
+// broke every plan with "invalid character 'i' in literal true". stderr is kept
+// for the error message, where it is the useful part.
 func command(ctx context.Context, name string, args ...string) ([]byte, error) {
 	c := exec.CommandContext(ctx, name, args...)
-	b, e := c.CombinedOutput()
+	var stderr bytes.Buffer
+	c.Stderr = &stderr
+	out, e := c.Output()
 	if e != nil {
-		return nil, fmt.Errorf("%s: %w: %.2000s", name, e, b)
+		return nil, fmt.Errorf("%s: %w: %.2000s", name, e, append(stderr.Bytes(), out...))
 	}
-	return b, nil
+	return out, nil
 }
 func (b DockerBackend) compose(ctx context.Context, args ...string) ([]byte, error) {
 	return b.composeWithOverride(ctx, true, args...)
@@ -212,10 +222,10 @@ func (b DockerBackend) Inventory(ctx context.Context) (string, map[string]string
 	}
 	return updates.Hash(data), images, nil
 }
-func (b DockerBackend) PlanImages(ctx context.Context, d Deployment) (map[string]string, error) {
-	return b.PlanSelectedImages(ctx, d, nil)
+func (b DockerBackend) PlanImages(ctx context.Context, d Deployment, opts PlanOptions) (map[string]string, error) {
+	return b.PlanSelectedImages(ctx, d, nil, opts)
 }
-func (b DockerBackend) PlanSelectedImages(ctx context.Context, d Deployment, overrides map[string]Deployment) (map[string]string, error) {
+func (b DockerBackend) PlanSelectedImages(ctx context.Context, d Deployment, overrides map[string]Deployment, opts PlanOptions) (map[string]string, error) {
 	if err := d.Validate(b.Config.Trusted); err != nil {
 		return nil, err
 	}
@@ -223,8 +233,8 @@ func (b DockerBackend) PlanSelectedImages(ctx context.Context, d Deployment, ove
 	if err != nil {
 		return nil, err
 	}
-	if ready.FirmwareProtocol != d.FirmwareProtocol {
-		return nil, errors.New("target requires a different mainboard firmware protocol")
+	if _, err := firmwareProtocolChange(ready.FirmwareProtocol, d, opts); err != nil {
+		return nil, err
 	}
 	c, _, err := b.model(ctx)
 	if err != nil {
@@ -341,11 +351,14 @@ func (b DockerBackend) ValidateImageStorage(ctx context.Context, p Plan) error {
 }
 
 type Readiness struct {
+	MaintenanceReady bool   `json:"maintenance_ready"`
 	Ready            bool   `json:"ready"`
 	Maintenance      bool   `json:"maintenance"`
 	FirmwareProtocol int    `json:"firmware_protocol"`
 	Reason           string `json:"reason"`
 	GPSFresh         bool   `json:"gps_fresh"`
+	GPSReceiverFresh bool   `json:"gps_receiver_fresh"`
+	GPSReason        string `json:"gps_reason,omitempty"`
 	LidarFresh       bool   `json:"lidar_fresh"`
 }
 
@@ -357,6 +370,13 @@ func (b DockerBackend) readiness(ctx context.Context) (Readiness, error) {
 		e = json.Unmarshal(data, &r)
 	}
 	return r, e
+}
+
+// RunningFirmwareProtocol lets the manager record an allowed protocol change
+// on the plan it hands back for review.
+func (b DockerBackend) RunningFirmwareProtocol(ctx context.Context) (int, error) {
+	r, err := b.readiness(ctx)
+	return r.FirmwareProtocol, err
 }
 func (b DockerBackend) MaintenanceSet() (bool, error) {
 	_, err := os.Stat(filepath.Join(b.Config.StateDir, "maintenance"))
@@ -373,11 +393,42 @@ func (b DockerBackend) Maintenance(ctx context.Context, enable bool) error {
 		}
 		return nil
 	}
+	return b.enterMaintenance(ctx, 0, nil)
+}
+
+// Only a reviewed install that matches the live firmware may enter maintenance
+// despite an old bridge's protocol mismatch (protocol-first transition), or one
+// whose operator explicitly allowed the mismatch (update-first transition, the
+// plan's FirmwareProtocolChange). Rollback and final verification still require
+// full compatibility except under that same acknowledged change. Older GUI
+// endpoints fail closed.
+func (b DockerBackend) PrepareUpdate(ctx context.Context, p Plan) error {
+	return b.enterMaintenance(ctx, p.Target.FirmwareProtocol, p.FirmwareProtocolChange)
+}
+
+func maintenanceReady(r Readiness, protocol int, change *FirmwareProtocolChange) bool {
+	if change != nil {
+		return expectedFirmwareMismatch(r, change)
+	}
+	if protocol == 0 {
+		return r.Ready
+	}
+	return r.FirmwareProtocol == protocol && (r.Ready || r.MaintenanceReady)
+}
+
+func (b DockerBackend) enterMaintenance(ctx context.Context, protocol int, change *FirmwareProtocolChange) error {
+	marker := filepath.Join(b.Config.StateDir, "maintenance")
 	r, err := b.readiness(ctx)
 	if err != nil {
 		return err
 	}
-	if !r.Ready {
+	switch {
+	case change != nil && r.FirmwareProtocol != change.From && r.FirmwareProtocol != change.To:
+		return fmt.Errorf("firmware protocol changed since review: running %d, the reviewed change expects %d or %d", r.FirmwareProtocol, change.From, change.To)
+	case change == nil && protocol != 0 && r.FirmwareProtocol != protocol:
+		return fmt.Errorf("firmware protocol changed since review: running %d, update requires %d", r.FirmwareProtocol, protocol)
+	}
+	if !maintenanceReady(r, protocol, change) {
 		return fmt.Errorf("mower not ready: %s", r.Reason)
 	}
 	// Never let a second updater recreate a container during our transaction.
@@ -394,7 +445,7 @@ func (b DockerBackend) Maintenance(ctx context.Context, enable bool) error {
 	// Require the GUI to acknowledge the persisted gate before stopping writers.
 	for i := 0; i < 20; i++ {
 		r, e := b.readiness(ctx)
-		if e == nil && r.Maintenance && r.Ready {
+		if e == nil && r.Maintenance && maintenanceReady(r, protocol, change) {
 			return nil
 		}
 		select {
@@ -565,69 +616,6 @@ func (b DockerBackend) Apply(ctx context.Context, images map[string]string) erro
 		}
 	}
 	return nil
-}
-func (b DockerBackend) Verify(ctx context.Context, images map[string]string, d *Deployment) error {
-	deadline := time.NewTimer(3 * time.Minute)
-	defer deadline.Stop()
-	stable := 0
-	for {
-		ok := true
-		c, _, err := b.model(ctx)
-		if err != nil {
-			ok = false
-		}
-		for s, image := range images {
-			sc, exists := c.Services[s]
-			if !exists {
-				ok = false
-				continue
-			}
-			ci, e := b.inspect(ctx, sc.ContainerName)
-			if e != nil || !ci.State.Running || (ci.State.Health != nil && ci.State.Health.Status != "healthy") {
-				ok = false
-				continue
-			}
-			ids, e := command(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image)
-			if e != nil || strings.TrimSpace(string(ids)) != ci.Image {
-				ok = false
-			}
-		}
-		ready, e := b.readiness(ctx)
-		if e != nil || !ready.Ready {
-			ok = false
-		}
-		if _, e := os.Stat(filepath.Join(b.Config.StateDir, "maintenance")); e == nil && !ready.Maintenance {
-			ok = false
-		}
-		if d != nil && ready.FirmwareProtocol != d.FirmwareProtocol {
-			ok = false
-		}
-		managed, contractErr := managedServices(c)
-		if contractErr != nil {
-			ok = false
-		}
-		for service := range images {
-			contract := managed[service]
-			if contract.Health == "gps" && !ready.GPSFresh || contract.Health == "lidar" && !ready.LidarFresh {
-				ok = false
-			}
-		}
-		if ok {
-			stable++
-		} else {
-			stable = 0
-		}
-		if stable >= 3 {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline.C:
-			return errors.New("application health or image verification timed out")
-		case <-time.After(2 * time.Second):
-		}
-	}
 }
 func (b DockerBackend) Restore(ctx context.Context, path string) error {
 	root := filepath.Join(b.Config.StateDir, "backups") + string(os.PathSeparator)

@@ -29,6 +29,22 @@ type CoveragePath struct {
 	Path                      nav.Path                       `json:"path"`
 }
 
+// CoveragePlanPreview matches mowgli_interfaces/msg/CoveragePlanPreview.
+type CoveragePlanPreview struct {
+	Header                    geometry.Header                `json:"header"`
+	Xy                        []float32                      `json:"xy"`
+	SubpathOffsets            []uint32                       `json:"subpath_offsets"`
+}
+
+// CoverageSession matches mowgli_interfaces/msg/CoverageSession.
+type CoverageSession struct {
+	SessionActive             bool                           `json:"session_active"`
+	CurrentArea               int16                          `json:"current_area"`
+	CompletedAreas            []uint32                       `json:"completed_areas"`
+	AttemptedAreas            []uint32                       `json:"attempted_areas"`
+	ExcludedAreas             []uint32                       `json:"excluded_areas"`
+}
+
 // DigEvent matches mowgli_interfaces/msg/DigEvent.
 type DigEvent struct {
 	Header                    geometry.Header                `json:"header"`
@@ -69,6 +85,32 @@ type Emergency struct {
 	LiftWarning               bool                           `json:"lift_warning"`
 	LiftDurationSec           float32                        `json:"lift_duration_sec"`
 	Reason                    string                         `json:"reason"`
+}
+
+// FirmwareParam matches mowgli_interfaces/msg/FirmwareParam.
+type FirmwareParam struct {
+	Id                        uint16                         `json:"id"`
+	Name                      string                         `json:"name"`
+	RequestedValid            bool                           `json:"requested_valid"`
+	Requested                 float32                        `json:"requested"`
+	Reported                  bool                           `json:"reported"`
+	Applied                   float32                        `json:"applied"`
+	DefaultValue              float32                        `json:"default_value"`
+	MinValue                  float32                        `json:"min_value"`
+	MaxValue                  float32                        `json:"max_value"`
+	Status                    uint8                          `json:"status"`
+	Persisted                 bool                           `json:"persisted"`
+	IsVolatile                bool                           `json:"is_volatile"`
+}
+
+// FirmwareParams matches mowgli_interfaces/msg/FirmwareParams.
+type FirmwareParams struct {
+	Stamp                     geometry.Stamp                 `json:"stamp"`
+	FirmwareIncompatible      bool                           `json:"firmware_incompatible"`
+	BootSource                uint8                          `json:"boot_source"`
+	LastCommit                uint8                          `json:"last_commit"`
+	RecordsLeft               uint16                         `json:"records_left"`
+	Params                    []FirmwareParam                `json:"params"`
 }
 
 // GnssStatus matches mowgli_interfaces/msg/GnssStatus.
@@ -160,6 +202,20 @@ type ImuRaw struct {
 	Mz                        float64                        `json:"mz"`
 }
 
+// LidarIgnoreCorridor matches mowgli_interfaces/msg/LidarIgnoreCorridor.
+type LidarIgnoreCorridor struct {
+	Name                      string                         `json:"name"`
+	Polyline                  geometry.Polygon               `json:"polyline"`
+	WidthM                    float64                        `json:"width_m"`
+	Id                        uint32                         `json:"id"`
+}
+
+// LidarIgnoreCorridorArray matches mowgli_interfaces/msg/LidarIgnoreCorridorArray.
+type LidarIgnoreCorridorArray struct {
+	Header                    geometry.Header                `json:"header"`
+	Corridors                 []LidarIgnoreCorridor          `json:"corridors"`
+}
+
 // MapArea matches mowgli_interfaces/msg/MapArea.
 type MapArea struct {
 	Name                      string                         `json:"name"`
@@ -167,6 +223,9 @@ type MapArea struct {
 	Obstacles                 []geometry.Polygon             `json:"obstacles"`
 	IsNavigationArea          bool                           `json:"is_navigation_area"`
 	ObstacleInfo              []MapObstacleInfo              `json:"obstacle_info"`
+	ProposedObstacles         []geometry.Polygon             `json:"proposed_obstacles"`
+	ProposedObstacleInfo      []MapObstacleInfo              `json:"proposed_obstacle_info"`
+	Id                        uint32                         `json:"id"`
 }
 
 // MapObstacleInfo matches mowgli_interfaces/msg/MapObstacleInfo.
@@ -193,6 +252,17 @@ type Power struct {
 	ChargerStatus             string                         `json:"charger_status"`
 }
 
+// RecordedAreaPolygon matches mowgli_interfaces/msg/RecordedAreaPolygon.
+type RecordedAreaPolygon struct {
+	Area                      geometry.Polygon               `json:"area"`
+}
+
+// RecordedAreaPolygonArray matches mowgli_interfaces/msg/RecordedAreaPolygonArray.
+type RecordedAreaPolygonArray struct {
+	Header                    geometry.Header                `json:"header"`
+	Areas                     []RecordedAreaPolygon          `json:"areas"`
+}
+
 // Status matches mowgli_interfaces/msg/Status.
 type Status struct {
 	Stamp                     geometry.Stamp                 `json:"stamp"`
@@ -208,12 +278,16 @@ type Status struct {
 	UiBoardAvailable          bool                           `json:"ui_board_available"`
 	MowEnabled                bool                           `json:"mow_enabled"`
 	FirmwareDebugEnabled      bool                           `json:"firmware_debug_enabled"`
+	DigEscalated              bool                           `json:"dig_escalated"`
+	DigEscalatedDistanceM     float32                        `json:"dig_escalated_distance_m"`
+	DigEscalatedRequiredDistanceM float32                        `json:"dig_escalated_required_distance_m"`
 	MowerEscStatus            uint8                          `json:"mower_esc_status"`
 	MowerEscTemperature       float32                        `json:"mower_esc_temperature"`
 	MowerEscCurrent           float32                        `json:"mower_esc_current"`
 	MowerMotorTemperature     float32                        `json:"mower_motor_temperature"`
 	MowerMotorRpm             float32                        `json:"mower_motor_rpm"`
 	BladeStatusStamp          geometry.Stamp                 `json:"blade_status_stamp"`
+	BladeRequestedDirection   string                         `json:"blade_requested_direction"`
 	FirmwareVersion           string                         `json:"firmware_version"`
 	FirmwareProtocolVersion   uint8                          `json:"firmware_protocol_version"`
 	FirmwareCompatible        bool                           `json:"firmware_compatible"`

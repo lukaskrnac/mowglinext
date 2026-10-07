@@ -42,7 +42,9 @@
 
 #include "mowgli_interfaces/msg/status.hpp"
 #include "mowgli_nav2_plugins/ftc_blade_load.hpp"
+#include "mowgli_nav2_plugins/ftc_lattice_solver.hpp"
 #include "mowgli_nav2_plugins/ftc_reverse_escape.hpp"
+#include "mowgli_nav2_plugins/ftc_turn_fallback.hpp"
 #include "mowgli_nav2_plugins/obstacle_deviation.hpp"
 #include "mowgli_nav2_plugins/oscillation_detector.hpp"
 #include <Eigen/Geometry>
@@ -57,9 +59,11 @@ namespace mowgli_nav2_plugins
  *
  * The controller advances a virtual carrot point along the global path and drives
  * the robot towards it using three decoupled PID channels (longitudinal, lateral,
- * angular).  A five-state machine manages the full trajectory lifecycle:
+ * angular).  A state machine manages the full trajectory lifecycle:
  *
  *   PRE_ROTATE -> FOLLOWING -> WAITING_FOR_GOAL_APPROACH -> POST_ROTATE -> FINISHED
+ *                   ^    |
+ *                   +----+  PIVOT at each explicit planner corner (ftc_pivot.hpp)
  *
  * Ported from ftc_local_planner (mbf_costmap_core::CostmapController, ROS1).
  */
@@ -92,6 +96,8 @@ public:
   void setSpeedLimit(const double& speed_limit, const bool& percentage) override;
 
 private:
+  friend struct FTCSpeedLimitTestAccess;
+
   // ── State machine ─────────────────────────────────────────────────────────
 
   enum class PlannerState
@@ -100,7 +106,15 @@ private:
     FOLLOWING,
     WAITING_FOR_GOAL_APPROACH,
     POST_ROTATE,
-    FINISHED
+    FINISHED,
+    /// In-place rotation at a pivot corner the coverage planner encoded in the
+    /// path (mowgli_interfaces/coverage_geometry.hpp, "PIVOT CORNER CONTRACT").
+    /// Entered from FOLLOWING once base_link reaches the corner the carrot is
+    /// capped on; rotates with PRE_ROTATE's angular control and limits, no
+    /// linear motion and no lateral offset; returns to FOLLOWING from the
+    /// corner's outgoing pose. Appended last so the logged state numbers of the
+    /// other states are unchanged.
+    PIVOT
   };
 
   PlannerState current_state_{PlannerState::PRE_ROTATE};
@@ -119,6 +133,32 @@ private:
 
   /// Compute the look-ahead distance along the remaining straight path.
   double distanceLookahead() const;
+
+  // ── Pivot corners (ftc_pivot.hpp) ─────────────────────────────────────────
+
+  /// Plan indices of the pivot corners' FIRST (incoming-heading) poses, found
+  /// once per plan in newPathReceived. Empty for plans without corners (every
+  /// transit plan, every plan from a planner without pivot joins).
+  std::vector<std::size_t> pivot_corners_;
+
+  /// The corner the carrot must stop at (first corner at/after current_index_).
+  std::optional<std::size_t> nextPivotCorner() const;
+
+  /// FOLLOWING -> PIVOT: stop at the corner, retarget the carrot to the
+  /// corner's outgoing pose, drop any lateral offset, reset the PID history.
+  void enterPivot();
+
+  /// PIVOT -> FOLLOWING from the corner's outgoing pose.
+  void leavePivot();
+
+  /// True when the chassis footprint, rotated in place from the current
+  /// heading to the pivot target, overlaps a TRUE-lethal local-costmap cell.
+  bool pivotSweepBlocked();
+
+  /// Obstacle gate of a pivot: holds (and eventually aborts, like every other
+  /// obstacle hold) while pivotSweepBlocked(); returns true when the pivot may
+  /// rotate this tick.
+  bool pivotSweepGate(double dt);
 
   std::vector<geometry_msgs::msg::PoseStamped> global_plan_;
   Eigen::Affine3d current_control_point_;  ///< Carrot pose in map frame.
@@ -225,6 +265,108 @@ private:
   /// max_lateral_deviation to find clearance.
   void updateLateralDeviation(double dt);
 
+  /// Whole-profile avoidance (ftc_offset_lattice.hpp): plans the lateral offset
+  /// over the horizon and sets target_lateral_deviation_. Returns false when it
+  /// engaged the reverse-escape / wait fallback and the caller must return.
+  bool planOffsetLattice(std::size_t carrot_idx,
+                         const BoundaryGuard& guard,
+                         const std::vector<geometry_msgs::msg::Point>& footprint,
+                         double dt);
+
+  /// Plan poses [first, last) expressed in the local costmap frame.
+  bool planWindowInCostmapFrame(std::size_t first,
+                                std::size_t last,
+                                std::vector<geometry_msgs::msg::PoseStamped>& out);
+
+  /// The lattice solver parameters planOffsetLattice uses, from config_.
+  LatticeSolverCfg latticeSolverCfg() const;
+
+  /// Zone guard (boundary costmap -> local costmap frame) for the deviation
+  /// checks. Call with boundary_mutex_ held. False (logged, throttled) when the
+  /// global costmap or its transform is missing: deviation is skipped that tick.
+  bool buildBoundaryGuard(BoundaryGuard& guard);
+
+  // ── Turn fallback (ftc_turn_fallback.hpp) ─────────────────────────────────
+  //
+  // When the offset lattice finds no profile and the blockage lies in a TURN
+  // of the plan (field 2026-09-22: 8 of 8 WEDGED), FTC improvises the turn
+  // instead of aborting: (bounded straight reverse) -> pivot -> straight
+  // connector -> pivot -> FOLLOWING from a rejoin pose past the turn. The
+  // pivots and the connector are spliced into global_plan_ as runtime pivot
+  // corners (mowgli_interfaces/coverage_geometry.hpp contract) so the existing
+  // PIVOT state, its per-tick sweep gate, the lattice and currentBodyInLethal
+  // execute and re-check them every cycle. Anything not safely possible falls
+  // back to the unchanged WEDGED -> reverse-escape -> hold -> abort path.
+
+  enum class TurnFallbackPhase
+  {
+    kIdle,
+    /// Backing straight up (bounded, rear footprint probed every tick) before
+    /// the first rotation; the spliced plan is built when it ends.
+    kReverse,
+    /// The spliced pivots / connector are being driven; ends at the rejoin.
+    kRunning,
+  };
+
+  struct TurnFallbackState
+  {
+    TurnFallbackPhase phase{TurnFallbackPhase::kIdle};
+    double reverse_target_m{0.0};
+    double reverse_done_m{0.0};
+    double reverse_time_s{0.0};
+    rclcpp::Time started{0, 0, RCL_ROS_TIME};
+    /// Working-plan index of the rejoin pose once spliced.
+    std::size_t rejoin_idx{0};
+    double skipped_arc_m{0.0};
+    /// No new fallback before current_index_ reaches this (progress past the
+    /// last rejoin), so a turn that stays blocked cannot loop.
+    std::optional<std::size_t> rearm_idx;
+    std::size_t count{0};
+  };
+
+  TurnFallbackState turn_fallback_;
+  /// Set on the tick a fallback engages: that tick only stops.
+  bool turn_fallback_engaged_now_{false};
+  /// Header of the plan as received (frame + stamp), for republishing.
+  std_msgs::msg::Header plan_header_;
+
+  bool turnFallbackReversing() const
+  {
+    return turn_fallback_.phase == TurnFallbackPhase::kReverse;
+  }
+
+  /// Called where the lattice would go WEDGED. True when a fallback engaged
+  /// (the caller returns; this tick emits zero velocity), false to take the
+  /// unchanged WEDGED path. Needs the costmap lock and boundary_mutex_ held
+  /// (both are, inside updateLateralDeviation).
+  bool tryTurnFallback(std::size_t carrot_idx,
+                       const BoundaryGuard& guard,
+                       const ObstacleDeviation::Footprint& body);
+
+  /// Plan a fallback from the robot's current pose, reversing at most
+  /// `max_reverse_m`. `window_first` receives the plan index of the window's
+  /// first pose. Locks held as for tryTurnFallback.
+  TurnFallbackPlan planTurnFallback(std::size_t carrot_idx,
+                                    const BoundaryGuard& guard,
+                                    const ObstacleDeviation::Footprint& body,
+                                    double max_reverse_m,
+                                    std::size_t& window_first,
+                                    TurnFallbackProblem* problem_out = nullptr);
+
+  /// Replace the skipped part of global_plan_ by the fallback's runtime pivot
+  /// corners and connector, and start driving them. False when the robot pose
+  /// is unavailable (nothing changed).
+  bool spliceTurnFallback(const TurnFallbackPlan& plan, std::size_t window_first);
+
+  /// One tick of the fallback's straight reverse; emits into cmd_vel.
+  void turnFallbackReverseTick(double dt, geometry_msgs::msg::TwistStamped& cmd_vel);
+
+  /// Completion (rejoin reached) and timeout of a running fallback.
+  void turnFallbackProgress();
+
+  /// Log line + hold/abort after a fallback that could not continue.
+  void failTurnFallback(const std::string& why);
+
   /// Apply lateral_deviation_ to current_control_point_ in-place.
   void applyLateralDeviationToCarrot();
 
@@ -250,6 +392,12 @@ private:
   /// SAFETY-CRITICAL: probes the rear footprint at the ACTUAL robot pose
   /// (costmap_ros_->getRobotPose) and never reverses when it would hit lethal or
   /// the pose is unavailable.
+  /// One tick of the escape itself: integrate the distance reversed, probe the
+  /// rear footprint, decide. No side effects on the wait/abort state.
+  ReverseEscapeAction reverseEscapeStep(const ObstacleDeviation::Footprint& footprint, double dt);
+  /// Path arc length from the index where the reverse budget was first touched
+  /// to the current index (0 when the robot has not advanced).
+  double progressSinceReverseEngaged() const;
   bool reverseEscapeOrWait(const std::string& reason,
                            const ObstacleDeviation::Footprint& footprint,
                            double dt);
@@ -260,6 +408,13 @@ private:
   /// Odom-integrated reversed distance for the current escape (m), hard-capped
   /// at config_.obstacle_reverse_max_dist_m. Reset when the wedge clears.
   double reverse_distance_done_{0.0};
+  /// Time the planner has kept a usable profile since the last infeasible tick,
+  /// while a reverse-escape is engaged (ReverseEscapeShouldRelease).
+  double reverse_followable_time_{0.0};
+  /// Path index at which the current reverse budget started being spent; the
+  /// budget is only refilled after real progress past it.
+  std::size_t reverse_engaged_index_{0};
+  bool reverse_budget_touched_{false};
 
   bool is_avoiding_{false};
   double target_lateral_deviation_{0.0};
@@ -308,6 +463,10 @@ private:
   /// own followable-duration counter because a valid offset path may exist
   /// while the nominal path remains blocked.
   std::optional<rclcpp::Time> avoidance_clear_start_;
+  /// Since when the lattice has been asking for a SMALLER offset than applied.
+  std::optional<rclcpp::Time> lattice_return_start_;
+  /// Since when the free plan has been asking for the side opposite to the committed one.
+  std::optional<rclcpp::Time> lattice_switch_start_;
 
   // ── Oscillation detection ─────────────────────────────────────────────────
 
@@ -369,6 +528,14 @@ private:
   rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseStamped>::SharedPtr
       global_point_pub_;
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr global_plan_pub_;
+  /// The plan the coverage progress trackers follow: PathProgressGoalChecker's
+  /// plan_topic and FollowStrip's cursor, "~/<plugin>/global_plan" =
+  /// /controller_server/FollowCoveragePath/global_plan (FollowStrip publishes
+  /// each dispatched unit there). global_plan_pub_ above resolves to
+  /// /<plugin>/global_plan instead and only feeds visualisation. FTC publishes
+  /// here only when a turn fallback rejoins the plan: the remainder from the
+  /// rejoin pose, so neither tracker is left behind at the skipped turn.
+  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr progress_plan_pub_;
   rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::Marker>::SharedPtr
       obstacle_marker_pub_;
 
@@ -462,8 +629,15 @@ private:
     double max_cmd_vel_ang{2.0};
     double max_goal_distance_error{1.0};
     double max_goal_angle_error{10.0};
+    /// Heading tolerance (deg) that ends an in-place PIVOT at a planner corner.
+    /// Tighter than max_goal_angle_error (PRE_ROTATE's, 30° shipped): the next
+    /// straight after a corner is one swath spacing long, too short for the
+    /// lateral loop to absorb a large heading error before the next pivot.
+    double pivot_angle_tolerance_deg{10.0};
     double goal_timeout{5.0};
     double max_follow_distance{1.0};
+    /// Max longitudinal carrot lead (m); <= 0 derives it (ftc_carrot_lead.hpp).
+    double carrot_max_lead{-1.0};
 
     // Options
     bool forward_only{true};
@@ -555,18 +729,6 @@ private:
     /// (near-edge swaths legitimately run inside the keepout margin). When
     /// false, behaves exactly as before.
     bool confine_deviation_to_zone{true};
-    /// Zone-MASK the obstacle DETECTION checks (issue #517): a lethal cell in
-    /// the local obstacle costmap that is ALSO lethal in the global keepout
-    /// costmap (out-of-zone / keepout hole) is NOT an obstacle for the
-    /// deviation logic — the coverage path was planned to pass beside it and
-    /// never enters it. Field 2026-09-02: 71 "lateral deviation needed > max"
-    /// strip aborts per mow, all at row ends against the hedge the boundary
-    /// was recorded along / the tree in a keepout hole. Only effective when
-    /// confine_deviation_to_zone is true AND the global costmap has been
-    /// received (the same BoundaryGuard is reused); otherwise the old
-    /// behaviour. In-zone obstacles are unaffected; collision_monitor stays
-    /// the real-time guard.
-    bool ignore_obstacles_outside_zone{true};
 
     /// Model the robot as its actual rectangular chassis FOOTPRINT (from
     /// costmap_ros_->getRobotFootprint()) for obstacle detection and the
@@ -598,6 +760,16 @@ private:
     /// (works with the half-width line model AND the footprint model). Default
     /// true. Set false to restore the prior skirt-anything behaviour.
     bool require_clear_exit{true};
+    /// Whole-profile avoidance planner instead of the single-offset search.
+    bool use_offset_lattice{false};
+    /// How far ahead of the carrot the offset profile is planned (m).
+    double avoidance_horizon_m{2.5};
+    /// Steepest lateral change per metre of path the profile may ask for.
+    double avoidance_max_slope{1.0};
+    /// Path length by which a skirt must be in place BEFORE the obstacle (m).
+    double avoidance_reaction_m{0.5};
+    /// Only a blockage closer than this makes the robot WEDGED (m).
+    double avoidance_min_horizon_m{1.0};
 
     /// Bounded reverse-escape for the WEDGED case (both sides of an obstacle
     /// blocked, or the skirt needed exceeds max_lateral_deviation). Before
@@ -615,6 +787,22 @@ private:
     double obstacle_reverse_max_dist_m{0.30};
     /// Straight reverse speed (m/s). Must clear the firmware deadband (~0.05).
     double obstacle_reverse_speed_mps{0.10};
+
+    /// Turn fallback (ftc_turn_fallback.hpp): improvise a turn of the plan the
+    /// lattice cannot drive instead of aborting. Lattice planner only
+    /// (use_offset_lattice), and only where obstacle deviation runs (never in
+    /// the no-LiDAR overlay).
+    bool turn_fallback_enabled{true};
+    /// Longest straight reverse before the first pivot (m). Also 0 whenever
+    /// obstacle_reverse_enabled is false.
+    double turn_fallback_max_reverse_m{0.40};
+    /// Longest stretch of plan a rejoin may skip (m).
+    double turn_fallback_max_rejoin_arc_m{3.0};
+    /// A blockage is in a turn when the plan heading sweeps this much (deg).
+    double turn_fallback_min_turn_deg{45.0};
+    /// The whole fallback (reverse, pivots, connector) must reach its rejoin
+    /// within this time (s), else the goal is aborted.
+    double turn_fallback_timeout_s{45.0};
   };
 
   Config config_;
@@ -628,13 +816,16 @@ private:
     return config_.obstacle_body_half_width + std::max(0.0, config_.obstacle_clearance_margin);
   }
 
-  /// Speed limit applied via setSpeedLimit(). -1.0 means "no external limit".
-  double speed_limit_{-1.0};
+  /// Configured maximum bounded by Nav2's external linear speed limit.
+  double maxLinearSpeed() const;
+
+  /// Protect the external limit and its configured percentage reference.
+  mutable std::mutex speed_limit_mutex_;
+  /// Nav2 uses percentages in [0, 100] and zero for "no external limit".
+  double speed_limit_{0.0};
   bool speed_limit_is_percentage_{false};
   // Configured max linear speed, captured at configure() and on every
-  // max_cmd_vel_speed parameter change. setSpeedLimit() restores
-  // config_.max_cmd_vel_speed to this value when the limit is cleared
-  // (speed_limit < 0); without it a once-applied limit stuck forever.
+  // max_cmd_vel_speed parameter change. External limits never overwrite it.
   double base_max_cmd_vel_speed_{2.0};
 };
 

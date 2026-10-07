@@ -11,9 +11,6 @@ container_name_for_service() {
     mosquitto)    printf 'mowgli-mqtt\n' ;;
     mavros)       printf 'mowgli-mavros\n' ;;
     ntrip)        printf 'mowgli-ntrip\n' ;;
-    vesc)         printf 'mowgli-vesc\n' ;;
-    tfluna_front) printf 'mowgli-tfluna-front\n' ;;
-    tfluna_edge)  printf 'mowgli-tfluna-edge\n' ;;
     *)            return 1 ;;
   esac
 }
@@ -28,9 +25,10 @@ print_logs_command_for_container() {
 expected_runtime_services() {
   : "${LIDAR_ENABLED:=true}"
   : "${LIDAR_TYPE:=unknown}"
-  : "${GNSS_BACKEND:=gps}"
+  : "${GNSS_BACKEND:=universal}"
 
-  local services=(mowgli gui mosquitto)
+  local services=(mowgli gui)
+  [[ "${ENABLE_MQTT:-false}" == "true" ]] && services+=(mosquitto)
   local gnss_backend
   local gnss_stack
   local gnss_service
@@ -38,34 +36,25 @@ expected_runtime_services() {
   gnss_backend="$(effective_gnss_backend 2>/dev/null || true)"
   gnss_stack="$(effective_gnss_stack 2>/dev/null || true)"
 
-  if [[ "${HARDWARE_BACKEND:-mowgli}" == "mavros" ]]; then
-    services+=(mavros ntrip)
-  else
-    if ! is_supported_gnss_backend "$gnss_backend"; then
-      return 1
-    fi
+  if ! is_supported_gnss_backend "$gnss_backend"; then
+    return 1
+  fi
 
-    if [[ "$gnss_stack" != "disabled" ]]; then
-      gnss_service="$(compose_gnss_service_name "$gnss_backend" 2>/dev/null || true)"
-      [ -n "$gnss_service" ] && services+=("$gnss_service")
-    fi
+  if [[ "$gnss_stack" != "disabled" ]]; then
+    gnss_service="$(compose_gnss_service_name "$gnss_backend" 2>/dev/null || true)"
+    [ -n "$gnss_service" ] && services+=("$gnss_service")
+  fi
+
+  if [[ "${HARDWARE_BACKEND:-mowgli}" == "mavros" ]]; then
+    services+=(mavros)
   fi
 
   if [[ "${LIDAR_ENABLED}" == "true" && "${LIDAR_TYPE}" != "none" ]]; then
     services+=(lidar)
   fi
 
-  if effective_tfluna_front_enabled; then
-    services+=(tfluna_front)
-  fi
 
-  if effective_tfluna_edge_enabled; then
-    services+=(tfluna_edge)
-  fi
 
-  if effective_vesc_enabled; then
-    services+=(vesc)
-  fi
 
   printf '%s\n' "${services[@]}"
 }
@@ -90,6 +79,9 @@ check_devices() {
     devices+=("${MAVROS_PORT:-/dev/mavros}:Pixhawk MAVROS serial")
   else
     devices+=("/dev/mowgli:Mowgli STM32 board")
+  fi
+
+  if [[ "$(effective_gnss_stack 2>/dev/null || true)" != "disabled" ]]; then
     devices+=("${gnss_device}:GPS receiver")
   fi
 
@@ -315,6 +307,34 @@ check_firmware() {
   fi
 }
 
+check_mavros() {
+  if [[ "${HARDWARE_BACKEND:-mowgli}" != "mavros" ]]; then
+    return 0
+  fi
+
+  step "Check: MAVROS"
+
+  local mavros_status
+  mavros_status="$(docker_cmd inspect -f '{{.State.Status}}' mowgli-mavros 2>/dev/null || echo "missing")"
+  if [[ "$mavros_status" != "running" ]]; then
+    fail "mowgli-mavros is ${mavros_status}"
+    add_issue "MAVROS backend selected but mowgli-mavros is not running. Check logs: $(print_logs_command_for_container mowgli-mavros 50)"
+    return
+  fi
+  info "MAVROS container running"
+
+  local mavros_state
+  mavros_state="$(
+    docker_cmd exec mowgli-ros2 bash -lc       "source /opt/ros/lyrical/setup.bash && source /ros2_ws/install/setup.bash && timeout 5 ros2 topic echo /mavros/state --once 2>/dev/null"       2>/dev/null || echo ""
+  )"
+  if [[ -z "$mavros_state" ]]; then
+    fail "No MAVROS state on /mavros/state"
+    add_issue "MAVROS is running but /mavros/state has no data. Check Pixhawk serial connection, MAVROS_PORT, MAVROS_BAUD, and logs: $(print_logs_command_for_container mowgli-mavros 50)"
+  else
+    info "MAVROS state available on /mavros/state"
+  fi
+}
+
 check_gps() {
   step "Check: GPS"
 
@@ -325,68 +345,6 @@ check_gps() {
 
   gnss_backend="$(effective_gnss_backend 2>/dev/null || true)"
   gnss_stack="$(effective_gnss_stack 2>/dev/null || true)"
-
-  if [[ "${HARDWARE_BACKEND:-mowgli}" == "mavros" ]]; then
-    info "MAVROS backend: GPS is handled through Pixhawk/MAVROS"
-
-    local gps_status
-    gps_status="$(docker_cmd inspect -f '{{.State.Status}}' mowgli-gps 2>/dev/null || echo "missing")"
-    if [[ "$gps_status" == "running" ]]; then
-      fail "mowgli-gps is running in MAVROS mode"
-      add_issue "mowgli-gps must not run when HARDWARE_BACKEND=mavros. Re-run $(installer_main_command) and restart the expected services: $(print_restart_command_for_backend mavros)"
-    else
-      info "Direct GPS container disabled (${gps_status})"
-    fi
-
-    local mavros_status
-    mavros_status="$(docker_cmd inspect -f '{{.State.Status}}' mowgli-mavros 2>/dev/null || echo "missing")"
-    if [[ "$mavros_status" != "running" ]]; then
-      fail "mowgli-mavros is ${mavros_status}"
-      add_issue "MAVROS backend selected but mowgli-mavros is not running. Check logs: $(print_logs_command_for_container mowgli-mavros 50)"
-      return
-    fi
-    info "MAVROS container running"
-
-    local mavros_state
-    mavros_state="$(
-      docker_cmd exec mowgli-ros2 bash -lc \
-        "source /opt/ros/lyrical/setup.bash && source /ros2_ws/install/setup.bash && timeout 5 ros2 topic echo /mavros/state --once 2>/dev/null" \
-        2>/dev/null || echo ""
-    )"
-    if [[ -z "$mavros_state" ]]; then
-      fail "No MAVROS state on /mavros/state"
-      add_issue "MAVROS is running but /mavros/state has no data. Check Pixhawk serial connection, MAVROS_PORT, MAVROS_BAUD, and logs: $(print_logs_command_for_container mowgli-mavros 50)"
-    else
-      info "MAVROS state available on /mavros/state"
-    fi
-
-    local mavros_global
-    mavros_global="$(
-      docker_cmd exec mowgli-ros2 bash -lc \
-        "source /opt/ros/lyrical/setup.bash && source /ros2_ws/install/setup.bash && timeout 5 ros2 topic echo /mavros/global_position/global --once 2>/dev/null" \
-        2>/dev/null || echo ""
-    )"
-    if [[ -z "$mavros_global" ]]; then
-      fail "No MAVROS global position on /mavros/global_position/global"
-      add_issue "MAVROS is not publishing global GPS position. Check Pixhawk GPS lock and MAVROS global_position plugin."
-    else
-      info "MAVROS global position available"
-    fi
-
-    local rtcm_info
-    rtcm_info="$(
-      docker_cmd exec mowgli-ros2 bash -lc \
-        "source /opt/ros/lyrical/setup.bash && source /ros2_ws/install/setup.bash && ros2 topic info /rtcm 2>/dev/null" \
-        2>/dev/null || echo ""
-    )"
-    if echo "$rtcm_info" | grep -q "Publisher count: [1-9]"; then
-      info "RTCM topic has publisher(s)"
-    else
-      warn "No RTCM publisher detected on /rtcm"
-      add_issue "No RTCM publisher on /rtcm in MAVROS mode. Check mowgli-ntrip logs and NTRIP configuration."
-    fi
-    return
-  fi
 
   if ! is_supported_gnss_backend "$gnss_backend"; then
     fail "Unknown GNSS_BACKEND=${GNSS_BACKEND}"
@@ -537,37 +495,6 @@ check_lidar() {
 # fusion_graph GTSAM localizer (sole and default; it owns both map->odom and
 # odom->base_footprint). The old robot_localization dual EKF was also removed.
 # See CLAUDE.md "Architecture Invariants" for details.
-
-check_rangefinders() {
-  step "Check: Rangefinders"
-
-  if [[ "${TFLUNA_FRONT_ENABLED:-false}" == "true" || "${TFLUNA_EDGE_ENABLED:-false}" == "true" ]]; then
-    if ! feature_is_available tfluna; then
-      warn_unavailable_feature_once \
-        tfluna \
-        "TF-Luna rangefinder services are not available on this branch yet; skipping TF-Luna device checks."
-      return
-    fi
-  fi
-
-  if [[ "${TFLUNA_FRONT_ENABLED:-false}" == "true" ]]; then
-    if [ -e "${TFLUNA_FRONT_PORT:-/dev/tfluna_front}" ]; then
-      info "TF-Luna front detected (${TFLUNA_FRONT_PORT})"
-    else
-      fail "TF-Luna front not detected (${TFLUNA_FRONT_PORT})"
-      add_issue "TF-Luna front not detected. Check selected UART and TFLUNA_FRONT_PORT in docker/.env."
-    fi
-  fi
-
-  if [[ "${TFLUNA_EDGE_ENABLED:-false}" == "true" ]]; then
-    if [ -e "${TFLUNA_EDGE_PORT:-/dev/tfluna_edge}" ]; then
-      info "TF-Luna edge detected (${TFLUNA_EDGE_PORT})"
-    else
-      fail "TF-Luna edge not detected (${TFLUNA_EDGE_PORT})"
-      add_issue "TF-Luna edge not detected. Check selected UART and TFLUNA_EDGE_PORT in docker/.env."
-    fi
-  fi
-}
 
 check_gui() {
   step "Check: GUI & connectivity"

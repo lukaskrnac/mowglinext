@@ -101,12 +101,15 @@ const CATALOG: Record<string, ParamMeta> = {
   // FollowCoveragePath.obstacle_clearance_margin (navigation.launch.py).
   // Note obstacle_inflation_radius cannot substitute — the deviation checks
   // threshold at cost 253, a band sized by the footprint inscribed radius.
+  transit_dynamic_window: {label: "paramCatalog.transit_dynamic_window.label", description: "paramCatalog.transit_dynamic_window.description", tier: "expert", group: "Navigation"},
+  coverage_goal_checker_id: {label: "paramCatalog.coverage_goal_checker_id.label", description: "paramCatalog.coverage_goal_checker_id.description", tier: "expert", group: "Coverage"},
+  local_inflation_inscribed_radius: {label: "paramCatalog.local_inflation_inscribed_radius.label", description: "paramCatalog.local_inflation_inscribed_radius.description", tier: "expert", group: "Obstacles", unit: "m"},
   obstacle_clearance_margin: {label: "paramCatalog.obstacle_clearance_margin.label", description: "paramCatalog.obstacle_clearance_margin.description", tier: "middle", group: "Obstacles", unit: "m"},
 
   // ── Motor control (firmware-adjacent PID) ────────────────────────────────
   // 2026-07-17 Option C (task #34): angular_rate_kp/ki/kff (the host-side
   // yaw-rate PI, Option B task #24) are removed — the loop now runs in
-  // firmware (task #33), tuned via these params (PACKET_ID_LL_SET_YAW_PID).
+  // firmware (task #33), tuned via these params (protocol v7 SET_PARAM, persisted in the board's flash).
   yaw_kp: {label: "paramCatalog.yaw_kp.label", description: "paramCatalog.yaw_kp.description", tier: "expert", group: "Motor control"},
   yaw_ki: {label: "paramCatalog.yaw_ki.label", description: "paramCatalog.yaw_ki.description", tier: "expert", group: "Motor control"},
   yaw_trim_limit_mps: {label: "paramCatalog.yaw_trim_limit_mps.label", description: "paramCatalog.yaw_trim_limit_mps.description", tier: "expert", group: "Motor control", unit: "m/s"},

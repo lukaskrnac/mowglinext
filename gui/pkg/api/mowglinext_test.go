@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/mowglinext/mowglinext/pkg/msgs/mowgli"
+	"github.com/mowglinext/mowglinext/pkg/providers"
 	"github.com/mowglinext/mowglinext/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,8 +29,27 @@ func setupMowgliNextRouter(provider types.IRosProvider) *gin.Engine {
 	return r
 }
 
+func TestCompactCoveragePreviewPreservesFloat32MessagePackCoordinates(t *testing.T) {
+	message := map[string]interface{}{"xy": []interface{}{float64(1.25), float64(-2.5)}, "subpath_offsets": []interface{}{float64(0), float64(1)}}
+	compactCoveragePreview(message)
+	coords, ok := message["xy"].([]float32)
+	require.True(t, ok)
+	require.Equal(t, []float32{1.25, -2.5}, coords)
+	payload, err := msgpack.Marshal(message)
+	require.NoError(t, err)
+	var decoded map[string]interface{}
+	require.NoError(t, msgpack.Unmarshal(payload, &decoded))
+	got, ok := decoded["xy"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, got, 2)
+	assert.InDelta(t, 1.25, got[0], 0.00001)
+}
+
 func TestServiceRoute_HighLevelControl(t *testing.T) {
 	mock := types.NewMockRosProvider()
+	mock.ServiceResponder = func(_ string, _ any, res any) {
+		res.(*mowgli.HighLevelControlRes).Success = true
+	}
 	router := setupMowgliNextRouter(mock)
 
 	payload := map[string]any{"Command": 1}
@@ -175,6 +195,9 @@ func TestServiceRoute_ServiceError(t *testing.T) {
 
 func TestServiceRoute_StartInArea(t *testing.T) {
 	mock := types.NewMockRosProvider()
+	mock.ServiceResponder = func(_ string, _ any, res any) {
+		res.(*mowgli.StartInAreaRes).Success = true
+	}
 	router := setupMowgliNextRouter(mock)
 
 	payload := map[string]any{"Area": 2}
@@ -188,6 +211,56 @@ func TestServiceRoute_StartInArea(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	require.Len(t, mock.ServiceCalls, 1)
 	assert.Equal(t, "/behavior_tree_node/start_in_area", mock.ServiceCalls[0].Service)
+}
+
+func TestServiceRoute_ActionServiceRejection(t *testing.T) {
+	cases := []struct {
+		command string
+		body    string
+		message string
+	}{
+		{"high_level_control", `{"command":1}`, "high_level_control rejected the command"},
+		{"start_in_area", `{"area":2}`, "start_in_area rejected the command"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.command, func(t *testing.T) {
+			mock := types.NewMockRosProvider()
+			mock.ServiceResponder = func(_ string, _ any, res any) {
+				switch response := res.(type) {
+				case *mowgli.HighLevelControlRes:
+					response.Success = false
+				case *mowgli.StartInAreaRes:
+					response.Success = false
+				default:
+					t.Fatalf("unexpected service response type %T", res)
+				}
+			}
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("POST", "/api/mowglinext/call/"+tc.command, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			setupMowgliNextRouter(mock).ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusInternalServerError, w.Code)
+			var response ErrorResponse
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+			assert.Equal(t, tc.message, response.Error)
+			require.Len(t, mock.ServiceCalls, 1)
+		})
+	}
+}
+
+func TestServiceRoute_StartInAreaMalformedRequest(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/mowglinext/call/start_in_area", strings.NewReader(`{"area":"invalid"}`))
+	req.Header.Set("Content-Type", "application/json")
+	setupMowgliNextRouter(mock).ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	var response ErrorResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	assert.NotEmpty(t, response.Error)
+	assert.Empty(t, mock.ServiceCalls)
 }
 
 func TestClearMapRoute(t *testing.T) {
@@ -217,6 +290,9 @@ func TestClearMapRoute_Error(t *testing.T) {
 
 func TestSetDockingPointRoute(t *testing.T) {
 	mock := types.NewMockRosProvider()
+	mock.ServiceResponder = func(_ string, _ any, res any) {
+		res.(*mowgli.SetDockingPointRes).Success = true
+	}
 	router := setupMowgliNextRouter(mock)
 
 	payload := map[string]any{
@@ -234,6 +310,40 @@ func TestSetDockingPointRoute(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	require.Len(t, mock.ServiceCalls, 1)
 	assert.Equal(t, "/map_server_node/set_docking_point", mock.ServiceCalls[0].Service)
+}
+
+// map_server answers a gated dock update with {success:false, message}: the
+// round-trip worked, the dock pose was NOT committed (#703).
+func TestSetDockingPointRoute_RosRejectionIsAnError(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	mock.ServiceResponder = func(_ string, _ any, res any) {
+		out := res.(*mowgli.SetDockingPointRes)
+		out.Success = false
+		out.Message = "robot not detected on dock"
+	}
+	router := setupMowgliNextRouter(mock)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/mowglinext/map/docking", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "robot not detected on dock")
+}
+
+func TestSetDockingPointRoute_TransportErrorStaysDistinct(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	mock.ServiceErr = assert.AnError
+	router := setupMowgliNextRouter(mock)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/mowglinext/map/docking", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.NotContains(t, w.Body.String(), "rejected")
 }
 
 // dialMultiplex opens the test server's /multiplex WebSocket. Returns the
@@ -349,6 +459,7 @@ func TestTopicSubscribeInterval_CoversKnownSubscriberRouteTopics(t *testing.T) {
 		"path", "plan", "power", "emergency", "dockingSensor",
 		"robotDescription", "recordingTrajectory",
 		"coverageResumeAvailable", "fusionDiag", "dockCalibrationStatus",
+		"firmwareParams",
 		"lidarMapCalibrationStatus", "glimSupervisorStatus",
 	}
 	for _, topic := range knownTopics {
@@ -359,6 +470,17 @@ func TestTopicSubscribeInterval_CoversKnownSubscriberRouteTopics(t *testing.T) {
 
 	_, known := topicSubscribeInterval("not_a_real_topic")
 	assert.False(t, known)
+}
+
+// TestTopicSubscribeInterval_CoversEveryProviderTopic: a topic added to the
+// provider's topicMap but not to topicSubscribeInterval is silently dropped by
+// MultiplexRoute ("ignoring unknown topic"), so the frontend never receives it
+// — the firmwareParams card stayed empty on the robot for exactly that reason.
+func TestTopicSubscribeInterval_CoversEveryProviderTopic(t *testing.T) {
+	for _, topic := range providers.TopicKeys() {
+		_, known := topicSubscribeInterval(topic)
+		assert.Truef(t, known, "topicMap key %q is not routable by topicSubscribeInterval", topic)
+	}
 }
 
 // dialSubscribe opens the test server's dedicated /subscribe/:topic

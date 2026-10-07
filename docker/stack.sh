@@ -62,6 +62,15 @@ export IMAGE_TAG COMPOSE_PROJECT_NAME
 # --- Reuse the installer's compose machinery (no host setup) -----------------
 # shellcheck source=/dev/null
 source "$INSTALL_LIB_DIR/common.sh"
+# i18n.sh's MSG_* strings are referenced by compose.sh's updater-managed
+# write_compose_merged() branch (e.g. MSG_UPDATER_STACK_REVIEW) — without
+# this, that branch dies with "unbound variable" under set -u whenever this
+# script (not the interactive installer, which sources i18n.sh itself) is
+# what regenerates the compose file, e.g. the GUI's reconcile-gps action.
+# load_locale() is non-interactive (env/LANG auto-detect, default English).
+# shellcheck source=/dev/null
+source "$INSTALL_LIB_DIR/i18n.sh"
+load_locale
 # shellcheck source=/dev/null
 source "$INSTALL_LIB_DIR/config.sh"
 # shellcheck source=/dev/null
@@ -83,7 +92,7 @@ FINAL_COMPOSE_FILE="$DOCKER_DIR/docker-compose.yaml"
 FINAL_ENV_FILE="$DOCKER_DIR/.env"
 
 # Drop optional fragments the operator hasn't opted into. build_compose_stack
-# always appends mqtt + watchtower; gate them on .env toggles here so docker/.env
+# gates mqtt on ENABLE_MQTT; the same toggle applies here so docker/.env
 # stays the single source of truth without modifying shared installer code.
 filter_optional_fragments() {
   local kept=() f base
@@ -92,9 +101,6 @@ filter_optional_fragments() {
     case "$base" in
       docker-compose.mqtt.yml)
         [[ "${ENABLE_MQTT:-false}" == "true" ]] || continue
-        ;;
-      docker-compose.watchtower.yml)
-        [[ "${ENABLE_WATCHTOWER:-false}" == "true" ]] || continue
         ;;
     esac
     kept+=("$f")
@@ -105,6 +111,7 @@ filter_optional_fragments() {
 regen() {
   step "Regenerating $FINAL_COMPOSE_FILE from docker/.env"
   ensure_default_configs
+  regenerate_sidecar_runtime_configs
   build_compose_stack
   filter_optional_fragments
   write_compose_merged
@@ -166,6 +173,11 @@ case "$cmd" in
   restart)
     require_compose_file
     compose restart "$@"
+    ;;
+  reconcile-gps)
+    regen
+    compose up -d --no-deps --force-recreate gps
+    compose ps gps
     ;;
   pull)
     regen

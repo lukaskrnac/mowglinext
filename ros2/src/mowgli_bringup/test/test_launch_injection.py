@@ -236,6 +236,37 @@ def test_navigation_launch_injects_connector_max_headland_passes() -> None:
 
 
 # ---------------------------------------------------------------------------
+# (b3) pivot-join limits must reach coverage_server, DERIVED from the chassis.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "key, helper",
+    [
+        ("pivot_sweep_radius", "chassis_circumscribed_radius"),
+        ("boundary_soft_margin", "boundary_soft_margin"),
+    ],
+)
+def test_navigation_launch_injects_pivot_join_limits(key: str, helper: str) -> None:
+    """coverage_server keeps pivot joins DISABLED (0.0 defaults) unless the
+    launch injects the pivot sweep radius and the soft-band width. Both must be
+    the robot_config_util derivation of the live chassis — a literal would go
+    stale the moment an operator edits chassis_* in the GUI (the 2026-09-16
+    hardcoded-width lesson), and a missing line silently brings back one
+    blade-off transit per row end (2026-09-21: 128 sub-paths on 152 m²).
+    """
+    tree = _parse("navigation.launch.py")
+    values = _subscript_assign_values(tree, "cov_params", key)
+    assert values, f'navigation.launch.py must assign cov_params["{key}"]'
+    for value in values:
+        assert (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == helper
+        ), f'cov_params["{key}"] must be {helper}(rp), not a literal or another value'
+
+
+# ---------------------------------------------------------------------------
 # (c) mowing_enabled must reach hardware_bridge_node (issue #195).
 # ---------------------------------------------------------------------------
 
@@ -259,6 +290,51 @@ def test_mowgli_launch_passes_mowing_enabled_to_hardware_bridge() -> None:
         "hardware_bridge_node's parameters= list no longer carries mowing_enabled "
         f"(has: {sorted(set(keys))}) — the dry-run inhibit is orphaned (#195)."
     )
+
+
+def test_full_system_injects_blade_auto_reverse() -> None:
+    call = _find_node_call(_parse("full_system.launch.py"), "behavior_tree_node")
+    assert call is not None
+    values = _node_parameter_values(call, "blade_auto_reverse")
+    assert len(values) == 1
+    # Exercise both values: losing the injection silently disables the setting,
+    # while bool("false") would mistakenly enable it for a string-based path.
+    for enabled in (False, True):
+        expression = ast.Expression(body=values[0])
+        assert eval(compile(expression, "launch", "eval"), {
+            "robot_params": {"blade_auto_reverse": enabled},
+        }) is enabled
+    assert eval(compile(ast.Expression(body=values[0]), "launch", "eval"), {
+        "robot_params": {},
+    }) is False
+
+
+@pytest.mark.parametrize(
+    "key,cast,default,configured",
+    [
+        ("rain_mode", "int", 2, 0),
+        ("rain_delay_minutes", "float", 30.0, 5.0),
+        ("rain_debounce_sec", "float", 0.0, 3.0),
+    ],
+)
+def test_full_system_injects_rain_settings(
+    key: str, cast: str, default, configured
+) -> None:
+    """issue #757: #147 added rain_mode/rain_debounce_sec's declare_parameter
+    side in behavior_tree_node.cpp (rain_delay_minutes predates it) but never
+    added the launch-side injection anywhere, so the GUI's RainSection always
+    did nothing -- the node ran on its own compiled defaults forever. Without
+    this guard the injection could be silently dropped again the same way.
+    """
+    call = _find_node_call(_parse("full_system.launch.py"), "behavior_tree_node")
+    assert call is not None
+    values = _node_parameter_values(call, key)
+    assert len(values) == 1, f"behavior_tree_node must receive {key} exactly once"
+    expression = compile(ast.Expression(values[0]), "full_system.launch.py", "eval")
+    scope = {"__builtins__": {}, "int": int, "float": float}
+    for robot_params, expected in [({}, default), ({key: configured}, configured)]:
+        actual = eval(expression, scope, {"robot_params": robot_params})
+        assert actual == pytest.approx(expected)
 
 
 def test_mowing_enabled_is_not_wired_to_some_other_node() -> None:
@@ -334,12 +410,28 @@ def test_navigation_launch_injects_dock_use_charger_detection() -> None:
 
 @pytest.mark.parametrize(
     "key,default,configured",
-    [("max_charge_voltage", 29.4, 28.5), ("max_charge_current", 1.2, 1.8)],
+    [
+        ("max_charge_voltage", 29.4, 28.5),
+        ("max_charge_current", 1.2, 1.8),
+        ("max_mps", 0.5, 0.35),
+        ("one_wheel_lift_emergency_ms", 2000, 1500),
+        ("both_wheels_lift_emergency_ms", 1000, 800),
+        ("tilt_emergency_ms", 500, 300),
+        ("stop_button_emergency_ms", 100, 50),
+        ("play_button_clear_emergency_ms", 2000, 3000),
+        ("imu_inclination_threshold", 56, 48),
+    ],
 )
-def test_mowgli_launch_passes_charge_limits_to_hardware_bridge(
+def test_mowgli_launch_passes_firmware_limits_to_hardware_bridge(
     key: str, default: float, configured: float
 ) -> None:
-    """Saved charge ceilings must reach the bridge; missing keys keep defaults."""
+    """Every runtime firmware limit the bridge pushes to the STM32 must come
+    from the robot config; missing keys keep the template default.
+
+    The bridge declares these parameters itself, so a key that is NOT injected
+    silently falls back to the bridge's hardcoded default and the operator's
+    setting never reaches the board (max_mps and the e-stop timings, until
+    this test existed)."""
     call = _find_node_call(_parse("mowgli.launch.py"), "hardware_bridge_node")
     assert call is not None
     parameters = next(kw.value for kw in call.keywords if kw.arg == "parameters")
@@ -354,10 +446,12 @@ def test_mowgli_launch_passes_charge_limits_to_hardware_bridge(
     expression = compile(ast.Expression(values[0]), "mowgli.launch.py", "eval")
     for robot_params, expected in [({}, default), ({key: configured}, configured)]:
         actual = eval(
-            expression, {"__builtins__": {}, "float": float},
+            expression, {"__builtins__": {}, "float": float, "int": int},
             {"robot_params": robot_params},
         )
-        assert isinstance(actual, float)
+        # The bridge declares the *_ms keys as integers and the rest as
+        # doubles; rclcpp rejects a value of the other type at startup.
+        assert type(actual) is type(default)
         assert actual == pytest.approx(expected)
 
 
@@ -377,3 +471,142 @@ def test_cross_hatch_setting_reaches_behavior_tree() -> None:
     for config, expected in [({}, False), ({"mow_cross_hatch": True}, True)]:
         assert eval(expression, {"__builtins__": {}, "bool": bool},
                     {"robot_params": config}) is expected
+
+
+def test_home_assistant_discovery_setting_reaches_mqtt_bridge() -> None:
+    """The GUI setting must reach the node that publishes discovery records."""
+    call = _find_node_call(_parse("full_system.launch.py"), "mqtt_bridge_node")
+    assert call is not None
+    values = _node_parameter_values(call, "home_assistant_discovery_enabled")
+    assert len(values) == 1
+    expression = compile(ast.Expression(values[0]), "full_system.launch.py", "eval")
+    for config, expected in [({}, False),
+                             ({"mqtt_home_assistant_discovery_enabled": True}, True)]:
+        assert eval(expression, {"__builtins__": {}, "bool": bool},
+                    {"robot_params": config}) is expected
+
+
+def test_datum_reaches_mqtt_bridge() -> None:
+    """<prefix>/area_boundary carries the datum its metre coordinates are relative to.
+
+    mqtt_bridge_node declares datum_lat/datum_lon with a 0.0 default, so if the
+    launch file stops injecting them every consumer that projects a real GPS
+    fix through the published datum places the mower thousands of km away
+    (found through the Home Assistant map camera, 2026-09-21).
+    """
+    tree = _parse("full_system.launch.py")
+    call = _find_node_call(tree, "mqtt_bridge_node")
+    assert call is not None
+    for key in ("datum_lat", "datum_lon"):
+        values = _node_parameter_values(call, key)
+        assert len(values) == 1, key
+        # It must be the variable the localizer / map_server are fed from (read once
+        # from robot_params near the WGS84 datum block), not a literal.
+        assert isinstance(values[0], ast.Name) and values[0].id == key, key
+        assert any(
+            isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == key for t in n.targets)
+            for n in ast.walk(tree)
+        ), key
+
+
+@pytest.mark.parametrize(
+    "launch_file", ["navigation.launch.py", "full_system.launch.py"])
+def test_no_closure_rebinds_a_name_of_its_enclosing_function(
+        launch_file: str) -> None:
+    """A nested function that ASSIGNS a name its enclosing function also owns
+    makes that name local to the closure, so any read of it there raises
+    UnboundLocalError — at LAUNCH time, not import time. That is what
+    crash-looped the stack on the robot on 2026-09-16 (`obstacle_margin`
+    re-assigned inside `_inject_dock_pose_and_speeds`), and no regex or yaml
+    test can see it. The symbol table can: a closure must use FRESH local names.
+    """
+    import symtable
+
+    with open(_launch_path(launch_file)) as fh:
+        table = symtable.symtable(fh.read(), launch_file, "exec")
+
+    offenders = []
+
+    def _walk(scope) -> None:
+        for child in scope.get_children():
+            if scope.get_type() == "function" and child.get_type() == "function":
+                outer = {sym.get_name() for sym in scope.get_symbols()
+                         if sym.is_local() or sym.is_parameter()}
+                offenders.extend(
+                    f"{scope.get_name()} -> {child.get_name()}: {sym.get_name()}"
+                    for sym in child.get_symbols()
+                    if sym.is_local() and not sym.is_parameter()
+                    and sym.get_name() in outer)
+            _walk(child)
+
+    _walk(table)
+    assert not offenders, (
+        "closure re-binds a name of its enclosing function (UnboundLocalError "
+        f"at launch): {offenders}"
+    )
+
+
+def test_foxglove_bridge_respawns() -> None:
+    """The bridge is the GUI's ONLY link to ROS (gui/pkg/providers/ros.go dials
+    ws://localhost:8765). On 2026-09-18 it segfaulted seconds after the GUI
+    backend connected and was never restarted, so the web UI showed no robot on
+    the map and "no GPS" for a whole run while the robot was RTK-Fixed and
+    mowing. It is outside the motion path, so respawning it can only restore
+    observability."""
+    tree = ast.parse(open(_launch_path("foxglove_bridge.launch.py")).read())
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or getattr(node.func, "id", None) != "Node":
+            continue
+        kwargs = {kw.arg: kw.value for kw in node.keywords}
+        name = kwargs.get("name")
+        if not isinstance(name, ast.Constant) or name.value != "foxglove_bridge":
+            continue
+        respawn = kwargs.get("respawn")
+        assert isinstance(respawn, ast.Constant) and respawn.value is True, (
+            "foxglove_bridge must respawn: without it a single crash leaves the "
+            "operator blind with no indication that the robot is fine."
+        )
+        delay = kwargs.get("respawn_delay")
+        assert isinstance(delay, ast.Constant) and delay.value > 0, (
+            "respawn_delay bounds a crash loop."
+        )
+        return
+
+    pytest.fail("no foxglove_bridge Node found in foxglove_bridge.launch.py")
+
+
+def test_full_system_launches_fleet_peer_obstacles_unconditionally() -> None:
+    """docs/MULTI_ROBOT.md: the peer → costmap point-cloud node is ALWAYS
+    launched (no condition=) so the Nav2 fleet source never goes stale — it
+    publishes an empty cloud when the robot is alone. It must also be an
+    installed program of mowgli_bringup or the launch fails at runtime."""
+    call = _find_node_call(_parse("full_system.launch.py"), "fleet_peer_obstacles.py")
+    assert call is not None, "full_system.launch.py no longer launches fleet_peer_obstacles.py"
+    assert not any(kw.arg == "condition" for kw in call.keywords), (
+        "fleet_peer_obstacles must be unconditional: the costmap fleet source relies on "
+        "its continuous (possibly empty) cloud"
+    )
+    cmake = os.path.join(os.path.dirname(__file__), "..", "CMakeLists.txt")
+    with open(cmake, encoding="utf-8") as fh:
+        assert "scripts/fleet_peer_obstacles.py" in fh.read(), (
+            "fleet_peer_obstacles.py is launched but not installed by CMakeLists.txt"
+        )
+
+
+def test_dock_pose_reaches_mqtt_bridge() -> None:
+    """<prefix>/area_boundary carries the dock pose, so the bridge must be given it.
+
+    mqtt_bridge_node declares dock_pose_x/y/yaw with a 0.0 default, which it treats
+    as "no dock calibrated" and then publishes no dock at all.
+    """
+    call = _find_node_call(_parse("full_system.launch.py"), "mqtt_bridge_node")
+    assert call is not None
+    for key in ("dock_pose_x", "dock_pose_y", "dock_pose_yaw"):
+        values = _node_parameter_values(call, key)
+        assert len(values) == 1, key
+        expression = compile(ast.Expression(values[0]), "full_system.launch.py", "eval")
+        scope = {"__builtins__": {}, "float": float}
+        assert eval(expression, scope, {"robot_params": {key: 1.25}}) == 1.25, key
+        assert eval(expression, scope, {"robot_params": {}}) == 0.0, key

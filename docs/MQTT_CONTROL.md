@@ -11,6 +11,14 @@ internal REST/WebSocket API on `:4006` (unauthenticated, unversioned, an impleme
 the bundled frontend) and not the GUI's own separate embedded MQTT broker
 (`gui/pkg/providers/mqtt.go`, a different prefix/payload shape used by the web UI).
 
+**One exception to "mqtt_bridge_node publishes everything":** the `<prefix>/schedules*` topics
+(below) are published by the **GUI backend itself** (`gui/pkg/api/schedule_mqtt.go`), not
+`mqtt_bridge_node` — mowing schedules live only in the GUI's own database, with no ROS2
+representation at all, so there is nothing for a ROS2 node to relay. The GUI backend connects to
+the *same* broker, using the *same* `mqtt_enabled`/`mqtt_host`/`mqtt_port`/`mqtt_username`/
+`mqtt_password`/`mqtt_topic_prefix` settings, so from an external tool's point of view it is one
+contract on one broker — which process publishes a given topic is an implementation detail.
+
 ## Enabling it
 
 1. Set the broker connection in the GUI: **Settings → MQTT / Home Assistant**. Toggling it on
@@ -25,6 +33,35 @@ the bundled frontend) and not the GUI's own separate embedded MQTT broker
    at an external broker needs no bundled broker at all.
 3. Restart the ROS2 stack for the new params to take effect (`mqtt_bridge_node`'s parameters are
    read once at startup, like every other node here).
+
+### Home Assistant auto-discovery
+
+Turn on **Home Assistant auto-discovery** in the same settings section to publish one retained
+device discovery record at `homeassistant/device/<derived-id>/config`. Home Assistant then creates
+a single MowgliNext device containing:
+
+- lawn-mower state and the standard start, pause and dock controls;
+- one explicit **Mow &lt;area name&gt;** button for every current mowable area;
+- battery, coverage, GPS quality, RTK state and GPS location;
+- charging, emergency and rain indicators;
+- blade speed/current, battery voltage and charge current.
+
+The bridge republishes the record whenever it reconnects and whenever Home Assistant announces
+`online` on `homeassistant/status`. It also refreshes discovery when the polled mowable-area list
+changes, so area buttons appear, rename and disappear with the map. A button press publishes the
+area's current positional index to `<prefix>/start_area`; changing a map can reassign those indices,
+so each button's discovery identity includes both its index and name. Home Assistant replaces the
+button rather than silently leaving an existing automation aimed at a different physical area.
+
+An area is an explicit button instead of a select entity because changing an MQTT select sends its
+command immediately; choosing an item in a dropdown must not unexpectedly start a physical mower.
+Turning discovery off publishes an empty retained record for the current topic prefix, which removes
+the discovered device. Home Assistant's default discovery prefix (`homeassistant`) is used. Give
+each mower connected to one broker a distinct `mqtt_topic_prefix`; that prefix also supplies its
+stable Home Assistant device and entity IDs.
+
+Changing a mower's topic prefix changes its discovery ID. Turn discovery off and restart once
+before changing the prefix if the old retained device should be removed automatically.
 
 ## Security
 
@@ -41,15 +78,25 @@ unless noted otherwise. QoS 1 throughout.
 
 | Topic | Direction | Retained | Source | Rate |
 |-------|-----------|----------|--------|------|
-| `<prefix>/status` | out | yes | `/hardware_bridge/status` | on change |
-| `<prefix>/power` | out | yes | `/hardware_bridge/power` | on change |
-| `<prefix>/emergency` | out | yes | `/hardware_bridge/emergency` | on change |
-| `<prefix>/high_level_status` | out | yes | `/behavior_tree_node/high_level_status` | on change |
+| `<prefix>/status` | out | yes | `/hardware_bridge/status` | latest value, at most `publish_rate` Hz |
+| `<prefix>/power` | out | yes | `/hardware_bridge/power` | latest value, at most `publish_rate` Hz |
+| `<prefix>/emergency` | out | yes | `/hardware_bridge/emergency` | every ROS message (not rate-limited) |
+| `<prefix>/high_level_status` | out | yes | `/behavior_tree_node/high_level_status` | every ROS message (~1 Hz, not rate-limited) |
 | `<prefix>/position` | out | no | `/wheel_odom` (**odom frame**, not GPS) | `publish_rate` Hz |
 | `<prefix>/gps` | out | no | `/gps/fix` (raw `NavSatFix`) | `publish_rate` Hz |
+| `<prefix>/pose` | out | no | `/odometry/filtered_map` (fused localizer pose, **map frame**) | latest value, at most `publish_rate` Hz |
+| `<prefix>/rtk_status` | out | yes | `/gps/status` (`GnssStatus`) | latest value, at most `publish_rate` Hz |
+| `<prefix>/area_boundary` | out | yes | `/map_server_node/get_mowing_area` (polled) | on change, polled every 10 s |
+| `<prefix>/coverage_path` | out | yes | `/coverage/full_plan` (latched) | on change |
 | `<prefix>/diagnostics` | out | no | `/diagnostics` | on change |
 | `<prefix>/available` | out | yes | connection state (LWT) | on connect/disconnect |
-| `<prefix>/command` | **in** | — | → `/behavior_tree_node/high_level_control` | — |
+| `<prefix>/host` | out | yes | the bridge's own LAN IP | once, on the first successful connect |
+| `<prefix>/areas` | out | yes | `/map_server_node/get_mowing_area` (polled) | ~every 10s |
+| `<prefix>/command` | **in** | no (retained deliveries rejected) | → `/behavior_tree_node/high_level_control` | — |
+| `<prefix>/start_area` | **in** | no (retained deliveries rejected) | → `/behavior_tree_node/start_in_area` | — |
+| `<prefix>/schedules` | out | yes | the GUI's schedule database (not ROS2 — see above) | on any create/update/delete |
+| `<prefix>/schedules/set` | **in** | no (retained deliveries rejected) | → GUI schedule database | — |
+| `<prefix>/schedules/delete` | **in** | no (retained deliveries rejected) | → GUI schedule database | — |
 
 ### `<prefix>/high_level_status` — the primary "is it mowing?" topic
 
@@ -74,6 +121,22 @@ reads. Every field of `mowgli_interfaces/msg/HighLevelStatus.msg`:
   "emergency": false
 }
 ```
+
+`gps_quality_percent` is a genuine 0–100 percent on the wire — the bridge scales it up from the
+underlying ROS field, which (despite its name) is actually a 0.0–1.0 fraction at the source
+(`mowgli_behavior/src/status_snapshot.cpp` assigns the BT context's `gps_quality` — itself
+`std::clamp(..., 0.0f, 1.0f)` — straight into `HighLevelStatus.gps_quality_percent` with no ×100).
+If you're reading this field via any *other* path than `<prefix>/high_level_status` (e.g. straight
+off the `/behavior_tree_node/high_level_status` ROS topic), remember it's 0.0–1.0 there, not 0–100.
+
+**Field-observed staleness (mowglinext#644):** the bridge's subscription to the underlying ROS topic
+has been seen to go stale for extended periods (30+ minutes) on a real deployment, continuing to
+report old data on `<prefix>/high_level_status` while the ROS topic itself stayed fresh and this
+node otherwise stayed connected. `mqtt_bridge_node` now watches for this — behavior_tree_node
+republishes the ROS topic unconditionally at least once a second, so several seconds of silence on
+that subscription makes the bridge recreate it automatically, with no restart needed. If you're
+seeing this topic disagree with the mower's actual state for more than a few seconds, check the
+bridge's own log for a "recreating the subscription" warning before assuming a code bug elsewhere.
 
 `state` values (`mowgli_interfaces/msg/HighLevelStatus.msg`):
 
@@ -113,18 +176,20 @@ state and every `sub_state_name`.
 
 ```json
 {
-  "v_charge": 16.500,
-  "v_battery": 15.800,
+  "v_charge": 28.000,
+  "v_battery": 26.000,
   "charge_current": 0.000,
   "charger_enabled": false,
   "charger_status": "idle",
-  "battery_pct": 90.9
+  "battery_pct": 50.0
 }
 ```
 
-`battery_pct` is derived from `v_battery` over the 12.0–16.8 V 4S LiPo range and clamped to
-[0, 100] — the same formula `diagnostics_node` uses. `<prefix>/high_level_status.battery_percent`
-is the BT's own estimate and is the one the GUI dashboard shows; the two normally agree closely.
+`battery_pct` is derived from `v_battery` using the configured `battery_empty_voltage` and
+`battery_full_voltage` endpoints, then clamped to [0, 100]. The default 24–28 V range gives
+50% at 26 V, as shown above. `diagnostics_node` uses the same endpoints and formula.
+`<prefix>/high_level_status.battery_percent` is the BT's filtered voltage estimate and is
+the one the GUI dashboard shows; transient values can differ because of that filtering.
 
 ### `<prefix>/emergency`
 
@@ -149,8 +214,120 @@ for anything that needs a real-world location (e.g. a Home Assistant `device_tra
 
 Raw relay of `sensor_msgs/msg/NavSatFix` — `status` is `NavSatStatus.status`
 (-1 `NO_FIX`, 0 `FIX`, 1 `SBAS_FIX`, 2 `GBAS_FIX`); it does **not** distinguish RTK Fixed from
-Float the way the GUI's `universal_gnss/summary` does, so don't read it as an RTK-quality signal —
-`<prefix>/high_level_status.gps_quality_percent` is the field for that.
+Float, so don't read it as an RTK-quality signal — use `<prefix>/rtk_status` for that.
+
+### `<prefix>/rtk_status`
+
+```json
+{"fix_type": 3, "fix_type_name": "RTK_FIXED", "rtk_mode": 3, "rtk_mode_name": "FIXED", "fix_valid": true, "quality_percent": 100}
+```
+
+Relay of `/gps/status` (`mowgli_interfaces/msg/GnssStatus`) — the **same** typed status and
+`gnss_status_utils` helpers the robot's own LED ring and behavior tree read, so this can never
+disagree with what the robot itself shows (e.g. the LED ring's amber "mowing without RTK fix"
+pattern, or the GUI's own GPS % health-check card). `quality_percent` is
+`gnss_status_utils::HardwareQualityPercent()` — a genuine 0–100 — not `GnssStatus.quality_percent`
+directly, whose own population is backend-dependent and not guaranteed to be on that scale.
+
+| Field | Values |
+|-------|--------|
+| `fix_type` / `fix_type_name` | 0 `NO_FIX`, 1 `GPS_FIX`, 2 `RTK_FLOAT`, 3 `RTK_FIXED`, 4 `DEAD_RECKONING` |
+| `rtk_mode` / `rtk_mode_name` | 0 `UNKNOWN`, 1 `NONE`, 2 `FLOAT`, 3 `FIXED` |
+| `fix_valid` | Overrides everything else — a stale/leftover `fix_type` with `fix_valid: false` means no usable fix, full stop |
+
+### `<prefix>/area_boundary`
+
+```json
+{
+  "datum_lat": 52.12345678,
+  "datum_lon": 4.56789012,
+  "areas": [
+    {
+      "index": 0,
+      "name": "Front Lawn",
+      "boundary": [[1.234, -0.567], [10.0, -0.567], [10.0, 8.0], [1.234, 8.0]],
+      "obstacles": [[[3.0, 2.0], [4.0, 2.0], [4.0, 3.0], [3.0, 3.0]]]
+    }
+  ],
+  "dock": {"x": 12.5, "y": -3.25, "yaw": 1.5708}
+}
+```
+
+`dock` is the charging dock's pose in the same map frame (`dock_pose_x/y/yaw` from
+`mowgli_robot.yaml`; `yaw` in radians, the heading the robot has when docked). It is **omitted**
+when no dock is calibrated (all three values still at their `0/0/0` default) or any value is not
+finite. The bridge reads it at startup, like the other consumers of these keys, so a dock
+re-calibration shows up after a restart.
+
+Polygon geometry for every recorded mowing area, so an external tool (e.g. a Home Assistant map
+card) can render the boundary and obstacles the robot's own GUI shows. `datum_lat`/`datum_lon` are
+the map-frame origin (`mowgli_robot.yaml`'s datum — the same one `map_server_node` and the
+localizer use, see root `CLAUDE.md` Invariant 4): every `[x, y]` pair is a **map-frame offset in
+metres** from that datum (east/north, equirectangular projection — the same math as
+`wgs84_projection.hpp`), not a lat/lon pair itself. To place a point on a real map, project it back
+through the datum with the same equirectangular formula. `boundary` is the area's outer polygon
+(`MapArea.area`); `obstacles` is a list of polygons (`MapArea.obstacles`), one entry per obstacle,
+empty when the area has none. Navigation-only areas (`MapArea.is_navigation_area`) are excluded —
+they aren't mowed, so there's nothing useful to draw.
+
+This topic is polled independently of the `<prefix>/areas` name-list topic above (each runs its own
+`GetMowingArea` poll loop, on the same 10s cadence but not synchronised) — it exists purely to
+describe geometry for drawing, not to identify areas for a `<prefix>/start_area` command. Indices
+are **not guaranteed stable or contiguous** across a session (mowglinext#637) — match on `name`,
+not `index`, if you need to correlate with `<prefix>/areas`. The bridge polls
+`/map_server_node/get_mowing_area` every 10 seconds (index 0, 1, 2, … until the service reports
+`success: false`, capped at 100 areas) and only republishes (retained) when the serialised geometry
+actually changed, so a static map does not spam the broker.
+
+### `<prefix>/pose`
+
+```json
+{"x": 12.5, "y": -3.25, "yaw": 1.5708}
+```
+
+The mower's fused pose in the **map frame** — the same frame as the polygons in
+`<prefix>/area_boundary` and the `dock` there: `x` east, `y` north, in metres from the datum, `yaw`
+in radians counter-clockwise from east (−π…π]. It is `/odometry/filtered_map`, the localizer's
+canonical global pose, so it is smoother than the raw `<prefix>/gps` fix (which jitters, especially
+at the dock) and it carries a heading, which `<prefix>/gps` does not. It needs no datum to be
+placed on the `area_boundary` geometry. Not retained; a localizer that has not converged yet (non-
+finite values) publishes nothing.
+
+### `<prefix>/host`
+
+```json
+{"ip": "192.168.12.10"}
+```
+
+The mower's own LAN IP address, so an external tool can link to its GUI (`http://<ip>:4006`)
+without the operator having to enter it by hand. Detected once at startup (the same address a UDP
+socket would use to reach the internet, via a routing-table lookup that sends nothing and needs no
+actual connectivity — works offline) and published once, retained, on the first successful connect
+(a bridge reconnect does not republish it — the broker already retains the value). **Omitted
+entirely** when the robot has no default route at all (a fully static, isolated LAN) — treat a
+missing/absent topic, not an empty `ip`, as "not published"; an empty string is not sent either
+way, since the bridge skips publishing rather than sending one.
+
+### `<prefix>/coverage_path`
+
+```json
+{"points": [[1.234, -0.567], [2.5, -0.567], [2.5, 3.0], "..."]}
+```
+
+The current **planned** coverage path — headland rings, then serpentine swaths, concatenated — in
+the same map frame (metres, no datum needed) as `<prefix>/area_boundary`'s polygons, `<prefix>/pose`
+and `<prefix>/gps`'s projected position, so it overlays directly on them. Relay of
+`/coverage/full_plan` (`nav_msgs/Path`, latched by `behavior_tree_node` right after a
+`plan_coverage` call succeeds) — the same source the robot's own GUI map view draws, retained on
+this topic too so a client that connects mid-mow still gets the current plan immediately, and only
+republished when the plan actually changes (a new area, or a resumed/replanned run).
+
+**Gap caveat**: this is a raw concatenation of segments, not the joined `drivable_subpaths` the
+robot actually drives — consecutive points can be far apart where the plan jumps between segments
+that are not driven directly across (e.g. between a ring and the first swath, or across a
+hole/obstacle). Split the polyline wherever the distance between consecutive points exceeds a
+threshold (the GUI itself uses 0.75 m, `gui/web/src/pages/MapPage.tsx`'s `SUBPATH_GAP_M`) before
+drawing it, rather than connecting every point in order.
 
 ### `<prefix>/diagnostics`
 
@@ -172,8 +349,10 @@ online but silently stuck" — the latter still updates `<prefix>/diagnostics`/`
 
 ### `<prefix>/command` (inbound)
 
-Payload is an **ASCII decimal integer string**, e.g. `"1"` — **not a raw byte**. This is the single
+Payload is an **ASCII decimal integer string**, e.g. `"1"` — **not a raw byte**. The entire payload
+must be digits only: whitespace, signs, and trailing characters are rejected. This is the single
 most common mistake integrating against this topic: publish the string `"1"`, not the byte `0x01`.
+Retained deliveries are rejected: an operator command must be a fresh publish, not broker state.
 
 | Code | Constant | Effect |
 |------|----------|--------|
@@ -203,6 +382,119 @@ emergency via the separate `/hardware_bridge/emergency_stop` service and clears 
 `/map_server_node/clear_map`, not through `HighLevelControl`. Don't rely on sending 254/255 over
 MQTT to do either.
 
+### `<prefix>/areas` (recorded mow areas)
+
+```json
+[
+  {"index": 0, "name": "Front Lawn", "id": 11},
+  {"index": 2, "name": "Back Garden", "id": 7}
+]
+```
+
+Polled from `/map_server_node/get_mowing_area` roughly every 10 seconds (walking index 0, 1, 2, …
+until the service reports `success=false` — the same pattern the GUI backend's own map polling
+uses) and republished, retained, only when the resulting list actually changed. Navigation-only
+areas (keepout/boundary zones that are never mowed) are excluded.
+
+`id` is the area's stable `MapArea.id` ([mowglinext#637](https://github.com/mowglinext/mowglinext/issues/637)):
+it survives edits, reorders and deletes of *other* areas, so it is what `<prefix>/schedules`
+references (`areaId`). `0` means the id has not been assigned yet.
+
+**⚠️ `<prefix>/start_area` is still index-based.** `index` is the *raw*, purely
+*positional* index `map_server_node` uses internally. The
+GUI's own area editor rebuilds its entire area list on any single-area add/edit/delete, which can
+reassign *every* area's index in the process — so **do not cache an index across a session**.
+Re-fetch `<prefix>/areas` and re-resolve the target by `name` before sending `<prefix>/start_area`
+each time. `<prefix>/start_area` is expected to grow an id-based counterpart; until then, don't
+build a permanent integration against the index without accounting for that.
+
+### `<prefix>/start_area` (inbound — start mowing a specific area)
+
+Payload is an **ASCII decimal integer string** matching the `index` field from `<prefix>/areas`
+(same strict digits-only convention as `<prefix>/command` — publish `"2"`, not the byte `0x02`).
+Retained deliveries are rejected, so this must be a fresh publish. Relays straight
+through to `/behavior_tree_node/start_in_area`, which starts mowing that area now, **ahead of the
+normal area-iteration order** — exactly as consequential as `<prefix>/command`'s `COMMAND_START`
+(it raises that internally too). Same fire-and-forget contract: no ack/result topic, an
+unrecognised/out-of-range payload is logged and dropped, and the command is dropped silently if
+`/behavior_tree_node/start_in_area` isn't available. Poll `<prefix>/high_level_status` afterwards
+to confirm it took effect. Subject to the same index-staleness caveat as `<prefix>/areas` above —
+targeting a stale index can start the wrong area.
+
+### `<prefix>/schedules` (mowing schedules)
+
+Published by the **GUI backend**, not `mqtt_bridge_node` — see the note at the top of this document.
+Retained, republished on every create/update/delete (from MQTT *or* the GUI's own Schedules page —
+both go through the exact same validation and storage, so this is never stale relative to the GUI).
+
+```json
+{
+  "schedules": [
+    {
+      "id": "1758901234567890000",
+      "areaId": 7,
+      "areaName": "Back Garden",
+      "time": "06:00",
+      "daysOfWeek": [1, 2, 3, 4, 5],
+      "enabled": true,
+      "createdAt": "2026-09-20T08:00:00Z",
+      "lastRun": "2026-09-26T06:00:03Z",
+      "lastSkipReason": "soil wet",
+      "lastSkippedAt": "2026-09-25T06:00:00Z"
+    }
+  ]
+}
+```
+
+`id` is an opaque string (a nanosecond timestamp today — treat it as opaque, not as a sortable
+time). `areaId` is the stable area `id` from `<prefix>/areas` that this schedule mows; `0` (or
+absent) means **all areas**, which is a plain Start. `areaName` is a display snapshot taken when the
+schedule was saved, kept so the label survives an area being removed. The scheduler resolves
+`areaId` to the area's *current* index each time the schedule fires (it asks the map server, so
+an edit to the area list cannot retarget it); if the area no longer exists the run is skipped and
+`lastSkipReason` says so. One schedule mows one area or all of them. `daysOfWeek` is
+`0`=Sunday…`6`=Saturday. `lastRun` and
+`lastSkipReason`/`lastSkippedAt` are written by the scheduler itself (the latter when IrriSense
+reports wet soil at a due run) — a client may read them but writing them via `schedules/set` (below)
+has no effect; they are always carried over from the existing schedule.
+
+A due, enabled schedule triggers autonomous mowing the same way pressing "Start" in the GUI does
+(after the same emergency/already-mowing/soil checks) — an open, reachable broker can therefore
+create a schedule that starts the mower unattended, exactly as consequential as `<prefix>/command`'s
+`COMMAND_START` (see the security note near the top of this document).
+
+### `<prefix>/schedules/set` (inbound — create or update a schedule)
+
+```json
+{"areaId": 7, "areaName": "Back Garden", "time": "06:00", "daysOfWeek": [1, 2, 3, 4, 5], "enabled": true}
+```
+
+Omit `id` (or send an `id` that does not exist yet) to **create** a schedule — the server assigns
+the `id`. Send an existing `id` to **update** that schedule; `createdAt`/`lastRun`/
+`lastSkipReason`/`lastSkippedAt` are preserved from the existing record regardless of what the
+payload contains. `time` must be `HH:mm` and `daysOfWeek` must have at least one entry in `0`–`6`.
+
+On an update, an **omitted `areaId` means "unchanged"** (so an integration written before per-area
+schedules, which only flips `enabled`, does not reset a per-area schedule to all areas); an explicit
+`areaId` always wins, and `0` is an explicit "all areas". An omitted `areaName` is kept only while
+`areaId` is the same area. On a create, omitting `areaId` means all areas. Prefer echoing the full
+record you read from `<prefix>/schedules` when updating. `time` and `daysOfWeek` are still required
+on every update (the same validation `POST/PUT /schedules` applies).
+
+**Enabled schedules may not overlap:** two
+enabled schedules sharing a weekday must start at least 60 minutes apart (the distance wraps
+across midnight and the end of the week); a disabled schedule is never checked, so disabling is
+always accepted. `POST/PUT /schedules` answers an overlap with `409`; here, as for any invalid
+payload, it is logged and dropped with no
+error published back to MQTT (there is no ack/result topic here either — subscribe to
+`<prefix>/schedules` to see whether it took effect).
+
+### `<prefix>/schedules/delete` (inbound — delete a schedule)
+
+Payload is the schedule's `id`, either as plain text (`1758901234567890000`) or as
+`{"id": "1758901234567890000"}`. A payload with no id (including `{}`) is ignored rather than
+deleting everything.
+
 ## Parameters
 
 Read once at startup (`ros2/src/mowgli_monitoring/include/mowgli_monitoring/mqtt_bridge_node.hpp`):
@@ -214,5 +506,6 @@ Read once at startup (`ros2/src/mowgli_monitoring/include/mowgli_monitoring/mqtt
 | `mqtt_username` / `mqtt_password` | `""` / `""` | `mqtt_username` / `mqtt_password` |
 | `mqtt_topic_prefix` | `mowgli` | `mqtt_topic_prefix` |
 | `use_ssl` | `false` | `mqtt_use_ssl` |
+| `home_assistant_discovery_enabled` | `false` | `mqtt_home_assistant_discovery_enabled` |
 | `mqtt_client_id` | `mowgli_ros2` | package-share `mqtt_bridge.yaml` only (not on the GUI) |
-| `publish_rate` | `1.0` Hz | package-share `mqtt_bridge.yaml` only — also the position/gps rate limit and the MQTT network-loop tick period |
+| `publish_rate` | `1.0` Hz | package-share `mqtt_bridge.yaml` only — also the rate limit for position/gps/status/power/rtk_status. The MQTT network loop runs on its own fixed 50 ms timer, independent of this |

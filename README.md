@@ -14,8 +14,8 @@
   <a href="https://github.com/Fields2Cover/Fields2Cover">
     <img src="https://img.shields.io/badge/Coverage-Fields2Cover-yellow" alt="Coverage">
   </a>
-  <a href="https://github.com/Pepeuch/universal-gnss">
-    <img src="https://img.shields.io/badge/GNSS-Universal-success" alt="GNSS">
+  <a href="https://github.com/Pepeuch/universal-gnss/releases/tag/v0.7.1-rc3">
+    <img src="https://img.shields.io/badge/Universal%20GNSS-v0.7.1--rc2-success" alt="Universal GNSS v0.7.1-rc3">
   </a>
 </p>
 
@@ -72,18 +72,20 @@
 
 ---
 
-## What's New in v1.4.0
+## What's New in v1.5.0
 
-The mower now looks after itself. Full notes: [v1.4.0 release](https://github.com/mowglinext/mowglinext/releases/tag/v1.4.0).
+The mower mows to the edge. Full notes: [v1.5.0 release](https://github.com/mowglinext/mowglinext/releases/tag/v1.5.0).
 
 | | |
 |---|---|
-| 🔄 **Update from the GUI** | **Settings → Updates** checks for releases daily, notifies you in the bell, and installs a reviewed update with backup, verification and rollback — only while the mower is idle, stationary and blade-off. No more `mowgli-pull && mowgli-up`. |
-| 🏠 **Home Assistant over MQTT** | The MQTT bridge is real now: retained status, GPS position, online/offline availability and a command topic, configured from **Settings → MQTT / Home Assistant**. Contract in [`docs/MQTT_CONTROL.md`](docs/MQTT_CONTROL.md). |
-| 📲 **Push notifications** | Telegram, Pushover, ntfy or a webhook: mowing started, zone finished, complete, stuck, e-stop, battery, rain, GPS wait. In English or French. |
-| 🌍 **Remote access** | An optional, hardened Tailscale sidecar makes the GUI reachable from anywhere on your private tailnet — never public. [`docs/REMOTE_ACCESS.md`](docs/REMOTE_ACCESS.md). |
-| ✂️ **Cross-hatch mowing** | Alternate the stripe angle by 90° every session, per area, with a next-direction override. |
-| 🐢 **ROS 2 Lyrical** | Every image rebuilt on ROS 2 Lyrical / Ubuntu 26.04 with pinned source dependencies. The host OS does not change. |
+| ✂️ **Mows to the edge** | The outermost pass rides on the line you recorded instead of 20 cm inside it, and drawn obstacles are saved at their real size instead of a chassis half-width too big. If your perimeter is not drivable all the way round, read the upgrade notes first. |
+| 🔁 **Row ends that stay on the lawn** | Where no turn-around arc fits, the robot pivots in place with the blade on instead of splitting the lawn into dozens of pieces, and it improvises a turn it cannot drive instead of aborting. |
+| 🔧 **Firmware settings without a custom build** | E-stop timings, charge ceiling, speed cap and tilt threshold come from your configuration, are clamped to a safety envelope and are kept in flash. Needs a firmware reflash, which the GUI offers after the update. |
+| 📡 **GNSS in its own container** | The Universal GNSS receiver runs in its own updatable sidecar; its configuration stays in `mowgli_robot.yaml`. |
+| 🌿 **LiDAR ignore lines** | Draw a line along a hedge or ornamental grass: LiDAR returns inside it are ignored, so soft vegetation the robot should brush past no longer stops it. |
+| 🏠 **Home Assistant auto-discovery** | Opt-in: the mower appears as one device with start, pause and dock, and a *Mow* button per area. |
+| 🛠️ **Installer modes** | `install`, `update`, `repair`, `check` and `uninstall` — a supported manual update path when the GUI updater cannot be used. |
+| 🤝 **Multi-robot (beta)** | Several mowers share one property without being assigned the same area. |
 
 ## What It Does
 
@@ -121,11 +123,15 @@ GUI at `http://<mower-ip>:4006` · See **[Getting Started](https://github.com/mo
 
 Since v1.4.0 the mower updates itself from the web interface. **Settings → Updates** checks for published releases every 24 hours, shows a notice in the bell, and installs the release you review with a backup, a health check and automatic rollback. Nothing is ever installed without your confirmation, and never while the robot is mowing.
 
+**Updating to v1.5.0 changes the mainboard firmware protocol.** In **Settings → Updates**: *Update the update service* first, then *Review update* → *Install*, then use **Flash firmware** when the new interface asks for it. Until the board is reflashed the robot refuses to mow. Details in the [v1.5.0 release notes](https://github.com/mowglinext/mowglinext/releases/tag/v1.5.0).
+
 Mowers installed before v1.4.0 enable it by rerunning the installer once (same answers as the first time):
 
 ```bash
-curl -sSL https://mowgli.garden/install.sh | bash     # or: cd ~/mowglinext && git pull && ./install/mowglinext.sh
+curl -sSL https://mowgli.garden/install.sh | bash     # or: cd ~/mowglinext && ./install/mowglinext.sh
 ```
+
+The installer updates its own checkout (no `git pull` needed): it lists any locally modified tracked file and offers to stash it under a named backup, keep it, or abort. Robot configuration under `docker/` is not tracked by git and is never touched. If `docker/docker-compose.yaml` predates managed updates, the installer asks once before replacing it and keeps the old file as `docker-compose.yaml.legacy-<date>`.
 
 Check `docker volume ls | grep mowgli_maps` first: if your map volume is not prefixed `install_`, set `COMPOSE_PROJECT_NAME=<your prefix>` in `docker/.env` before rerunning so the stack keeps its data. The legacy `mowgli-pull && mowgli-up` helpers still work but are no longer the recommended path. Details, tracks, pins and recovery: [`docs/UPDATES.md`](docs/UPDATES.md).
 

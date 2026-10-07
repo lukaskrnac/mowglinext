@@ -16,12 +16,15 @@ import (
 
 type Backend interface {
 	Inventory(context.Context) (fingerprint string, images map[string]string, err error)
-	PlanImages(context.Context, Deployment) (map[string]string, error)
+	PlanImages(context.Context, Deployment, PlanOptions) (map[string]string, error)
 	Pull(context.Context, map[string]string) error
 	Maintenance(context.Context, bool) error
 	Backup(context.Context, string) (string, error)
 	Apply(context.Context, map[string]string) error
-	Verify(context.Context, map[string]string, *Deployment) error
+	// Verify receives the job's acknowledged FirmwareProtocolChange, if any: the
+	// ONE unready state it must still accept is the bridge refusing a board the
+	// operator agreed to reflash. Every other unready reason keeps failing.
+	Verify(context.Context, map[string]string, *Deployment, *FirmwareProtocolChange) error
 	Restore(context.Context, string) error
 }
 type ReleaseSource interface {
@@ -223,9 +226,66 @@ func (m *Manager) MakeComponentPlan(ctx context.Context, id string, pinned bool,
 	if guiID != "" {
 		requested["gui"] = guiID
 	}
-	return m.MakeServicePlan(ctx, id, pinned, requested)
+	return m.MakeServicePlan(ctx, id, pinned, requested, PlanOptions{})
 }
-func (m *Manager) MakeServicePlan(ctx context.Context, id string, pinned bool, requested map[string]string) (Plan, error) {
+
+// recordFirmwareProtocolChange stores the protocol pair on a plan whose target
+// the operator allowed past the running firmware. The backend already refused
+// the plan when the change was not allowed; backends that cannot report the
+// running protocol never record one.
+func (m *Manager) recordFirmwareProtocolChange(ctx context.Context, target Deployment, opts PlanOptions) (*FirmwareProtocolChange, error) {
+	probe, ok := m.backend.(interface {
+		RunningFirmwareProtocol(context.Context) (int, error)
+	})
+	if !ok {
+		return nil, nil
+	}
+	running, err := probe.RunningFirmwareProtocol(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return firmwareProtocolChange(running, target, opts)
+}
+
+func (m *Manager) preexistingHealthIssues(ctx context.Context, images map[string]string) ([]HealthIssue, error) {
+	backend, ok := m.backend.(interface {
+		PreexistingHealthIssues(context.Context, map[string]string) ([]HealthIssue, error)
+	})
+	if !ok {
+		return nil, nil
+	}
+	return backend.PreexistingHealthIssues(ctx, images)
+}
+
+func retainedHealthScope(previous, target map[string]string) map[string]string {
+	scope := make(map[string]string)
+	for name, image := range previous {
+		if _, retained := target[name]; retained {
+			scope[name] = image
+		}
+	}
+	return scope
+}
+
+// confirmPreexistingHealth narrows the reviewed list to failures which still
+// exist immediately before maintenance. A newly failing service/check pair
+// stops the job and requires a fresh review; a recovered check loses its
+// exception and must remain healthy after activation.
+func (m *Manager) confirmPreexistingHealth(ctx context.Context, p Plan) ([]HealthIssue, error) {
+	current, err := m.preexistingHealthIssues(ctx, retainedHealthScope(p.Previous, p.Images))
+	if err != nil {
+		return nil, err
+	}
+	reviewed := healthIssueKeys(p.PreexistingHealthIssues)
+	for _, issue := range current {
+		if _, ok := reviewed[healthIssueKey(issue)]; !ok {
+			return nil, fmt.Errorf("installed component health changed; review the update again: %s", issue.Message)
+		}
+	}
+	return current, nil
+}
+
+func (m *Manager) MakeServicePlan(ctx context.Context, id string, pinned bool, requested map[string]string, opts PlanOptions) (Plan, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.busy || m.state.Job.Pending() {
@@ -285,19 +345,19 @@ func (m *Manager) MakeServicePlan(ctx context.Context, id string, pinned bool, r
 	var stack *StackPlan
 	if target.Bundle != nil {
 		planner, ok := m.backend.(interface {
-			PlanStack(context.Context, Deployment, map[string]Deployment) (map[string]string, *StackPlan, error)
+			PlanStack(context.Context, Deployment, map[string]Deployment, PlanOptions) (map[string]string, *StackPlan, error)
 		})
 		if !ok {
 			return Plan{}, errors.New("backend does not support release Compose bundles")
 		}
-		images, stack, err = planner.PlanStack(ctx, *target, overrides)
+		images, stack, err = planner.PlanStack(ctx, *target, overrides, opts)
 	} else {
 		if len(overrides) == 0 {
-			images, err = m.backend.PlanImages(ctx, *target)
+			images, err = m.backend.PlanImages(ctx, *target, opts)
 		} else if planner, ok := m.backend.(interface {
-			PlanSelectedImages(context.Context, Deployment, map[string]Deployment) (map[string]string, error)
+			PlanSelectedImages(context.Context, Deployment, map[string]Deployment, PlanOptions) (map[string]string, error)
 		}); ok {
-			images, err = planner.PlanSelectedImages(ctx, *target, overrides)
+			images, err = planner.PlanSelectedImages(ctx, *target, overrides, opts)
 		} else {
 			return Plan{}, errors.New("backend does not support component selection")
 		}
@@ -306,21 +366,37 @@ func (m *Manager) MakeServicePlan(ctx context.Context, id string, pinned bool, r
 	if err != nil {
 		return Plan{}, err
 	}
+	change, err := m.recordFirmwareProtocolChange(ctx, *target, opts)
+	if err != nil {
+		return Plan{}, err
+	}
+	healthIssues, err := m.preexistingHealthIssues(ctx, retainedHealthScope(previous, images))
+	if err != nil {
+		return Plan{}, err
+	}
 	for service, override := range overrides {
 		if override.ID == target.ID {
 			delete(overrides, service)
 		}
 	}
-	p := Plan{Stack: stack, Overrides: overrides, Target: *target, Policy: m.state.Policy, Fingerprint: fingerprint, ExpiresAt: m.now().Add(15 * time.Minute), Images: images, Previous: previous}
+	p := Plan{Stack: stack, Overrides: overrides, FirmwareProtocolChange: change, PreexistingHealthIssues: healthIssues, Target: *target, Policy: m.state.Policy, Fingerprint: fingerprint, ExpiresAt: m.now().Add(15 * time.Minute), Images: images, Previous: previous}
 	p.Policy.Pinned = pinned
 	p.ID = fmt.Sprintf("plan-%d", m.now().UnixNano())
 	m.state.Plans = []Plan{p}
 	return p, m.save()
 }
 func (m *Manager) Start(id string) (string, error) {
-	return m.StartAcknowledged(id, false)
+	return m.StartAcknowledged(id, false, false)
 }
-func (m *Manager) StartAcknowledged(id string, customAcknowledged bool) (string, error) {
+
+// StartAcknowledged installs a reviewed plan. Each warning the plan carries
+// needs its own explicit acknowledgement at install time: a plan lives 15
+// minutes and the review dialog is where the operator reads the consequence.
+func (m *Manager) StartAcknowledged(id string, customAcknowledged, firmwareAcknowledged bool) (string, error) {
+	return m.StartWithAcknowledgements(id, customAcknowledged, firmwareAcknowledged, false)
+}
+
+func (m *Manager) StartWithAcknowledgements(id string, customAcknowledged, firmwareAcknowledged, healthAcknowledged bool) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.busy || m.checking || m.state.Job.Pending() {
@@ -337,6 +413,12 @@ func (m *Manager) StartAcknowledged(id string, customAcknowledged bool) (string,
 	}
 	if len(plan.CustomImages) > 0 && !customAcknowledged {
 		return "", errors.New("confirm the custom image warning before installation")
+	}
+	if plan.FirmwareProtocolChange != nil && !firmwareAcknowledged {
+		return "", errors.New("confirm the mainboard firmware change before installation")
+	}
+	if len(plan.PreexistingHealthIssues) > 0 && !healthAcknowledged {
+		return "", errors.New("confirm the pre-existing component health warning before installation")
 	}
 	j := Job{PreviousCustomImages: m.state.CustomImages, ID: fmt.Sprintf("job-%d", m.now().UnixNano()), Kind: "containers", Phase: "planned", StartedAt: m.now(), Plan: *plan, PreviousPolicy: m.state.Policy, PreviousActive: m.state.Active, PreviousOverrides: m.state.Overrides, PreviousImages: m.state.InstalledImages, PreviousJobID: m.state.ActiveJobID}
 	if m.state.InstalledPolicy != nil {
@@ -358,6 +440,41 @@ func (m *Manager) phase(phase string, err error) error {
 		m.state.Job.Error = err.Error()
 	}
 	return m.save()
+}
+func (m *Manager) recoveryFailed(err error) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.state.Job.Phase = "recovery_required"
+	if err != nil {
+		m.state.Job.RecoveryError = err.Error()
+	}
+	return m.save()
+}
+func (m *Manager) clearRecoveryError() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.state.Job.RecoveryError = ""
+	m.state.Job.RecoveryWarnings = nil
+	return m.save()
+}
+func (m *Manager) verifyRecovery(ctx context.Context, images map[string]string, d *Deployment, change *FirmwareProtocolChange) error {
+	warnings := []string(nil)
+	var err error
+	if backend, ok := m.backend.(interface {
+		VerifyRecovery(context.Context, map[string]string, *Deployment, *FirmwareProtocolChange) ([]string, error)
+	}); ok {
+		warnings, err = backend.VerifyRecovery(ctx, images, d, change)
+	} else {
+		err = m.backend.Verify(ctx, images, d, change)
+	}
+	m.mu.Lock()
+	m.state.Job.RecoveryWarnings = warnings
+	saveErr := m.save()
+	m.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return saveErr
 }
 func (m *Manager) Recover() {
 	m.mu.Lock()
@@ -401,14 +518,23 @@ func (m *Manager) Rollback() (string, error) {
 }
 func (m *Manager) run(recovery bool) {
 	defer func() { m.mu.Lock(); m.busy = false; m.mu.Unlock() }()
+	if recovery {
+		_ = m.clearRecoveryError()
+	}
 	if backend, ok := m.backend.(interface{ Lock() (func(), error) }); ok {
 		unlock, err := backend.Lock()
 		if err != nil {
-			_ = m.phase("recovery_required", err)
+			if recovery {
+				_ = m.recoveryFailed(err)
+			} else {
+				_ = m.phase("recovery_required", err)
+			}
 			return
 		}
 		defer unlock()
 	}
+	// Registered after the lock so it runs while the deployment is still held.
+	defer m.pruneAfterJob()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	j := *m.Snapshot().Job
@@ -420,12 +546,12 @@ func (m *Manager) run(recovery bool) {
 		if j.Committed == "rolled_back" {
 			images = j.Plan.Previous
 		}
-		if err := m.backend.Verify(ctx, images, m.Snapshot().Active); err != nil {
-			_ = m.phase("recovery_required", err)
+		if err := m.verifyRecovery(ctx, images, m.Snapshot().Active, j.Plan.FirmwareProtocolChange); err != nil {
+			_ = m.recoveryFailed(err)
 			return
 		}
 		if err := m.backend.Maintenance(ctx, false); err != nil {
-			_ = m.phase("recovery_required", err)
+			_ = m.recoveryFailed(err)
 			return
 		}
 		_ = m.phase(j.Committed, nil)
@@ -435,7 +561,7 @@ func (m *Manager) run(recovery bool) {
 		if gate, ok := m.backend.(interface{ MaintenanceSet() (bool, error) }); ok {
 			active, err := gate.MaintenanceSet()
 			if err != nil {
-				_ = m.phase("recovery_required", err)
+				_ = m.recoveryFailed(err)
 				return
 			}
 			if !active {
@@ -447,16 +573,16 @@ func (m *Manager) run(recovery bool) {
 		// marker might remain; release it only after verifying the previous stack.
 		if j.Phase == "backing_up" || j.Phase == "recovery_required" {
 			if err := m.backend.Apply(ctx, j.Plan.Previous); err != nil {
-				_ = m.phase("recovery_required", err)
+				_ = m.recoveryFailed(err)
 				return
 			}
 		}
-		if err := m.backend.Verify(ctx, j.Plan.Previous, nil); err != nil {
-			_ = m.phase("recovery_required", err)
+		if err := m.verifyRecovery(ctx, j.Plan.Previous, nil, j.Plan.FirmwareProtocolChange); err != nil {
+			_ = m.recoveryFailed(err)
 			return
 		}
 		if err := m.backend.Maintenance(ctx, false); err != nil {
-			_ = m.phase("recovery_required", err)
+			_ = m.recoveryFailed(err)
 			return
 		}
 		failed(errors.New("interrupted before activation"))
@@ -493,10 +619,30 @@ func (m *Manager) run(recovery bool) {
 			failed(errors.New("deployment changed during download"))
 			return
 		}
+		healthIssues, healthErr := m.confirmPreexistingHealth(ctx, j.Plan)
+		if healthErr != nil {
+			failed(healthErr)
+			return
+		}
+		j.Plan.PreexistingHealthIssues = healthIssues
+		m.mu.Lock()
+		m.state.Job.Plan.PreexistingHealthIssues = healthIssues
+		err = m.save()
+		m.mu.Unlock()
+		if err != nil {
+			return
+		}
 		if err = m.phase("quiescing", nil); err != nil {
 			return
 		}
-		if err = m.backend.Maintenance(ctx, true); err != nil {
+		if backend, ok := m.backend.(interface {
+			PrepareUpdate(context.Context, Plan) error
+		}); ok {
+			err = backend.PrepareUpdate(ctx, j.Plan)
+		} else {
+			err = m.backend.Maintenance(ctx, true)
+		}
+		if err != nil {
 			_ = m.phase("recovery_required", err)
 			return
 		}
@@ -546,8 +692,11 @@ func (m *Manager) run(recovery bool) {
 		if err == nil {
 			err = m.phase("verifying", nil)
 		}
+		var remainingHealthIssues []HealthIssue
 		if err == nil {
-			err = m.backend.Verify(ctx, j.Plan.Images, &j.Plan.Target)
+			verifyCtx, allowance := withPreexistingHealthVerification(ctx, j.Plan.PreexistingHealthIssues)
+			err = m.backend.Verify(verifyCtx, j.Plan.Images, &j.Plan.Target, j.Plan.FirmwareProtocolChange)
+			remainingHealthIssues = allowance.Remaining
 		}
 		var installed map[string]string
 		if err == nil {
@@ -555,6 +704,7 @@ func (m *Manager) run(recovery bool) {
 		}
 		if err == nil {
 			m.mu.Lock()
+			m.state.Job.RemainingHealthIssues = remainingHealthIssues
 			m.state.ActiveJobID = j.ID
 			m.state.Overrides = j.Plan.Overrides
 			m.state.InstalledImages = installed
@@ -582,7 +732,7 @@ func (m *Manager) run(recovery bool) {
 				return
 			}
 			if err = m.backend.Maintenance(ctx, false); err != nil {
-				_ = m.phase("recovery_required", err)
+				_ = m.recoveryFailed(err)
 			}
 			return
 		}
@@ -594,8 +744,19 @@ func (m *Manager) run(recovery bool) {
 	recoveryCtx, stop := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer stop()
 	if j.Kind == "rollback" {
-		if err := m.backend.Maintenance(recoveryCtx, true); err != nil {
-			_ = m.phase("recovery_required", err)
+		// The job being undone may have been a forced protocol change whose
+		// board was not reflashed yet; PrepareUpdate carries its recorded pair
+		// so the gate opens on the same acknowledged refusal.
+		var err error
+		if backend, ok := m.backend.(interface {
+			PrepareUpdate(context.Context, Plan) error
+		}); ok && j.Plan.FirmwareProtocolChange != nil {
+			err = backend.PrepareUpdate(recoveryCtx, j.Plan)
+		} else {
+			err = m.backend.Maintenance(recoveryCtx, true)
+		}
+		if err != nil {
+			_ = m.recoveryFailed(err)
 			return
 		}
 	}
@@ -603,15 +764,15 @@ func (m *Manager) run(recovery bool) {
 		return
 	}
 	if err := m.backend.Restore(recoveryCtx, j.Backup); err != nil {
-		_ = m.phase("recovery_required", err)
+		_ = m.recoveryFailed(err)
 		return
 	}
 	if err := m.backend.Apply(recoveryCtx, j.Plan.Previous); err != nil {
-		_ = m.phase("recovery_required", err)
+		_ = m.recoveryFailed(err)
 		return
 	}
-	if err := m.backend.Verify(recoveryCtx, j.Plan.Previous, j.PreviousActive); err != nil {
-		_ = m.phase("recovery_required", err)
+	if err := m.verifyRecovery(recoveryCtx, j.Plan.Previous, j.PreviousActive, j.Plan.FirmwareProtocolChange); err != nil {
+		_ = m.recoveryFailed(err)
 		return
 	}
 	m.mu.Lock()
@@ -636,7 +797,7 @@ func (m *Manager) run(recovery bool) {
 		return
 	}
 	if err = m.backend.Maintenance(recoveryCtx, false); err != nil {
-		_ = m.phase("recovery_required", err)
+		_ = m.recoveryFailed(err)
 	}
 }
 func (m *Manager) finish(phase string) error {

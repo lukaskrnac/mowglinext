@@ -16,10 +16,38 @@
 #include "mowgli_behavior/docking_nodes.hpp"
 
 #include "action_msgs/msg/goal_status.hpp"
+#include "mowgli_behavior/cancel_goal.hpp"
 #include "mowgli_behavior/dock_alignment.hpp"
 
 namespace mowgli_behavior
 {
+namespace
+{
+
+/// rclcpp_action's result code -> our ROS-free outcome (action_outcome.hpp).
+GoalOutcome OutcomeFromResultCode(const rclcpp_action::ResultCode code)
+{
+  switch (code)
+  {
+    case rclcpp_action::ResultCode::SUCCEEDED:
+      return GoalOutcome::kSucceeded;
+    case rclcpp_action::ResultCode::CANCELED:
+      return GoalOutcome::kCanceled;
+    case rclcpp_action::ResultCode::ABORTED:
+    case rclcpp_action::ResultCode::UNKNOWN:
+    default:
+      return GoalOutcome::kAborted;
+  }
+}
+
+// The pure helper repeats the action_msgs constants; keep them honest.
+static_assert(kGoalStatusSucceeded == action_msgs::msg::GoalStatus::STATUS_SUCCEEDED);
+static_assert(kGoalStatusAborted == action_msgs::msg::GoalStatus::STATUS_ABORTED);
+static_assert(kGoalStatusCanceled == action_msgs::msg::GoalStatus::STATUS_CANCELED);
+static_assert(kGoalStatusAccepted == action_msgs::msg::GoalStatus::STATUS_ACCEPTED);
+static_assert(kGoalStatusExecuting == action_msgs::msg::GoalStatus::STATUS_EXECUTING);
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // DockRobot
@@ -47,6 +75,7 @@ void DockRobot::log_contact_delta(const std::shared_ptr<BTContext>& ctx, uint16_
 BT::NodeStatus DockRobot::onStart()
 {
   auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+  ctx->last_dock_succeeded = false;
 
   std::string dock_id = "home_dock";
   if (auto res = getInput<std::string>("dock_id"))
@@ -91,6 +120,16 @@ BT::NodeStatus DockRobot::onStart()
       log_contact_delta(ctx, fb->num_retries);
     }
   };
+  // Ask for the RESULT as well. Setting this callback makes rclcpp_action
+  // request the result the moment the goal is accepted, which is the only
+  // signal that cannot be lost when the server finishes a goal in the same
+  // instant it accepts it — "Robot is already docked, no need to dock" left a
+  // polled handle stuck on ACCEPTED for 11.5 h on 2026-09-17.
+  outcome_->Reset();
+  send_goal_options.result_callback = [slot = outcome_](const GoalHandle::WrappedResult& result)
+  {
+    slot->Record(OutcomeFromResultCode(result.code));
+  };
   goal_handle_future_ = action_client_->async_send_goal(goal_msg, send_goal_options);
   goal_handle_.reset();
 
@@ -125,12 +164,13 @@ BT::NodeStatus DockRobot::onRunning()
     }
   }
 
-  const auto status = goal_handle_->get_status();
+  const auto status = ResolveGoalStatus(goal_handle_->get_status(), outcome_->Get());
 
   switch (status)
   {
     case action_msgs::msg::GoalStatus::STATUS_SUCCEEDED:
       RCLCPP_INFO(ctx->node->get_logger(), "DockRobot: docking succeeded");
+      ctx->last_dock_succeeded = true;
       ctx->docking_active = false;
       return BT::NodeStatus::SUCCESS;
 
@@ -161,7 +201,7 @@ void DockRobot::onHalted()
   if (goal_handle_)
   {
     RCLCPP_INFO(ctx->node->get_logger(), "DockRobot: canceling active goal");
-    action_client_->async_cancel_goal(goal_handle_);
+    cancelGoalQuietly(action_client_, goal_handle_, ctx->node->get_logger(), "DockRobot");
     goal_handle_.reset();
   }
 }
@@ -195,6 +235,12 @@ BT::NodeStatus UndockRobot::onStart()
   goal_msg.dock_type = dock_type;
 
   auto send_goal_options = rclcpp_action::Client<UndockAction>::SendGoalOptions{};
+  // See DockRobot::onStart — the terminal status can be lost, the result cannot.
+  outcome_->Reset();
+  send_goal_options.result_callback = [slot = outcome_](const GoalHandle::WrappedResult& result)
+  {
+    slot->Record(OutcomeFromResultCode(result.code));
+  };
   goal_handle_future_ = action_client_->async_send_goal(goal_msg, send_goal_options);
   goal_handle_.reset();
 
@@ -223,7 +269,7 @@ BT::NodeStatus UndockRobot::onRunning()
     }
   }
 
-  const auto status = goal_handle_->get_status();
+  const auto status = ResolveGoalStatus(goal_handle_->get_status(), outcome_->Get());
 
   switch (status)
   {
@@ -250,7 +296,7 @@ void UndockRobot::onHalted()
   {
     auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
     RCLCPP_INFO(ctx->node->get_logger(), "UndockRobot: canceling active goal");
-    action_client_->async_cancel_goal(goal_handle_);
+    cancelGoalQuietly(action_client_, goal_handle_, ctx->node->get_logger(), "UndockRobot");
     goal_handle_.reset();
   }
 }

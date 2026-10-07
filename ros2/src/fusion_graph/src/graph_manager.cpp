@@ -183,11 +183,12 @@ void GraphManager::QueueLidarMapXy(const gtsam::Vector2& xy,
                                    const Eigen::Matrix2d& cov,
                                    bool robust,
                                    std::optional<uint64_t> target,
-                                   const gtsam::Vector2& node_to_scan,
+                                   const gtsam::Vector2& node_to_scan_map,
                                    double expires_at)
 {
   std::lock_guard<std::mutex> lock(mu_);
-  queue_.lidar_map_xy = UnaryQueue::LidarMapXy{xy, cov, robust, target, node_to_scan, expires_at};
+  queue_.lidar_map_xy =
+      UnaryQueue::LidarMapXy{xy, cov, robust, target, node_to_scan_map, expires_at};
 }
 
 void GraphManager::ClearLidarObservations()
@@ -287,6 +288,8 @@ GraphStats GraphManager::Stats() const
   GraphStats s;
   s.total_nodes = next_index_;
   s.gps_rejects_wrongfix = stats_gps_rejects_wrongfix_;
+  s.gps_rejects_dead_reckoning = stats_gps_rejects_dead_reckoning_;
+  s.gps_rejects_stuck_value = stats_gps_rejects_stuck_value_;
   s.stationary_hand_push = stats_hand_push_;
   s.slip_veto = stats_slip_veto_;
   s.residual_ema_rad = residual_ema_;
@@ -300,6 +303,18 @@ void GraphManager::RecordGpsRejectWrongFix()
 {
   std::lock_guard<std::mutex> lock(mu_);
   ++stats_gps_rejects_wrongfix_;
+}
+
+void GraphManager::RecordGpsRejectDeadReckoning()
+{
+  std::lock_guard<std::mutex> lock(mu_);
+  ++stats_gps_rejects_dead_reckoning_;
+}
+
+void GraphManager::RecordGpsRejectStuckValue()
+{
+  std::lock_guard<std::mutex> lock(mu_);
+  ++stats_gps_rejects_stuck_value_;
 }
 
 // ─────────────────────────────────────────────────────────────────────

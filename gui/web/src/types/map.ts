@@ -4,6 +4,20 @@ import {MapArea, Point32} from "../types/ros.ts";
 
 import {transpose} from "../utils/map.tsx";
 
+/// GeoJSON linear rings MUST be closed (first position == last). ROS polygons
+/// are not: geometry_msgs/Polygon lists each vertex once. Consumers that rely
+/// on the GeoJSON rule silently DROP the last position — mapbox-gl-draw does
+/// (`ring.slice(0, -1)`) — so an unclosed 4-vertex rectangle from map_server (a
+/// dig proposal, a promoted tracker obstacle) was drawn as a TRIANGLE, and any
+/// machine-generated polygon lost a vertex. Polygons drawn in this GUI were
+/// never affected: they are saved with their closing vertex.
+export function closeRing(ring: Position[]): Position[] {
+    if (ring.length < 3) return ring;
+    const first = ring[0];
+    const last = ring[ring.length - 1];
+    return first[0] === last[0] && first[1] === last[1] ? ring : [...ring, first];
+}
+
 export class MowingFeature implements Feature {
     id: string;
     type: 'Feature';
@@ -119,15 +133,18 @@ export class DynObstacleFeature extends MowingFeature implements Feature<Polygon
 }
 
 export class DockFeatureBase extends PointFeatureBase  {
+    private headingValid: boolean;
+
     declare properties: {
         color: string;
         feature_type: string;
-        heading: number;
+        heading?: number;
     };
 
-    constructor(coordinate: Position, heading = 0) {
+    constructor(coordinate: Position, heading?: number) {
         super('dock', coordinate,'dock');
-        this.properties.heading = heading;
+        if (Number.isFinite(heading)) this.properties.heading = heading;
+        this.headingValid = Number.isFinite(heading);
         this.setColor('#ff00f2');
     }
 
@@ -135,8 +152,14 @@ export class DockFeatureBase extends PointFeatureBase  {
         return this.properties.heading ?? 0;
     }
 
+    hasValidHeading(): boolean {
+        return this.headingValid;
+    }
+
     setHeading(heading: number) {
-        this.properties.heading = heading;
+        this.headingValid = Number.isFinite(heading);
+        if (this.headingValid) this.properties.heading = heading;
+        else delete this.properties.heading;
     }
 
     getCoordinates(): Position {
@@ -157,6 +180,12 @@ export class MowingFeatureBase extends MowingFeature implements Feature<Polygon>
         , name? :string
         , index: number
         , source_working_area_index?: number
+        // Stable area id (MapArea.id, mowglinext#637) captured at the same
+        // time as source_working_area_index. Array position can shift
+        // whenever the area list is edited/saved; prefer resolving by this
+        // id (mowingAreaIndexById) for anything that fires an action later
+        // than the render that captured it — see MapPage's startSelectedArea.
+        , source_working_area_id?: number
         , mowing_order: number
         , feature_type: string
     }
@@ -180,9 +209,9 @@ export class MowingFeatureBase extends MowingFeature implements Feature<Polygon>
     }
 
     transpose( points: Point32[], offsetX: number, offsetY: number, datum: [number,number,number]) {
-        this.geometry.coordinates = [points.map((point) => {
+        this.geometry.coordinates = [closeRing(points.map((point) => {
             return transpose(offsetX, offsetY, datum, point.y||0, point.x||0)
-        })];
+        }))];
     }
 
 
@@ -288,7 +317,7 @@ export class MowingAreaFeature extends MapAreaFeature {
      */
     getLabel(unnamedLabel?: string) : string {
         const name = this.getName();
-        if (name) return name + " (" + this.getMowingOrder().toString() + ")";
+        if (name.trim()) return name.trim();
         return unnamedLabel ?? "Area " + this.getMowingOrder().toString();
     }
 
@@ -383,7 +412,7 @@ export function featureFromJSON(
         }
         case 'dock': {
             const coords = (json.geometry as Point).coordinates;
-            return new DockFeatureBase(coords, (props.heading as number) ?? 0);
+            return new DockFeatureBase(coords, Number.isFinite(props.heading) ? props.heading as number : undefined);
         }
         default: {
             const feature = new MowingFeature(json.id);
@@ -438,4 +467,3 @@ export function cloneFeature<T extends MowingFeature>(feature: T): T {
     copy.geometry = structuredClone(feature.geometry);
     return copy;
 }
-

@@ -28,12 +28,13 @@ See `docs/UPDATE_CHECKS.md` for the behavior.
 | Per-topic JSON reshaping for the frontend | `gui/pkg/providers/transform.go` (`adaptGPS` `:254`, `adaptPose` `:287`, `adaptGnssStatus` `:325`, `adaptLidar` `:222`) |
 | Manual-mow joystick lag / cmd_vel path | `gui/pkg/providers/cmd_vel_relay.go` + `ros.go:547-552` (`Publish` prefers relay for `/cmd_vel_teleop`); server side `ros2/src/mowgli_bringup/scripts/cmd_vel_ws_relay.py` |
 | Scheduler fires / does not fire | `gui/pkg/providers/scheduler.go` (`checkSchedules` `:118`, `safeToStart` `:227`, `shouldRun` `:245`); CRUD in `gui/pkg/api/schedules.go` |
+| Schedules over the documented external MQTT broker (Home Assistant) | `gui/pkg/api/schedule_mqtt.go` (`ScheduleMqttBridge` — `<prefix>/schedules[/set\|/delete]`, docs/MQTT_CONTROL.md); NOT `providers/mqtt.go`, the GUI's own separate embedded broker |
 | Remote access (Tailscale sidecar) | `gui/pkg/providers/remote_access.go` (`reconcile`, `buildSpec`, `Status`, `Logout`), DB keys `remote_access_config.go`, Docker service-container ops `docker_service.go` (`ImagePull`, `FindContainerByName`, `ContainerCreateService`, `ContainerRemove`), API `gui/pkg/api/remote_access.go`; operator doc `docs/REMOTE_ACCESS.md` |
 | IrriSense soil gate | `gui/pkg/providers/irrisense.go` (poll/backoff/`SoilStatus`), rule `irrisense_wetness.go`, DB keys `irrisense_config.go:18-28`, HTTP `irrisense_client.go`, API `gui/pkg/api/irrisense.go` |
 | Push notification missing / wrong / duplicated | `gui/pkg/providers/notify_events.go` (`NotifyDetector.OnStatus` — session + zone + failure-state machine, 60 s per-message cooldown, 120 s RTK dwell), wording `notify_messages.go` (`notifyCatalogue` en/fr), channels `notify_senders.go` (Telegram / Pushover / ntfy / webhook, all via `github.com/nikoksr/notify`), provider `notify.go` (fed from `ros.go` `fanOut` on `highLevelStatus` + `map`), DB keys `notify_config.go`, API `gui/pkg/api/notifications.go` |
 | Session statistics wrong | `gui/pkg/providers/session_tracker.go` (`OnHighLevelStatus` `:174`, `OnOdometry` `:138`, DB key `mowing.sessions` `:80`); read/delete in `gui/pkg/api/diagnostics.go:332-443` |
 | Map polling / dock pose shown on map | `gui/pkg/providers/ros.go:351-468` (`initDockPoseSubscription`, `pollMap` every 5 s → virtual `"map"` topic) |
-| Map save / replace / OpenMower import | `gui/pkg/api/mowglinext.go:156-229` (`mapWriteBudget`, `replaceMapInternal`), `gui/pkg/api/openmower_import.go` (`postImportOpenMower` `:187`, reprojection `:497-596`, `gui/pkg/api/utm.go`) |
+| Map save / replace / OpenMower import | `gui/pkg/api/map_replace.go` (`replaceMapInternal`: read-back snapshot → clear → add×N → `save_areas`, per-call deadline `mapServiceCallTimeout`, rollback to the snapshot on failure, `mapWriteBudget`; tests `map_replace_test.go` with an in-memory `fakeMapServer`), route `ReplaceMapRoute` in `gui/pkg/api/mowglinext.go`, `gui/pkg/api/openmower_import.go` (`postImportOpenMower` `:187`, reprojection `:497-596`, `gui/pkg/api/utm.go`) |
 | Container list / logs / restart | `gui/pkg/api/containers.go` (WS log stream `:128`, `StreamContainerLogLines` `:196`), `gui/pkg/providers/docker.go` |
 | Firmware flash (prebuilt / custom / Vermut) | `gui/pkg/providers/firmware.go` (`FlashFirmware` `:76` routing, `flashPrebuilt` `:258`, `postFlashProtocolCheck` `:322`), manifest `firmware_manifest.go:21`, template `gui/asserts/board.h.template`, SSE route `gui/pkg/api/setup.go:27` |
 | Drive PID / feed-forward tuning tool | `gui/pkg/api/drive_tuning.go` (`docker exec` into `mowgli-ros2` → `ros2 run mowgli_tools tune_drive_pid`, `:829-842`; reports under `/ros2_ws/config/drive_tuning`) |
@@ -42,7 +43,10 @@ See `docs/UPDATE_CHECKS.md` for the behavior.
 | Host reboot / shutdown | `gui/pkg/api/system.go:56-66` (`nsenter -t 1 … systemctl`; needs `pid: host` + `privileged` from `install/compose/docker-compose.gui.yml:17-18`) |
 | Live ROS param read/write (no restart) | `gui/pkg/api/params.go` → `ros.go:555-570` → `foxglove/parameters.go` |
 | MQTT / HomeKit bridge | `gui/pkg/providers/mqtt.go` (embedded mochi broker, `<prefix>/<key>` + `<prefix>/call<service>`), `gui/pkg/providers/homekit.go` (hap switch, `:8000`, pin `system.homekit.pincode`) |
+| Schedules → external MQTT | `gui/pkg/api/schedule_mqtt.go` (`ScheduleMqttBridge`, paho client, gated on `mqtt_enabled` in `mowgli_robot.yaml` — the SAME broker settings `mqtt_bridge_node` uses, not `providers/mqtt.go`'s embedded broker) |
 | Static bundle / gzip sidecars / SPA fallback | `gui/pkg/api/web_static.go` (`registerWebUI`), gzip produced in `gui/Dockerfile:10-12` |
+| Fleet: identity, peer registry, peer mirror, command proxy, map push | `gui/pkg/providers/fleet_identity.go` (`robot_name` from yaml, `fleet.robot_id`), `fleet.go` (`fleet.peers`, symmetric add/remove, `Robots()` snapshot, `Call()` proxy allowlist), `fleet_peer_client.go` (WebSocket mirror of a peer's multiplex), `fleet_map.go` (`PushMap`); routes `gui/pkg/api/fleet.go`; two-robot in-process tests `gui/pkg/api/fleet_test.go` |
+| Coordinated mowing (area assignment, completed memory, peer poses, yield rule) | `gui/pkg/providers/fleet_coordinator_logic.go` (pure: `computeAssignment`, `updateCompletedMemory`, `decideYield`), `fleet_coordinator.go` (2 s loop, DB keys `fleet.coordination` / `fleet.session.completed`, pushes `~/set_fleet_assignment`, publishes `/fleet/peers`); design in `docs/MULTI_ROBOT.md` |
 | Regenerate Go/TS msg types after a `.msg`/`.srv` change | `gui/generate_go_msgs.sh` → `gui/pkg/msgs/*/…_generated.go`; `gui/generate_ts_types.sh` → `gui/web/src/types/ros.generated.ts`; drift gate `.github/workflows/msg-codegen-drift.yml` |
 
 ## Files
@@ -50,18 +54,20 @@ See `docs/UPDATE_CHECKS.md` for the behavior.
 |------|-------|---------|
 | **root** | | |
 | `gui/main.go` | 40 | Wires providers (DB → Docker → Ros → Firmware → optional HomeKit/MQTT → IrriSense → Scheduler) then `api.NewAPI` |
-| `gui/go.mod` | ~110 | Module `github.com/mowglinext/mowglinext`, Go 1.25; gin, gorilla/websocket, bitcask, mochi-mqtt, brutella/hap, docker client, swaggo, nikoksr/notify (push notifications) |
+| `gui/go.mod` | ~110 | Module `github.com/mowglinext/mowglinext`, Go 1.25; gin, gorilla/websocket, bitcask, mochi-mqtt (the GUI's own embedded broker), eclipse/paho.mqtt.golang (schedule_mqtt.go's client to the *external* broker), brutella/hap, docker client, swaggo, nikoksr/notify (push notifications) |
 | `gui/Makefile` | 18 | `deps`, `build` (docker), `run-gui` (web), `run-backend` (`CGO_ENABLED=0 go run main.go`) |
 | `gui/Dockerfile` | 54 | 4-stage image: go build → `yarn build` + gzip sidecars → ubuntu 22.04 deps with openocd + platformio → final assembly; `WORKDIR /app`, `WEB_DIR=/app/web`, `DB_PATH=/app/db` |
 | `gui/Dockerfile.msg` | 8 | Tiny bash image whose CMD is `generate_go_msgs.sh` (README's `generate-msg` tag) |
 | `gui/tygo.yaml` | 26 | tygo config from the OpenMower era (references `pkg/msgs/mower_msgs`, `xbot_msgs`, `dynamic_reconfigure` — none exist); unused by the scripts |
 | `gui/generate_go_msgs.sh` | 558 | Bash generator: embeds std ROS msgs, parses `ros2/src/mowgli_interfaces/{msg,srv}` → `pkg/msgs/{geometry,nav,sensor,std,visualization,mowgli}` |
 | `gui/generate_ts_types.sh` | 331 | Same parser → `gui/web/src/types/ros.generated.ts` (snake_case fields) |
+| `gui/cmd/gen-template-types/main.go` | 35 | Regenerates `asserts/ros2_template_types.json` from the ROS2 template (`go run ./cmd/gen-template-types`) |
 | `gui/README.md` | 157 | Dev/deploy notes; MQTT + env sections are OpenMower-era and stale (see § Pitfalls) |
 | `gui/.env`, `gui/.env.dist` | 10 / 5 | Local-dev env loaded by `godotenv.Load()` in `main.go` (`DB_PATH`, `WEB_DIR`, `DOCKER_HOST`, `MQTT_ENABLED`, …) |
 | `gui/.devcontainer/{devcontainer.json,Dockerfile}` | 17 / 16 | VS Code / WebStorm devcontainer used by `make deps` + `make run-*` |
 | **asserts/** | | |
 | `gui/asserts/mower_config.schema.json` | 838 | Settings JSON Schema = GUI's default source (12 groups: `sensor_extrinsics` plus `{hardware,gps,docking,mowing,battery,safety,obstacle,mapping,rain,led,nav}_settings`). No `x-yaml-node` entries → every key nests under `mowgli.ros__parameters` |
+| `gui/asserts/ros2_template_types.json` | 151 | GENERATED number types (`number`/`integer`) for all 145 numeric params in the ROS2 template — the settings writer's 2nd type source, so an integral float is never written as an int (Invariant 15 / 2026-09-15 incident) |
 | `gui/asserts/board.h.template` | 340 | Go `text/template` for the STM32 `board.h` (custom firmware build) |
 | `gui/asserts/board.h` | 330 | Rendered example of the template (not consumed by code) |
 | **pkg/api/** (gin handlers) | | |
@@ -77,7 +83,8 @@ See `docs/UPDATE_CHECKS.md` for the behavior.
 | `gui/pkg/api/calibration.go` | 213 | IMU-yaw / magnetometer / one-click dock calibration service calls (150 s budget) |
 | `gui/pkg/api/calibration_status.go` | 240 | `/calibration/status`: dock pose from yaml, IMU/mag calibration files under `/ros2_ws/maps` |
 | `gui/pkg/api/containers.go` | 234 | Docker list/start/stop/restart + WS log stream with stdcopy demux |
-| `gui/pkg/api/schedules.go` | 224 | Schedule CRUD (`schedule:<id>` DB keys, validation) |
+| `gui/pkg/api/schedules.go` | 224 | Schedule CRUD (`schedule:<id>` DB keys, validation); `areaId` (stable `MapArea.id`, 0 = all) + `areaName` snapshot; `saveScheduleChecked` rejects an ENABLED schedule that starts < 60 min from another enabled one on a shared weekday (wraps midnight/week; HTTP 409, MQTT logged+dropped; disabling always allowed); calls `notifyScheduleChanged()` after every write so `schedule_mqtt.go` mirrors it |
+| `gui/pkg/api/schedule_mqtt.go` | 323 | `ScheduleMqttBridge`: publishes `<prefix>/schedules` retained on the same external broker as `mqtt_bridge_node`, accepts `<prefix>/schedules/set`\|`/delete`, both going through `validateSchedule`/`saveSchedule` — no separate validation path |
 | `gui/pkg/api/remote_access.go` | ~180 | `/remote-access/{settings,status,apply,logout}` (auth key masked, write-only) |
 | `gui/pkg/api/irrisense.go` | 228 | IrriSense settings/status/gardens (token masked, write-only) |
 | `gui/pkg/api/notifications.go` | ~230 | Push notification settings/status/test (ntfy + Telegram tokens masked, write-only; unknown event kinds dropped) |
@@ -89,25 +96,26 @@ See `docs/UPDATE_CHECKS.md` for the behavior.
 | `gui/pkg/api/system.go` | 101 | CPU temp, host reboot/poweroff via `nsenter` |
 | `gui/pkg/api/utils.go` | 65 | `unmarshalROSMessage` (mapstructure, case/underscore-insensitive), `snakeToCamel` |
 | `gui/pkg/api/params.go` | 64 | Live ROS2 parameter list/set |
-| `gui/pkg/api/setup.go` | 61 | `/setup/flashBoard` SSE stream around `FlashFirmware` |
+| `gui/pkg/api/setup.go` | 95 | `/setup/flashBoard` SSE stream around `FlashFirmware`; `flashStreamEvent` lifts `types.FlashStageMarker` lines out of the log as `stage` events (JSON `FlashStageEvent`), everything else is a `message` |
 | `gui/pkg/api/tiles.go` | 47 | Reverse proxy `/tiles/*` → `system.map.tileServer` |
 | `gui/pkg/api/types.go` | 31 | `OkResponse`, `ErrorResponse`, small DTOs |
 | **pkg/providers/** | | |
 | `gui/pkg/providers/ros.go` | 586 | `RosProvider` (IRosProvider): `topicMap`, lazy upstream subscribe, per-listener mailbox `RosSubscriber`, map polling, dock pose cache, param passthrough |
 | `gui/pkg/providers/transform.go` | 509 | Per-topic adapters NavSatFix→AbsolutePose, Odometry→AbsolutePose, universal GnssStatus→mowgli shape, LaserScan decimation (≤360 beams) |
-| `gui/pkg/providers/firmware.go` | 373 | Flash routing (prebuilt/custom/Vermut), openocd + platformio invocations, post-flash handshake check |
+| `gui/pkg/providers/firmware.go` | 468 | Flash routing (prebuilt/custom/Vermut), openocd + platformio invocations, post-flash handshake check |
+| `gui/pkg/providers/firmware_progress.go` | 62 | Per-path stage plans (`prebuiltFlashStages` / `customFlashStages` / `vermutFlashStages`) and `flashProgress.enter(key)`, which writes the one marker line per stage the GUI progress bar keys on; stage keys are the `flashBoard.stages.*` i18n keys |
 | `gui/pkg/providers/docker.go` | 339 | Docker SDK wrapper (list/logs/start/stop/restart/inspect/run/exec) |
 | `gui/pkg/providers/session_tracker.go` | 333 | Mowing session state machine from `highLevelStatus` + odometer from `wheelOdom`; keeps last 500 |
 | `gui/pkg/providers/remote_access.go` | ~420 | `RemoteAccessProvider`: reconcile loop for `mowgli-remote` (spec-hash label decides start vs recreate), `tailscale status --json` projection, logout |
 | `gui/pkg/providers/remote_access_config.go` | ~150 | `remoteAccess.*` DB keys, defaults, validation, masking |
 | `gui/pkg/providers/docker_service.go` | ~180 | Named service-container ops on the Docker SDK (pull, find, create + `CopyToContainer` files, remove) |
 | `gui/pkg/providers/irrisense.go` | 289 | Poll loop (10 min, backoff 1→30 min), `SoilStatus` verdict |
-| `gui/pkg/providers/scheduler.go` | 267 | 1-min ticker → `COMMAND_START` (=1) via `/behavior_tree_node/high_level_control` |
+| `gui/pkg/providers/scheduler.go` | 267 | 1-min ticker → `COMMAND_START` (=1) via `/behavior_tree_node/high_level_control` for `areaId` 0; for one area it resolves the id to map_server's CURRENT index (`/map_server_node/get_mowing_area` walk) and calls `/behavior_tree_node/start_in_area`; a vanished/navigation area or failed lookup skips the run with `lastSkipReason` (never falls back to mowing everything) |
 | `gui/pkg/providers/irrisense_config.go` | 237 | `irrisense.*` DB keys, defaults, validation, masking |
 | `gui/pkg/providers/db.go` | 203 | bitcask DB, env fallbacks, defaults, corruption backup+recovery |
 | `gui/pkg/providers/irrisense_wetness.go` | 145 | Pure wetness rule (`EvaluateWetness`, `EvaluateZones`) |
 | `gui/pkg/providers/mqtt.go` | 144 | Embedded MQTT broker (`system.mqtt.host`, default `:1883`) bridging topics + 4 service calls |
-| `gui/pkg/providers/firmware_manifest.go` | 133 | Release `manifest.json` fetch, permutation lookup, sha256 download |
+| `gui/pkg/providers/firmware_manifest.go` | 190 | Release `manifest.json` fetch — from THIS installation's release (`buildinfo.Version` = `deployment-*` or `vX.Y.Z`; deployments attach their firmware in `deployment-release.yml`), falling back to `releases/latest` — permutation lookup, sha256 download. `AvailableFirmware` (`firmware.go`) serves `GET /api/setup/firmware/available` for the Updates page flash button |
 | `gui/pkg/providers/cmd_vel_relay.go` | 132 | Persistent WS client to `ws://localhost:8766` |
 | `gui/pkg/providers/irrisense_client.go` | 116 | HTTP client for `/api/ha/gardens[/{id}]` (401/404/429 mapped) |
 | `gui/pkg/providers/homekit.go` | 111 | HAP switch accessory ("MowgliNext"), on→START(1) / off→HOME(2) |
@@ -127,7 +135,7 @@ See `docs/UPDATE_CHECKS.md` for the behavior.
 | `gui/pkg/types/ros.go` | 51 | `IRosProvider`, `RosParameter` |
 | `gui/pkg/types/soil.go` | 49 | `SoilStatus.BlocksScheduledMowing()`, `ISoilProvider` |
 | `gui/pkg/types/docker.go` | 76 | `IDockerProvider`, run/exec specs |
-| `gui/pkg/types/firmware.go` | 45 | `IFirmwareProvider`, `FirmwareConfig` (JSON body of flashBoard) |
+| `gui/pkg/types/firmware.go` | 85 | `IFirmwareProvider`, `FirmwareConfig` (JSON body of flashBoard), `FlashStageMarker` + `FlashStageEvent` (stage SSE payload) |
 | `gui/pkg/types/db.go` | 15 | `IDBProvider` |
 | `gui/pkg/types/homekit.go` | 5 | `IHAProvider` |
 | `gui/pkg/types/mocks.go` | 145 | `MockDBProvider`, `MockRosProvider` (records `ServiceCalls`, `Dispatch`) used by all api/provider tests |
@@ -153,7 +161,7 @@ See `docs/UPDATE_CHECKS.md` for the behavior.
 | `POST /mowglinext/call/:command` | `gui/pkg/api/mowglinext.go:542` | see command table below |
 | `POST /mowglinext/map/area/add` | `mowglinext.go:99` | `/map_server_node/add_area` |
 | `DELETE /mowglinext/map` | `mowglinext.go:134` | `/map_server_node/clear_map` |
-| `PUT /mowglinext/map` | `mowglinext.go:211` | clear → add×N → `save_areas`, budget `mapWriteBudget` (60 s + 5 s/area, cap 6 min) |
+| `PUT /mowglinext/map` | `mowglinext.go` `ReplaceMapRoute` → `map_replace.go` | `get_mowing_area`×N (snapshot) → clear → add×N → `save_areas`; 60 s per call, overall `mapWriteBudget` (60 s + 5 s/area, cap 6 min); on failure the snapshot is restored and the 500 body says which step failed and what state the robot is in |
 | `POST /mowglinext/map/docking` | `mowglinext.go:253` | `/map_server_node/set_docking_point` |
 | `GET /mowglinext/subscribe/:topic` (WS) | `mowglinext.go:278` | one topic, base64 JSON text frames |
 | `GET /mowglinext/multiplex` (WS) | `mowglinext.go:361` | `{"op":"subscribe|unsubscribe","topic":key}` in, msgpack `{topic,data}` binary frames out |
@@ -194,7 +202,7 @@ See `docs/UPDATE_CHECKS.md` for the behavior.
 | `wheelOdom` | `/wheel_odom` | `nav_msgs/msg/Odometry` | 80 / 100 ms; feeds session odometer |
 | `lidar` | `/scan` | `sensor_msgs/msg/LaserScan` | `adaptLidar` (≤360 beams); 80 / 100 ms |
 | `map` | *(virtual)* | `mowgli.Map` | `pollMap` every 5 s via `/map_server_node/get_mowing_area` + cached `/map_server_node/docking_pose` |
-| `path` / `plan` | `/coverage/full_plan` / `/plan` | `nav_msgs/msg/Path` | unthrottled |
+| `path` / `plan` | `/coverage/plan_preview` / `/plan` | `mowgli_interfaces/msg/CoveragePlanPreview` / `nav_msgs/msg/Path` | unthrottled |
 | `power`, `emergency` | `/hardware_bridge/power`, `/hardware_bridge/emergency` | `mowgli_interfaces/msg/{Power,Emergency}` | unthrottled |
 | `mowProgress` | `/map_server_node/mow_progress` | `nav_msgs/msg/OccupancyGrid` | 500 ms |
 | `lidarMap` | `/fusion_graph/lidar_map` | `nav_msgs/msg/OccupancyGrid` | 500 ms — fusion_graph's LiDAR anchor map; the map page draws it INSTEAD of the raw `/scan` points once it exists |
@@ -241,16 +249,19 @@ Tests (what each pins):
 ## Change coupling — "if you change X, also update Y"
 - `.msg`/`.srv` in `ros2/src/mowgli_interfaces` → run `gui/generate_go_msgs.sh` **and** `gui/generate_ts_types.sh`, commit both (`msg-codegen-drift.yml` fails otherwise); also `firmware/scripts/sync_ros_lib.py` (see `docs/claude/commands.md`).
 - New parameter default in `ros2/src/mowgli_bringup/config/mowgli_robot.yaml` → add the same `default` to `gui/asserts/mower_config.schema.json` (or allowlist it in `schema_template_parity_test.go`), else `TestSchemaDefaultsMatchTemplate` fails and the GUI's "at default" dot lies (Invariant 15).
+- Adding/removing/retyping a NUMBER in `ros2/src/mowgli_bringup/config/mowgli_robot.yaml` → `cd gui && go run ./cmd/gen-template-types` and commit `asserts/ros2_template_types.json`, else `TestTemplateTypesAssetMatchesTemplate` fails. The GUI image cannot read the template (build `context: ./gui`), so this asset is how the settings writer knows a key is a `double`.
 - New browser topic → `topicMap` (`ros.go`) + `topicSubscribeInterval` (`mowglinext.go`) + `TestTopicSubscribeInterval_CoversKnownSubscriberRouteTopics` + the frontend hook.
 - Container names are hardcoded: `mowgli-gps` (`gnss.go:19`), `mowgli-ros2` (`rosbag.go:44`, `drive_tuning.go:24`); renaming them in `install/compose/*.yml` breaks those tools. `mowgli-remote` (`providers/remote_access.go`) is GUI-created, not a compose service.
 - Paths shared with the ROS2 container: `/ros2_ws/maps` (rosbags, calibration files; `mowgli_maps` volume mounted in both), `/ros2_ws/config/mowgli_robot.yaml` (drive tuning passes it to `tune_drive_pid`), `/ros2_ws/config/drive_tuning`.
 - `GNSS_*` env keys written by `gnssRuntimeEnvFallbackFromFlat` (`settings.go:749`) are consumed by the sensors/GPS compose service — keep names in sync with `install/compose` and `docs/UNIVERSAL_GNSS_SIDECAR_MIGRATION.md`; `legacyGnssEnvKeys` (`settings.go:850`) are actively purged.
 - `api.Schedule` (`schedules.go:13`) and `providers.schedule` (`scheduler.go:16`) are duplicated structs (import-cycle) — change both.
+- `schedule_mqtt.go` lives in package `api` (not `providers`, unlike every other *Provider) specifically to reuse `schedules.go`'s unexported `validateSchedule`/`saveSchedule`/`getSchedule`/`getAllSchedules` and `settings.go`'s unexported `flattenROS2YAML`/`loadSchemaDefaults` without exporting them — a Schedule field added there must stay in sync with `providers.schedule` too (the note above).
 - `MowingSession` (`diagnostics.go:78`) mirrors `providers.MowingSessionRecord` (`session_tracker.go:15`) — same JSON tags on both.
 - `metersPerDegreeLat` (`openmower_import.go:147`) must equal `METERS_PER_DEG` in `gui/web/src/utils/map.tsx`.
 - `HighLevelControl` command numbers (`Command: 1/2`) in `scheduler.go`, `homekit.go` mirror `HighLevelControl.srv` constants — see `docs/claude/high-level-api.md`.
 - Host power actions need `pid: host` + `privileged` in `install/compose/docker-compose.gui.yml` and `util-linux` in `gui/Dockerfile`.
 - Swagger annotations (`// @Router`) feed `gui/docs/*` (swaggo) — regenerate when routes change (no script in repo invokes `swag`).
+- mowglinext#637 phase 3: `mowgli.MapArea.Id` (phase 1's stable id) must round-trip through `PUT /mowglinext/map`'s `MowgliMapArea` for `on_add_area` to preserve it — this is why `gui/docs/{swagger.json,swagger.yaml,docs.go}` and `web/src/api/Api.ts` all carry `MowgliMapArea.id` now (hand-added, `swag` isn't run). `splitMapAreas`/`pollMap` (`ros.go`) already pass every `MapArea` field through untouched, so the id needs no other backend wiring — only `WorkingAreaIndices` (the array position) is backend-computed, and it is NOT a stable identity.
 
 ## Pitfalls
 - `getSchema` opens `asserts/mower_config.schema.json` **relative to the process CWD** (`settings.go:1043`); run the binary from `gui/` (Dockerfile sets `WORKDIR /app`) or every settings route 500s. Tests call `chdirToGuiRoot`.

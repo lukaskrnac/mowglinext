@@ -13,6 +13,8 @@
 #ifndef __BLADEMOTOR_H
 #define __BLADEMOTOR_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -42,6 +44,8 @@ extern "C" {
 *******************************************************************************/
 // global variables used by ROS
 extern bool BLADEMOTOR_bActivated;
+/* Raw ESC bytes 7..8 under the legacy RPM name. On the tested 500 this holds
+ * the last nonzero report after OFF, then clears; it is not live coast RPM. */
 extern uint16_t BLADEMOTOR_u16RPM;
 extern uint16_t BLADEMOTOR_u16Power;
 extern uint32_t BLADEMOTOR_u32Error;
@@ -52,8 +56,13 @@ extern uint32_t BLADEMOTOR_u32Error;
 void BLADEMOTOR_Init(void);
 void BLADEMOTOR_App(void);
 void BLADEMOTOR_ReceiveIT(void);
+bool BLADEMOTOR_FeedbackHealthy(void);
+uint32_t BLADEMOTOR_FaultSequence(void);
 
-void BLADEMOTOR_Set(uint8_t on_off, uint8_t direction);
+/* A blade ON request is accepted only for the caller's current drive
+ * authorization epoch. OFF requests do not require an authorization token. */
+void BLADEMOTOR_Set(uint8_t on_off, uint8_t direction,
+                    uint32_t authorization_epoch);
 
 
 #ifdef __cplusplus

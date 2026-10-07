@@ -101,6 +101,7 @@ enum class LocalizationFault : uint8_t
   kGnssStale,  ///< /gps/status stopped arriving
   kSigmaBackstop,  ///< fused σ_xy implausible for long enough to mean divergence
   kLidarLost,  ///< LiDAR is the primary source and its gated pose stopped/unhealthy
+  kPositionStale,  ///< the position payload itself stopped updating — see below
 };
 
 struct LocalizationHealthCfg
@@ -219,6 +220,33 @@ struct LocalizationObservation
   bool lidar_primary = false;
   /// A gated LiDAR pose (/fusion_graph/lidar_pose) arrived recently.
   bool lidar_ok = false;
+
+  /// True once a /mowgli/localization/mode_id sample has ever been received.
+  /// While false this check stays inert, same reasoning as gnss_seen — a
+  /// bring-up without mowgli_localization's LocalizationMonitorNode wired up
+  /// must not block a bladed robot from operating.
+  bool position_mode_seen = false;
+  /// True when LocalizationMonitorNode itself currently reports
+  /// LocalizationMode::DEAD_RECKONING (mode_id 0). Deliberately a DIFFERENT
+  /// observable from gnss_fresh above, not a duplicate: gnss_fresh tracks the
+  /// receiver's own self-reported STATUS/health (/gps/status) staying live,
+  /// which stays true even when the POSITION output itself silently stalls.
+  /// Field-confirmed (mowglinext#694, 2026-09-20): a receiver reporting
+  /// RTK-Fixed / 2.3 cm accuracy the entire time, on a live, on-schedule
+  /// /gps/status feed, while /gps/fix's lat/lon payload had frozen solid for
+  /// minutes — gnss_fresh/gnss_accuracy_m never saw anything wrong, because
+  /// neither one is fed by the position topic at all. LocalizationMonitorNode
+  /// already computes the right answer for this from /gps/absolute_pose (its
+  /// own ObservationTracker independently confirmed the freeze in the field
+  /// log — "GNSS physical observations stale while cached message delivery
+  /// remains active" — while this guard's fault stayed kNone the whole time).
+  /// This field reuses that existing, already-correct detection instead of
+  /// re-deriving position-payload freshness a second time in the BT.
+  ///
+  /// GNSS-only: LocalizationMonitorNode derives its mode from the GNSS feed,
+  /// so with lidar_primary it reports DEAD_RECKONING by design (no receiver,
+  /// or GNSS deliberately not trusted). The LiDAR path ignores this field.
+  bool position_dead_reckoning = false;
 };
 
 /// Latches "absolute position is not trustworthy" from GNSS solution quality,
@@ -296,12 +324,37 @@ public:
     }
 
     const bool sigma_degraded = UpdateSigmaBackstop(now_s, obs);
-    return Attribute(gnss_degraded, was_gnss, sigma_degraded, pending);
+
+    // Position-payload freshness backstop (mowglinext#694). A separate
+    // authorization boundary from the GNSS-status check above, not a
+    // duplicate of it — see LocalizationObservation::position_dead_reckoning.
+    // Same fail-closed-immediately shape as the stale path (bad_persist_s=0:
+    // LocalizationMonitorNode already debounces its own mode internally, so
+    // this guard does not need a second debounce on top), with the existing
+    // gnss_resume_persist_s governing how long a recovered position feed must
+    // hold before the latch clears.
+    bool position_degraded = false;
+    const bool was_position = position_latch_.latched();
+    if (obs.position_mode_seen)
+    {
+      position_degraded = position_latch_.Update(now_s,
+                                                 obs.position_dead_reckoning,
+                                                 !obs.position_dead_reckoning,
+                                                 0.0,
+                                                 cfg_.gnss_resume_persist_s);
+    }
+    else
+    {
+      position_degraded = was_position;
+    }
+
+    return Attribute(
+        gnss_degraded, was_gnss, sigma_degraded, pending, position_degraded, was_position);
   }
 
   bool degraded() const
   {
-    return gnss_latch_.latched() || sigma_latch_.latched();
+    return gnss_latch_.latched() || sigma_latch_.latched() || position_latch_.latched();
   }
   LocalizationFault fault() const
   {
@@ -315,6 +368,10 @@ public:
 private:
   bool UpdateWithLidar(double now_s, const LocalizationObservation& obs)
   {
+    // The position-payload latch judges the GNSS feed only. Drop whatever it
+    // held from a GPS-primary period, otherwise a GPS→LiDAR switch while it
+    // was latched would keep degraded() true for the whole LiDAR session.
+    position_latch_ = PersistentLatch{};
     const bool was_primary = gnss_latch_.latched();
     const bool primary_degraded = gnss_latch_.Update(
         now_s, !obs.lidar_ok, obs.lidar_ok, cfg_.gnss_pause_persist_s, cfg_.gnss_resume_persist_s);
@@ -349,26 +406,31 @@ private:
   }
 
   // Attribute the fault to whichever latch just closed; keep the existing
-  // attribution while both stay closed.
+  // attribution while more than one stays closed.
   bool Attribute(bool primary_degraded,
                  bool was_primary,
                  bool sigma_degraded,
-                 LocalizationFault pending)
+                 LocalizationFault pending,
+                 bool position_degraded = false,
+                 bool was_position = false)
   {
     if (primary_degraded && !was_primary)
       fault_ = pending;
     else if (sigma_degraded && !sigma_was_)
       fault_ = LocalizationFault::kSigmaBackstop;
-    else if (!primary_degraded && !sigma_degraded)
+    else if (position_degraded && !was_position)
+      fault_ = LocalizationFault::kPositionStale;
+    else if (!primary_degraded && !sigma_degraded && !position_degraded)
       fault_ = LocalizationFault::kNone;
 
-    return primary_degraded || sigma_degraded;
+    return primary_degraded || sigma_degraded || position_degraded;
   }
 
   bool sigma_was_ = false;
   LocalizationHealthCfg cfg_{};
   PersistentLatch gnss_latch_{};
   PersistentLatch sigma_latch_{};
+  PersistentLatch position_latch_{};
   LocalizationFault fault_ = LocalizationFault::kNone;
 };
 
@@ -387,6 +449,8 @@ inline const char* LocalizationFaultName(LocalizationFault fault)
       return "fused-sigma divergence backstop";
     case LocalizationFault::kLidarLost:
       return "LiDAR localization lost";
+    case LocalizationFault::kPositionStale:
+      return "position payload stale (LocalizationMonitorNode: DEAD_RECKONING)";
     case LocalizationFault::kNone:
     default:
       return "none";

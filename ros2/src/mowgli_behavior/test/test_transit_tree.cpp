@@ -17,6 +17,7 @@
 // coverage transits must select transit_goal_checker (final heading ignored)
 // while the default navigate_to_pose.xml keeps stopped_goal_checker for
 // opennav_docking's staging approach. The two files must otherwise match.
+#include <cmath>
 #include <fstream>
 #include <regex>
 #include <sstream>
@@ -63,4 +64,79 @@ TEST(TransitTree, OnlyTheGoalCheckerDiffers)
   base = std::regex_replace(base, std::regex("default_goal_checker=\"[a-z_]+\""), "GC");
   transit = std::regex_replace(transit, std::regex("default_goal_checker=\"[a-z_]+\""), "GC");
   EXPECT_EQ(base, transit) << "navigate_to_pose_transit.xml drifted from navigate_to_pose.xml";
+}
+
+// The recovery RoundRobin must try BackUp BEFORE the other actions. A transit
+// fails when the robot's own footprint is over a lethal cell (RPP checks the
+// current pose first and then refuses to move), and backing up is the only
+// action that changes that; field 2026-09-18 the watchdog cancelled the transit
+// before the stock order ever reached it.
+TEST(TransitTree, RecoveryBacksUpBeforeAnythingElse)
+{
+  const std::string xml = stripHeaderComment(readFile(MOWGLI_TRANSIT_TREE_PATH));
+  const auto round_robin = xml.find("RecoveryActions");
+  ASSERT_NE(round_robin, std::string::npos) << "no recovery RoundRobin in the transit tree";
+
+  const auto backup = xml.find("<BackUp", round_robin);
+  const auto clearing = xml.find("ClearingActions", round_robin);
+  const auto wait = xml.find("<Wait", round_robin);
+  ASSERT_NE(backup, std::string::npos);
+  ASSERT_NE(clearing, std::string::npos);
+  ASSERT_NE(wait, std::string::npos);
+
+  EXPECT_LT(backup, clearing) << "BackUp must come before clearing the costmaps";
+  EXPECT_LT(backup, wait) << "BackUp must come before Wait";
+}
+
+// Spin was removed from the recovery RoundRobin in both trees (field bag
+// 2026-09-25, near a hedge): `Running spin` / `spin completed successfully`
+// fired repeatedly right next to a hedge that RPP was simultaneously,
+// correctly refusing to approach — Spin's own collision check did not
+// reliably catch the same soft, sparse-return obstacle RPP did, right after
+// ClearingActions had just wiped the costmap it would have checked against.
+// Spin also cannot reposition the footprint off a lethal cell the way BackUp
+// does, so it bought nothing even when its own check happened to pass.
+TEST(TransitTree, RecoveryHasNoSpin)
+{
+  for (const char* path : {MOWGLI_NAV_TREE_PATH, MOWGLI_TRANSIT_TREE_PATH})
+  {
+    const std::string xml = stripHeaderComment(readFile(path));
+    const auto round_robin = xml.find("RecoveryActions");
+    ASSERT_NE(round_robin, std::string::npos) << path << ": no recovery RoundRobin";
+    EXPECT_EQ(xml.find("<Spin", round_robin), std::string::npos)
+        << path
+        << ": Spin must not be in the recovery RoundRobin (bought no recovery, next to a "
+           "hedge only risk — see the RoundRobin's own doc comment)";
+  }
+}
+
+// Both trees must validate the path as a POINT, the model SmacPlanner2D plans
+// with. Nav2 Lyrical's ValidatePath defaults to the robot footprint, which made
+// nearly every fresh transit plan near the boundary or a drawn obstacle
+// "invalid" and replanned it every second (field 2026-09-22: 118 of 124).
+TEST(TransitTree, ValidatesThePathAsAPointLikeSmac)
+{
+  for (const char* path : {MOWGLI_NAV_TREE_PATH, MOWGLI_TRANSIT_TREE_PATH})
+  {
+    const std::string xml = stripHeaderComment(readFile(path));
+    std::smatch m;
+    ASSERT_TRUE(std::regex_search(xml, m, std::regex("<ValidatePath[^>]*/>"))) << path;
+    const std::string node = m.str();
+    std::smatch fp;
+    ASSERT_TRUE(std::regex_search(node, fp, std::regex("footprint=\"([^\"]+)\"")))
+        << path << ": ValidatePath has no footprint — it falls back to the robot footprint";
+    const std::string poly = fp[1].str();
+    const std::regex number("-?[0-9]*\\.?[0-9]+");
+    int count = 0;
+    for (auto it = std::sregex_iterator(poly.begin(), poly.end(), number);
+         it != std::sregex_iterator();
+         ++it, ++count)
+    {
+      EXPECT_LE(std::abs(std::stod(it->str())), 0.05)
+          << path << ": footprint " << poly << " is not a point";
+    }
+    EXPECT_GE(count, 6) << path << ": footprint " << poly << " is not a polygon";
+    EXPECT_EQ(node.find("max_cost"), std::string::npos)
+        << path << ": keep the default max_cost (lethal only), Jazzy's point check";
+  }
 }

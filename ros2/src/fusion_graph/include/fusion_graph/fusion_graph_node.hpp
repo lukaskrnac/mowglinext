@@ -33,6 +33,7 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
+#include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2_ros/buffer.hpp>
 #include <tf2_ros/static_transform_broadcaster.hpp>
@@ -93,6 +94,9 @@ private:
   void OnScan(sensor_msgs::msg::LaserScan::ConstSharedPtr msg);
   void OnHighLevelStatus(mowgli_interfaces::msg::HighLevelStatus::ConstSharedPtr msg);
   void OnHardwareStatus(mowgli_interfaces::msg::Status::ConstSharedPtr msg);
+  // LocalizationMonitorNode's DEAD_RECKONING verdict (mowglinext#694) — see
+  // last_position_dead_reckoning_ for why OnGnss needs this independent signal.
+  void OnLocalizationMode(std_msgs::msg::Int32::ConstSharedPtr msg);
   // The docking server publishes /cmd_vel_docking only while it is running the
   // final graceful approach. We use that as the "dock approach in progress"
   // signal to stabilise the pose (see DockingApproachActive()).
@@ -639,6 +643,7 @@ private:
   rclcpp::Subscription<mowgli_interfaces::msg::Status>::SharedPtr sub_hw_status_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr sub_docking_cmd_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr sub_set_pose_;
+  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr sub_localization_mode_;
 
   // Save-graph service handle.
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_save_;
@@ -690,6 +695,23 @@ private:
   bool last_hl_state_valid_ = false;
   bool last_is_charging_ = false;
   bool last_is_charging_valid_ = false;
+  // LocalizationMonitorNode's DEAD_RECKONING verdict on /mowgli/localization/
+  // mode_id (mowglinext#694). Independent of gnss_observation_tracker_'s
+  // receipt-stamp dedup above: that tracker only catches a REPUBLISHED /gps/fix
+  // (identical receipt stamp). Field-confirmed 2026-09-20, the pinned Universal
+  // GNSS receiver instead advances the receipt stamp on every republish while
+  // the position payload itself stays frozen — each message looks like a
+  // genuinely new observation to receipt-stamp identity alone. LocalizationMonitorNode
+  // (mowgli_localization) independently pairs /gps/fix with /gps/status's typed
+  // position_observation_sequence (NavSatStatusAssociation) to catch exactly
+  // this, and already does so correctly in the field; OnGnss reuses that
+  // verdict as an additional trust gate rather than re-deriving it via a
+  // second /gps/status subscription here (Invariant 1: /gps/fix stays a direct
+  // subscription; associating it with /gps/status a second time inside this
+  // node was deliberately deferred — see gnss_observation_tracker_'s
+  // MGNSS-002 comment in OnGnss).
+  bool last_position_dead_reckoning_ = false;
+  bool last_position_dead_reckoning_valid_ = false;
   // One-shot per dock session: ensures SeedFromDockPose fires exactly
   // once per docked interval, even when the boot-while-docked race
   // means neither the rising_edge nor boot_while_docked branches can
@@ -746,10 +768,47 @@ private:
   double wheel_dist_since_last_gps_m_ = 0.0;
   // GPS jump (m) above which the sample is rejected as a wrong-fix (motion-
   // consistent gate: compare jump against actual wheel travel since last fix).
-  // 50 mm sits above the σ~1 cm noise floor (2026-05-17: 8-12 mm σ on raw
-  // /gps/fix stationary) and below vx_max≈0.30 m/s × 0.1 s = 30 mm of
-  // legitimate motion. See rtk_wrongfix_gate.hpp for the decision function.
-  double rtk_wrongfix_max_jump_m_ = 0.05;
+  // Raised from 0.05 to 0.08 (mowglinext#738): a 6.1-min straight-line field
+  // session at 0.05 logged 52 gps_rejects_wrongfix that cross-referenced
+  // against universal_gnss_status as ALL genuinely RTK-Fixed, sub-16mm
+  // accuracy — their excess over budget ranged 6-56mm. 0.08 absorbs most of
+  // that without covering the full 56mm outlier, which would start eating
+  // into the ~10cm+ excess a GENUINE carrier-phase-reset wrong-fix produces
+  // (see the state comment above) — deliberately conservative pending more
+  // multi-site data. See rtk_wrongfix_gate.hpp for the decision function,
+  // fusion_graph.yaml for the fuller field-data writeup.
+  double rtk_wrongfix_max_jump_m_ = 0.08;
+  // Stuck-receiver payload-value gate state (mowglinext#694,
+  // gps_stuck_gate.hpp). NaN-initialized last_gps_lat_/lon_ so the very
+  // first fix always counts as a change (NaN != NaN).
+  //
+  // The two accumulators below have DELIBERATELY DIFFERENT reset semantics —
+  // this is not an inconsistency, each answers a different question:
+  //   - wheel_dist_since_gps_value_changed_m_ resets ONLY when
+  //     msg->latitude/longitude actually differs from the previous sample —
+  //     unbounded for as long as the receiver stays stuck. This is the
+  //     "how far has the chassis moved while GPS reported nothing new"
+  //     signal and MUST stay unbounded (see gps_stuck_gate.hpp and root
+  //     CLAUDE.md's "What NOT to Do" entry on this gate).
+  //   - abs_dtheta_since_last_gps_sample_rad_ resets on EVERY GPS message,
+  //     accept or reject — mirroring rtk_wrongfix_gate.hpp's own per-fix
+  //     reset philosophy. This is the "are we turning RIGHT NOW" stand-down
+  //     signal (GpsStuckImplausible's max_yaw_rad parameter). Field-confirmed
+  //     2026-09-21: an EARLIER version reset this only on value-change too —
+  //     during any real drive a single transit turn (one field session
+  //     integrated past 170°) blew past the stand-down threshold within
+  //     seconds and never recovered for the rest of the stuck period (the
+  //     accumulator can only grow while the receiver stays stuck), silently
+  //     disabling the whole gate for the remainder of the outage — exactly
+  //     the window where it mattered. A per-message reset keeps the
+  //     stand-down answering "is a turn happening close to *this* sample",
+  //     which is what mid-turn unreliability actually depends on.
+  double last_gps_lat_ = std::numeric_limits<double>::quiet_NaN();
+  double last_gps_lon_ = std::numeric_limits<double>::quiet_NaN();
+  double wheel_dist_since_gps_value_changed_m_ = 0.0;
+  double abs_dtheta_since_last_gps_sample_rad_ = 0.0;
+  double gps_stuck_min_wheel_dist_m_ = 1.0;
+  double gps_stuck_max_yaw_rad_ = 1.047;
   // Dock-pose hold while charging: re-assert a firm ForceAnchor at the FULL
   // dock_pose (x,y,yaw) ONCE PER NEW NODE, replacing the weak live-GPS factor
   // that walked the docked pose off the anchor (field 2026-06-10: 11.5 cm + 53°

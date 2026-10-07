@@ -1,12 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"sync"
@@ -24,6 +26,26 @@ import (
 // wsWriteTimeout bounds a single WebSocket write. A frozen/slow client must not
 // block a delivery goroutine forever; on timeout the connection is closed.
 const wsWriteTimeout = 5 * time.Second
+
+func compactCoveragePreview(obj interface{}) {
+	message, ok := obj.(map[string]interface{})
+	if !ok {
+		return
+	}
+	coordinates, ok := message["xy"].([]interface{})
+	if !ok {
+		return
+	}
+	compact := make([]float32, len(coordinates))
+	for i, coordinate := range coordinates {
+		value, ok := coordinate.(float64)
+		if !ok {
+			return
+		}
+		compact[i] = float32(value)
+	}
+	message["xy"] = compact
+}
 
 var upgrader = websocket.Upgrader{
 	ReadBufferSize: 1024,
@@ -84,9 +106,9 @@ func topicSubscribeInterval(topic string) (int, bool) {
 	case "diagnostics", "status", "highLevelStatus", "btLog", "map",
 		"path", "plan", "power", "emergency", "dockingSensor",
 		"robotDescription", "recordingTrajectory",
-		"coverageResumeAvailable",
-		"fusionDiag", "dockCalibrationStatus", "lidarMapCalibrationStatus",
-		"glimSupervisorStatus":
+		"coverageResumeAvailable", "coverageSession",
+		"fusionDiag", "dockCalibrationStatus", "firmwareParams",
+		"lidarMapCalibrationStatus", "glimSupervisorStatus":
 		return -1, true
 	default:
 		return -1, false
@@ -153,58 +175,6 @@ func ClearMapRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 	})
 }
 
-// mapWriteBudget returns the context timeout for a clear_map → add_area×N →
-// save_areas sequence. clear_map + save_areas are fixed-cost, but each add_area
-// RASTERISES its polygon into the map_server grid, which on a large area takes
-// seconds — and on a slow SBC (RPi4) a multi-area map easily blows a fixed
-// budget, leaving the map half-written (issue #341: "can't save a big map,
-// ~30 s timeout"). Scale it: a 60 s base plus per-area headroom, capped at
-// 6 min. Map writes are rare and operator-driven, so a generous ceiling beats a
-// false timeout. Shared by ReplaceMapRoute (map editor "Save Map") and the
-// OpenMower importer so the two never drift.
-func mapWriteBudget(nAreas int) time.Duration {
-	budget := 60*time.Second + time.Duration(nAreas)*5*time.Second
-	if budget > 6*time.Minute {
-		budget = 6 * time.Minute
-	}
-	return budget
-}
-
-// replaceMapInternal is the ROS-side flow shared by the public PUT
-// handler and the OpenMower importer. It does clear_map → add_area×N →
-// save_areas; the wrapping (HTTP body decode / response codes) is the
-// caller's job.
-//
-// The save_areas error is annotated so callers can distinguish a
-// partial-success (areas live but not persisted to disk) from a hard
-// failure earlier in the sequence.
-func replaceMapInternal(ctx context.Context, provider types.IRosProvider, req *mowgli.ReplaceMapReq) error {
-	if req == nil {
-		return errors.New("replaceMapInternal: nil request")
-	}
-	if err := provider.CallService(ctx, "/map_server_node/clear_map", &mowgli.ClearMapReq{}, &mowgli.ClearMapRes{}, "std_srvs/srv/Trigger"); err != nil {
-		return err
-	}
-	for _, element := range req.Areas {
-		// Ensure Obstacles is an empty slice, not nil — the bridge rejects
-		// null for repeated fields ("msg is not a list type").
-		if element.Area.Obstacles == nil {
-			element.Area.Obstacles = []geometry.Polygon{}
-		}
-		areaReq := mowgli.AddMowingAreaReq{
-			Area:             element.Area,
-			IsNavigationArea: element.IsNavigationArea,
-		}
-		if err := provider.CallService(ctx, "/map_server_node/add_area", &areaReq, &mowgli.AddMowingAreaRes{}, "mowgli_interfaces/srv/AddMowingArea"); err != nil {
-			return err
-		}
-	}
-	if err := provider.CallService(ctx, "/map_server_node/save_areas", &mowgli.ClearMapReq{}, &mowgli.ClearMapRes{}, "std_srvs/srv/Trigger"); err != nil {
-		return fmt.Errorf("areas added but save_areas failed: %w", err)
-	}
-	return nil
-}
-
 // ReplaceMapRoute clear the map and insert areas
 //
 // @Summary Delete the current map and replace all areas
@@ -219,8 +189,7 @@ func replaceMapInternal(ctx context.Context, provider types.IRosProvider, req *m
 func ReplaceMapRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 	group.PUT("/map", func(c *gin.Context) {
 		// Decode BEFORE choosing the timeout so the budget can scale with the
-		// area count (each add_area rasterises — a fixed 30 s timed out saving a
-		// big edited map on RPi4, issue #341).
+		// area count (issue #341). The flow itself lives in map_replace.go.
 		var CallReq mowgli.ReplaceMapReq
 		if err := unmarshalROSMessage[*mowgli.ReplaceMapReq](c.Request.Body, &CallReq); err != nil {
 			c.JSON(500, ErrorResponse{Error: err.Error()})
@@ -238,13 +207,24 @@ func ReplaceMapRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 }
 
 // setDockingPointInternal is the ROS-side call shared by the public
-// POST handler and the OpenMower importer. Single service round-trip,
-// no wrapping logic.
+// POST handler and the OpenMower importer. Single service round-trip.
+//
+// CallService only fails on transport/serialization errors. map_server
+// answers a GATED update (not on the dock, GPS not accurate enough, yaw not
+// converged…) with {success:false, message}: the dock pose was NOT
+// committed, so that is an error too, carrying map_server's reason (#703).
 func setDockingPointInternal(ctx context.Context, provider types.IRosProvider, req *mowgli.SetDockingPointReq) error {
 	if req == nil {
 		return errors.New("setDockingPointInternal: nil request")
 	}
-	return provider.CallService(ctx, "/map_server_node/set_docking_point", req, &mowgli.SetDockingPointRes{}, "mowgli_interfaces/srv/SetDockingPoint")
+	var res mowgli.SetDockingPointRes
+	if err := provider.CallService(ctx, "/map_server_node/set_docking_point", req, &res, "mowgli_interfaces/srv/SetDockingPoint"); err != nil {
+		return err
+	}
+	if !res.Success {
+		return fmt.Errorf("dock pose rejected by map_server: %s", res.Message)
+	}
+	return nil
 }
 
 // SetDockingPointRoute set the docking point
@@ -352,12 +332,39 @@ func PublisherRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 	})
 }
 
+// compactMultiplexNumbers preserves JavaScript Number semantics: the browser's
+// MessagePack decoder returns BigInt for int64/uint64, so leave larger numbers
+// and signed zero as float64. json.Unmarshal owns these maps and slices.
+func compactMultiplexNumbers(value any) any {
+	switch v := value.(type) {
+	case float64:
+		if v == 0 && math.Signbit(v) {
+			return v
+		}
+		if v >= math.MinInt32 && v <= math.MaxUint32 && math.Trunc(v) == v {
+			if v < 0 {
+				return int32(v)
+			}
+			return uint32(v)
+		}
+	case []any:
+		for i := range v {
+			v[i] = compactMultiplexNumbers(v[i])
+		}
+	case map[string]any:
+		for key, item := range v {
+			v[key] = compactMultiplexNumbers(item)
+		}
+	}
+	return value
+}
+
 // MultiplexRoute multiplexes any number of topic subscriptions over one
 // WebSocket so a single browser tab does not need ~25 simultaneous TCP
 // connections. Wire format:
 //
-//	client → server: {"op": "subscribe"|"unsubscribe", "topic": "<key>"}
-//	server → client: {"topic": "<key>", "data": "<base64>"}
+//	client → server: JSON {"op": "subscribe"|"unsubscribe", "topic": "<key>"}
+//	server → client: MessagePack {"topic": "<key>", "data": <decoded object>}
 //
 // Per-topic throttling reuses topicSubscribeInterval. Unknown topics are
 // ignored. On disconnect, all live subscriptions are released.
@@ -394,9 +401,20 @@ func MultiplexRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 			if err := json.Unmarshal(data, &obj); err != nil {
 				return
 			}
-			payload, err := msgpack.Marshal(map[string]interface{}{
+			// JSON numbers arrive as float64, including each OccupancyGrid
+			// cell. Only compact numbers that the browser decodes as Number:
+			// MessagePack int64/uint64 decode as BigInt in msgpackr.
+			// Keep the compact plan's coordinate array as MessagePack float32
+			// (generic JSON decoding otherwise widens every number to float64).
+			if topic == "path" {
+				compactCoveragePreview(obj)
+			}
+			var payload bytes.Buffer
+			encoder := msgpack.NewEncoder(&payload)
+			encoder.UseCompactInts(true)
+			err := encoder.Encode(map[string]interface{}{
 				"topic": topic,
-				"data":  obj,
+				"data":  compactMultiplexNumbers(obj),
 			})
 			if err != nil {
 				return
@@ -410,7 +428,7 @@ func MultiplexRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 			// timeout/error, close the conn so the read loop unblocks and the
 			// deferred cleanup releases all subscriptions.
 			_ = conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
-			if err := conn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
+			if err := conn.WriteMessage(websocket.BinaryMessage, payload.Bytes()); err != nil {
 				_ = conn.Close()
 			}
 		}
@@ -570,7 +588,11 @@ func ServiceRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 				c.JSON(400, ErrorResponse{Error: err.Error()})
 				return
 			}
-			err = provider.CallService(ctx, "/behavior_tree_node/high_level_control", &CallReq, &mowgli.HighLevelControlRes{}, "mowgli_interfaces/srv/HighLevelControl")
+			var res mowgli.HighLevelControlRes
+			err = provider.CallService(ctx, "/behavior_tree_node/high_level_control", &CallReq, &res, "mowgli_interfaces/srv/HighLevelControl")
+			if err == nil && !res.Success {
+				err = errors.New("high_level_control rejected the command")
+			}
 		case "emergency":
 			var CallReq mowgli.EmergencyStopReq
 			err = c.BindJSON(&CallReq)
@@ -591,6 +613,9 @@ func ServiceRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 				return
 			}
 			err = provider.CallService(ctx, "/hardware_bridge/mower_control", &CallReq, &mowgli.MowerControlRes{}, "mowgli_interfaces/srv/MowerControl")
+		case "blade_control":
+			handleBladeControl(c, provider)
+			return
 		case "coverage_orientation":
 			var req mowgli.CoverageOrientationReq
 			if err = c.BindJSON(&req); err != nil {
@@ -615,7 +640,11 @@ func ServiceRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 				c.JSON(400, ErrorResponse{Error: err.Error()})
 				return
 			}
-			err = provider.CallService(ctx, "/behavior_tree_node/start_in_area", &CallReq, &mowgli.StartInAreaRes{}, "mowgli_interfaces/srv/StartInArea")
+			var res mowgli.StartInAreaRes
+			err = provider.CallService(ctx, "/behavior_tree_node/start_in_area", &CallReq, &res, "mowgli_interfaces/srv/StartInArea")
+			if err == nil && !res.Success {
+				err = errors.New("start_in_area rejected the command")
+			}
 		case "set_datum":
 			type TriggerRes struct {
 				Success bool   `json:"success"`
@@ -658,6 +687,117 @@ func ServiceRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 			}
 			if err == nil {
 				c.JSON(200, map[string]interface{}{"message": promoteRes.Message})
+				return
+			}
+		case "preview_obstacle_clearance":
+			// Read-only: buffers each obstacle polygon outward by the LIVE
+			// obstacle_margin coverage_server is actually planning with
+			// (bufferRingOutward, reused server-side — never reimplemented
+			// here), for the Map page's toggleable clearance-preview overlay.
+			var previewReq struct {
+				Obstacles []geometry.Polygon `json:"obstacles"`
+			}
+			if err = c.BindJSON(&previewReq); err != nil {
+				c.JSON(400, ErrorResponse{Error: err.Error()})
+				return
+			}
+			if previewReq.Obstacles == nil {
+				previewReq.Obstacles = []geometry.Polygon{}
+			}
+			var previewRes mowgli.PreviewObstacleClearanceRes
+			err = provider.CallService(ctx,
+				"/coverage_server/preview_obstacle_clearance",
+				&mowgli.PreviewObstacleClearanceReq{Obstacles: previewReq.Obstacles},
+				&previewRes,
+				"mowgli_interfaces/srv/PreviewObstacleClearance")
+			if err == nil {
+				if previewRes.Buffered == nil {
+					previewRes.Buffered = []geometry.Polygon{}
+				}
+				c.JSON(200, previewRes)
+				return
+			}
+		case "correct_recorded_obstacle":
+			// One-shot: shrinks a polygon recorded by driving the chassis edge
+			// around an object by the raw chassis half-width (coverage_server's
+			// erodeRingInward — never reimplemented here). The Map page calls it
+			// once, when the operator converts a just-recorded area into an
+			// obstacle; the BT's RecordArea only records mowing areas, so this
+			// is the only point where that correction can happen.
+			var correctReq struct {
+				Polygon geometry.Polygon `json:"polygon"`
+			}
+			if err = c.BindJSON(&correctReq); err != nil {
+				c.JSON(400, ErrorResponse{Error: err.Error()})
+				return
+			}
+			if correctReq.Polygon.Points == nil {
+				correctReq.Polygon.Points = []geometry.Point32{}
+			}
+			var correctRes mowgli.CorrectRecordedObstacleRes
+			err = provider.CallService(ctx,
+				"/coverage_server/correct_recorded_obstacle",
+				&mowgli.CorrectRecordedObstacleReq{Polygon: correctReq.Polygon},
+				&correctRes,
+				"mowgli_interfaces/srv/CorrectRecordedObstacle")
+			if err == nil {
+				if correctRes.Corrected.Points == nil {
+					correctRes.Corrected.Points = []geometry.Point32{}
+				}
+				c.JSON(200, correctRes)
+				return
+			}
+		case "get_lidar_ignore_corridors":
+			var res mowgli.GetLidarIgnoreCorridorsRes
+			err = provider.CallService(ctx,
+				"/map_server_node/get_lidar_ignore_corridors",
+				&struct{}{},
+				&res,
+				"mowgli_interfaces/srv/GetLidarIgnoreCorridors")
+			if err == nil {
+				if res.Corridors == nil {
+					res.Corridors = []mowgli.LidarIgnoreCorridor{}
+				}
+				c.JSON(200, res)
+				return
+			}
+		case "set_lidar_ignore_corridors":
+			// Replace the whole LiDAR-ignore corridor list (clear + add each),
+			// the same rebuild shape the map save uses for areas. map_server
+			// clamps width_m and persists into areas.dat on every add.
+			var setReq struct {
+				Corridors []mowgli.LidarIgnoreCorridor `json:"corridors"`
+			}
+			if err = c.BindJSON(&setReq); err != nil {
+				c.JSON(400, ErrorResponse{Error: err.Error()})
+				return
+			}
+			var clearRes mowgli.ClearLidarIgnoreCorridorsRes
+			err = provider.CallService(ctx,
+				"/map_server_node/clear_lidar_ignore_corridors",
+				&mowgli.ClearLidarIgnoreCorridorsReq{},
+				&clearRes,
+				"mowgli_interfaces/srv/ClearLidarIgnoreCorridors")
+			if err == nil && !clearRes.Success {
+				err = errors.New("clear_lidar_ignore_corridors failed")
+			}
+			for i := 0; err == nil && i < len(setReq.Corridors); i++ {
+				corridor := setReq.Corridors[i]
+				if corridor.Polyline.Points == nil {
+					corridor.Polyline.Points = []geometry.Point32{}
+				}
+				var addRes mowgli.AddLidarIgnoreCorridorRes
+				err = provider.CallService(ctx,
+					"/map_server_node/add_lidar_ignore_corridor",
+					&mowgli.AddLidarIgnoreCorridorReq{Corridor: corridor},
+					&addRes,
+					"mowgli_interfaces/srv/AddLidarIgnoreCorridor")
+				if err == nil && !addRes.Success {
+					err = errors.New("add_lidar_ignore_corridor rejected a corridor (needs at least 2 points)")
+				}
+			}
+			if err == nil {
+				c.JSON(200, OkResponse{})
 				return
 			}
 		case "ignore_obstacle", "discard_obstacle":
@@ -734,6 +874,26 @@ func ServiceRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 			}
 			var res TriggerRes
 			err = provider.CallService(ctx, "/hardware_bridge/reboot_board", &struct{}{}, &res, "std_srvs/srv/Trigger")
+			if err == nil && !res.Success {
+				err = errors.New(res.Message)
+			}
+			if err == nil {
+				c.JSON(200, map[string]interface{}{"message": res.Message})
+				return
+			}
+		case "clear_dig_escalation":
+			// Operator override for a latched repeat-dig escalation
+			// (Status.dig_escalated) — see dig_escalation.hpp. Distance-gated
+			// server-side: this fails (res.Success=false, a human-readable
+			// reason in Message) until the chassis has moved far enough past
+			// the obstruction, so the frontend surfaces that reason rather
+			// than treating a refusal as a transport error.
+			type TriggerRes struct {
+				Success bool   `json:"success"`
+				Message string `json:"message"`
+			}
+			var res TriggerRes
+			err = provider.CallService(ctx, "/hardware_bridge/clear_dig_escalation", &struct{}{}, &res, "std_srvs/srv/Trigger")
 			if err == nil && !res.Success {
 				err = errors.New(res.Message)
 			}

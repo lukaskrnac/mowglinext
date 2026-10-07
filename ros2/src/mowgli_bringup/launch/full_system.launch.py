@@ -54,6 +54,10 @@ from launch_ros.parameter_descriptions import ParameterValue
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from robot_config_util import (  # noqa: E402
     DEFAULT_TOOL_WIDTH_M,
+    chassis_circumscribed_radius,
+    dig_proposal_radius,
+    dig_skip_radius,
+    keepout_obstacle_margin,
     load_robot_params,
     resolve_lidar_enabled,
     warn_lidar_key_absent,
@@ -61,12 +65,6 @@ from robot_config_util import (  # noqa: E402
 
 
 def generate_launch_description() -> LaunchDescription:
-    # Keep sidecar-internal GNSS transport/status channels out of Foxglove.
-    # This covers the current hidden topic prefix plus older visible names.
-    internal_gnss_topic_whitelist = (
-        r"^(?!/(?:_gps_internal|gps_internal|universal_gnss)(?:/.*)?$).*"
-    )
-
     # ------------------------------------------------------------------
     # Package directories
     # ------------------------------------------------------------------
@@ -190,6 +188,89 @@ def generate_launch_description() -> LaunchDescription:
     # default (single source of truth).
     robot_params = load_robot_params(bringup_dir, _runtime_cfg_path)
 
+    # Free slack left OUTSIDE every area polygon before the keepout mask turns
+    # lethal (map_server paints that band at the non-lethal kSoftPenaltyMaskCost
+    # so a pose in it is never "Start occupied"). It is the room the BODY has to
+    # overhang the recorded line, so it is FLOORED at the chassis CIRCUMSCRIBED
+    # RADIUS, DERIVED from the live chassis_* params — the same helper
+    # navigation.launch.py already floors the local-costmap inflation_radius at.
+    #
+    # Why the circumscribed radius and not the half-width: chassis_safety_inset
+    # is 0, so the outermost coverage pass rides ON the recorded line — the
+    # robot's CENTRE sits on it and the footprint can reach, in ANY orientation,
+    # up to that radius outside it. Sideways that is only the half-width
+    # (0.275 m shipped), but at a ROW END the body noses
+    # chassis_center_x + chassis_length/2 + margin = 0.53 m forward past the
+    # line, which is why both 0.40 (the old literal, sized for a 0.40 m chassis)
+    # and 0.275 (the half-width floor this replaces, a no-op because 0.40 was
+    # already above it) leave the front of the chassis over LETHAL keepout
+    # cells. hypot(0.53, 0.275) = 0.597 m on the shipped chassis, and it follows
+    # chassis_width / chassis_length / chassis_center_x, which the GUI
+    # onboarding presets set per mower model (widths 0.39 m to 0.535 m).
+    #
+    # TRADE-OFF, watch it in the field: this band is also the region Smac will
+    # accept to plan THROUGH outside the recorded perimeter. The cells are
+    # mid-cost (kSoftPenaltyMaskCost), not free, so A* only uses them when the
+    # inside is worse — but the global costmap lists inflation_layer BEFORE
+    # keepout_filter, so the lethal wall is NOT inflated inward any more and the
+    # whole band, right up to the wall, is plannable for Smac's point check.
+    # The narrow value existed to fix a 0.32 m concave-boundary excursion. The
+    # band also exceeds map_server's lethal_boundary_margin_m (0.5 m), so the
+    # planner wall no longer engages strictly before that e-stop tripwire.
+    #
+    # FTC's confine_deviation_to_zone guard reads the same GLOBAL costmap at
+    # >= inscribed and samples the full footprint against it. With the wall
+    # un-inflated the guard-lethal set starts at the full band width (0.597 m
+    # shipped) outside the line, which now covers the 0.53 m forward reach at a
+    # row end — the old order inflated it 0.20 m inward and left 0.40 m, short
+    # of it. The global obstacle_layer's own LiDAR marks (a hedge past the line)
+    # ARE still inflated and stay lethal to that guard regardless of this band.
+    boundary_margin_floor = chassis_circumscribed_radius(robot_params)
+    enforce_boundary_margin_m = float(
+        robot_params.get("enforce_boundary_margin_m", 0.40)
+    )
+    if enforce_boundary_margin_m < boundary_margin_floor:
+        print(
+            "[full_system.launch] enforce_boundary_margin_m "
+            f"{enforce_boundary_margin_m:.3f} m is inside the chassis "
+            f"circumscribed radius {boundary_margin_floor:.3f} m — raising it "
+            "to the floor. A band narrower than the body's reach makes the "
+            "outermost coverage pass end with the chassis over LETHAL keepout "
+            "cells."
+        )
+        enforce_boundary_margin_m = boundary_margin_floor
+
+    keepout_obstacle_margin_m = keepout_obstacle_margin(robot_params)
+
+    # The Universal GNSS receiver runtime stays in the gps sidecar.
+    # This process owns only its public-topic contract adapter.
+    gnss_stack = str(robot_params.get("gnss_stack", "universal")).strip().lower()
+
+    gnss_bridge_node = None
+    if gnss_stack == "universal":
+        gnss_bridge_node = Node(
+            package="mowgli_gnss_bridge",
+            executable="universal_gnss_topic_bridge",
+            name="universal_gnss_topic_bridge",
+            output="screen",
+            parameters=[
+                {
+                    "backend": "universal",
+                    "receiver_family": str(
+                        robot_params.get("gnss_receiver_family", "auto")
+                    ),
+                    "frame_id": str(
+                        robot_params.get("gnss_frame_id", "gps_link")
+                    ),
+                    "input_status_topic": "/universal_gnss_receiver/status",
+                    "output_status_topic": "/gps/status",
+                    "input_diagnostics_topic": "/diagnostics",
+                    "input_rtcm_topic": "/universal_gnss_receiver/rtcm",
+                    "output_rtcm_topic": "/rtcm",
+                }
+            ],
+        )
+
     # ------------------------------------------------------------------
     # 1. mowgli.launch.py — hardware bridge, RSP, twist_mux
     # ------------------------------------------------------------------
@@ -237,6 +318,17 @@ def generate_launch_description() -> LaunchDescription:
             # references in main_tree.xml. See issue #191.
             {"undock_speed": float(robot_params.get("undock_speed", 0.15))},
             {"undock_distance": float(robot_params.get("undock_distance", 1.0))},
+            # rain_mode / rain_delay_minutes / rain_debounce_sec: consumed by
+            # IsNewRain / IsRainModeAtLeast off the {rain_mode} /
+            # {rain_debounce_sec} blackboard refs (condition_nodes.cpp) and
+            # {rain_delay_sec} (rain_delay_minutes * 60, set alongside them in
+            # behavior_tree_node.cpp). #147 added the declare_parameter side
+            # in behavior_tree_node.cpp but never added this launch-side
+            # injection, so the node always ran on its own compiled defaults
+            # and the GUI's RainSection setting never reached it (issue #757).
+            {"rain_mode": int(robot_params.get("rain_mode", 2))},
+            {"rain_delay_minutes": float(robot_params.get("rain_delay_minutes", 30.0))},
+            {"rain_debounce_sec": float(robot_params.get("rain_debounce_sec", 0.0))},
             # idle_nav2_suspend: PAUSE the Nav2 lifecycle stack while parked on
             # the dock to cut idle CPU/thermal load (costmaps stop looping).
             # Default off — a deliberate per-site opt-in. RESUME is guaranteed
@@ -250,12 +342,29 @@ def generate_launch_description() -> LaunchDescription:
             # hardcoded 0.5/0.25 and the configured speeds never took effect.
             {"transit_speed": float(robot_params.get("transit_speed", 0.25))},
             {"mowing_speed": float(robot_params.get("mowing_speed", 0.2))},
+            {"blade_auto_reverse": bool(robot_params.get("blade_auto_reverse", False))},
             # mow_angle_deg: operator swath direction. -1 (negative) = AUTO
             # (coverage server picks the swath-count-minimising angle); 0..179 =
             # fixed swath angle in degrees. Read by PlanCoverageArea::buildGoal
             # off the BT blackboard into the plan_coverage action goal.
             {"mow_angle_deg": float(robot_params.get("mow_angle_deg", -1.0))},
             {"mow_cross_hatch": bool(robot_params.get("mow_cross_hatch", False))},
+            # Goal-checker instance the coverage FollowPath goals carry. Default
+            # is mowgli_nav2_plugins' PathProgressGoalChecker; Lyrical's stock
+            # AxisGoalChecker is declared alongside it in nav2_params_base.yaml
+            # as "coverage_axis_goal_checker" for a field comparison.
+            {
+                "coverage_goal_checker_id": str(
+                    robot_params.get("coverage_goal_checker_id", "coverage_goal_checker")
+                )
+            },
+            # Session dig skip zones (mowgli_behavior/dig_skip.hpp): coverage
+            # poses this close to a wheel-slip dig are skipped for the rest of
+            # the session. DERIVED from the chassis (circumscribed radius), so
+            # it follows a GUI edit of chassis_length / chassis_width; it
+            # replaces the pending dig KEEPOUT, which blocked planning from the
+            # robot's own pose (START_OCCUPIED, 2026-09-17).
+            {"dig_skip_radius_m": dig_skip_radius(robot_params)},
             # Area-recording boundary resolution. Both were hardcoded in
             # main_tree.xml (0.2 m Douglas-Peucker tolerance, 2 Hz sampling),
             # which cost a field recording all but 24 vertices of a 38 m
@@ -418,12 +527,21 @@ def generate_launch_description() -> LaunchDescription:
             # remain owned by hardware_bridge regardless of this map setting.
             {"dig_obstacle_enabled": bool(
                 robot_params.get("dig_obstacle_enabled", True))},
-            # Extra LETHAL margin grown around drawn obstacle polygons in the
-            # keepout mask — mirrors coverage_server.obstacle_margin (injected
-            # by navigation.launch.py) so the transit planner and the swath
-            # planner keep the same distance from a drawn tree/root zone.
-            {"obstacle_margin": min(1.0, max(0.0, float(
-                robot_params.get("obstacle_margin", 0.15))))},
+            # Size of a dig PROPOSAL = the physical dig (the two drive-wheel
+            # ruts), DERIVED from wheel_track / wheel_width / wheel_radius —
+            # never a chassis-sized box: the body clearance is added once, by
+            # the keepout band + obstacle_margin, when a proposal is accepted.
+            {"dig_proposal_radius": dig_proposal_radius(robot_params)},
+            # LETHAL band grown around drawn obstacle polygons in the keepout
+            # mask. DERIVED (robot_config_util.keepout_obstacle_margin), and
+            # deliberately NOT coverage_server.obstacle_margin any more: the
+            # mask's consumer is Smac 2D, a POINT check with no body model, and
+            # the global costmap lists inflation_layer BEFORE keepout_filter so
+            # the mask is not inflated. The band is therefore the WHOLE body
+            # half-width, counted once — and it follows an operator-RAISED
+            # obstacle_margin, always one rasterisation slack inside the
+            # coverage line so a robot on that line stays plannable.
+            {"keepout_obstacle_margin": keepout_obstacle_margin_m},
             # Hard area-boundary enforcement (operator intent: "lethal area
             # where there is no navigation or mowing area"). When true (default)
             # the keepout mask marks every cell outside the union of all areas
@@ -434,8 +552,7 @@ def generate_launch_description() -> LaunchDescription:
             # left outside each edge for RTK drift is enforce_boundary_margin_m.
             {"lethal_outside_areas": bool(
                 robot_params.get("lethal_outside_areas", True))},
-            {"enforce_boundary_margin_m": float(
-                robot_params.get("enforce_boundary_margin_m", 0.40))},
+            {"enforce_boundary_margin_m": enforce_boundary_margin_m},
             # Transit boundary clearance: a SOFT mid-cost nudge (never lethal)
             # in the GLOBAL costmap that biases point-to-point TRANSIT
             # planning away from the recorded edge when an alternative
@@ -541,6 +658,15 @@ def generate_launch_description() -> LaunchDescription:
                 robot_params.get("dock_calib_cog_bearing_match_max_rad", 0.1047))},
             {"dock_calib_min_baseline_displacement_m": float(
                 robot_params.get("dock_calib_min_baseline_displacement_m", 0.5))},
+            # Datum for the pre-reverse dock-position capture's WGS84->ENU
+            # projection (mowglinext#446) — same values injected into
+            # map_server_node/navsat_converter_node above.
+            {"datum_lat": datum_lat},
+            {"datum_lon": datum_lon},
+            {"dock_calib_position_avg_window_s": float(
+                robot_params.get("dock_calib_position_avg_window_s", 12.0))},
+            {"dock_calib_position_avg_min_samples": int(
+                robot_params.get("dock_calib_position_avg_min_samples", 10))},
         ],
     )
 
@@ -583,6 +709,8 @@ def generate_launch_description() -> LaunchDescription:
                 # Follow the same authoritative LiDAR flag as the Nav stack so the
                 # health check reports "disabled" instead of a false "no scan" error.
                 "lidar_enabled": ParameterValue(use_lidar, value_type=bool),
+                "battery_empty_voltage": float(robot_params.get("battery_empty_voltage", 24.0)),
+                "battery_full_voltage": float(robot_params.get("battery_full_voltage", 28.0)),
             },
         ],
     )
@@ -611,11 +739,30 @@ def generate_launch_description() -> LaunchDescription:
                 # bundled mowgli-mqtt container: the mowgli service runs
                 # network_mode: host.
                 "mqtt_host": str(robot_params.get("mqtt_host", "localhost")),
+                "battery_empty_voltage": float(robot_params.get("battery_empty_voltage", 24.0)),
+                "battery_full_voltage": float(robot_params.get("battery_full_voltage", 28.0)),
                 "mqtt_port": int(robot_params.get("mqtt_port", 1883)),
                 "mqtt_username": str(robot_params.get("mqtt_username", "")),
                 "mqtt_password": str(robot_params.get("mqtt_password", "")),
                 "mqtt_topic_prefix": str(robot_params.get("mqtt_topic_prefix", "mowgli")),
                 "use_ssl": bool(robot_params.get("mqtt_use_ssl", False)),
+                "home_assistant_discovery_enabled": bool(
+                    robot_params.get("mqtt_home_assistant_discovery_enabled", False)
+                ),
+                # Labels <prefix>/area_boundary's map-frame metres with the WGS84
+                # origin they are relative to. Without this the node keeps its
+                # 0.0/0.0 default and every consumer that projects a real GPS
+                # fix through the published datum puts the mower ~6000 km away.
+                "datum_lat": datum_lat,
+                "datum_lon": datum_lon,
+            },
+            # Charging dock pose (map frame), shown on <prefix>/area_boundary. Same
+            # robot_params source as hardware_bridge / map_server; read at startup,
+            # like they do (a dock re-calibration takes effect after a restart).
+            {
+                "dock_pose_x": float(robot_params.get("dock_pose_x", 0.0)),
+                "dock_pose_y": float(robot_params.get("dock_pose_y", 0.0)),
+                "dock_pose_yaw": float(robot_params.get("dock_pose_yaw", 0.0)),
             },
         ],
     )
@@ -623,35 +770,14 @@ def generate_launch_description() -> LaunchDescription:
     # ------------------------------------------------------------------
     # 10. Foxglove Bridge — WebSocket bridge for GUI and Foxglove Studio
     # ------------------------------------------------------------------
-    # Expose the public graph broadly, but keep sidecar-internal GNSS
-    # transport/status topics out of Foxglove so they do not leak into the
-    # GUI contract or trigger schema-resolution noise.
-    foxglove_bridge_node = Node(
+    # Reuse the standalone definition so buffer, recovery and graph-access
+    # settings also apply to the production GUI connection.
+    foxglove_bridge_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(bringup_dir, "launch", "foxglove_bridge.launch.py")
+        ),
         condition=IfCondition(enable_foxglove),
-        package="foxglove_bridge",
-        executable="foxglove_bridge",
-        name="foxglove_bridge",
-        output="screen",
-        parameters=[
-            {
-                "port": foxglove_port,
-                "address": "0.0.0.0",
-                "send_buffer_limit": 10000000,
-                "num_threads": 2,
-                "topic_whitelist": [internal_gnss_topic_whitelist],
-                "client_topic_whitelist": [internal_gnss_topic_whitelist],
-                "capabilities": [
-                    "clientPublish",
-                    "services",
-                    "connectionGraph",
-                    # Allow Foxglove Studio to read AND set ROS parameters live
-                    # (e.g. tuning controller_server / coverage critics in the
-                    # field). param_whitelist (default '.*') gates which params.
-                    "parameters",
-                    "parametersSubscribe",
-                ],
-            },
-        ],
+        launch_arguments={"port": foxglove_port, "num_threads": "2"}.items(),
     )
 
     # NOTE: docking_server is launched and lifecycle-managed by Nav2's
@@ -672,6 +798,24 @@ def generate_launch_description() -> LaunchDescription:
         executable="cmd_vel_ws_relay.py",
         name="cmd_vel_ws_relay",
         output="screen",
+    )
+
+    # ------------------------------------------------------------------
+    # 12b. Fleet peer obstacles — other mowers as local-costmap points
+    # ------------------------------------------------------------------
+    # The GUI fleet coordinator publishes the other fleet members' poses on
+    # /fleet/peers (PoseArray, map frame) through foxglove clientPublish;
+    # this node turns them into a continuously published PointCloud2 on
+    # /fleet/peer_obstacles that the local costmap marks (see the
+    # fleet_peers source / fleet_layer in the Nav2 overlays). Always launched:
+    # it publishes an EMPTY cloud when the robot is alone, so the costmap
+    # source never goes stale. docs/MULTI_ROBOT.md.
+    fleet_peer_obstacles_node = Node(
+        package="mowgli_bringup",
+        executable="fleet_peer_obstacles.py",
+        name="fleet_peer_obstacles",
+        output="screen",
+        parameters=[{"use_sim_time": use_sim_time}],
     )
 
     # ------------------------------------------------------------------
@@ -796,8 +940,7 @@ def generate_launch_description() -> LaunchDescription:
     # ------------------------------------------------------------------
     # LaunchDescription
     # ------------------------------------------------------------------
-    return LaunchDescription(
-        [
+    launch_entities = [
             # Arguments
             use_sim_time_arg,
             serial_port_arg,
@@ -820,11 +963,14 @@ def generate_launch_description() -> LaunchDescription:
             calibrate_lidar_map_node,
             diagnostics_node,
             mqtt_bridge_node,
-            foxglove_bridge_node,
+            foxglove_bridge_launch,
             led_ring_node,
             cmd_vel_relay_node,
+            fleet_peer_obstacles_node,
             # Dock heading is published by hardware_bridge at 1 Hz while
             # charging (~/dock_heading → /gnss/heading via mowgli.launch.py
             # remapping). No separate launch action needed.
         ]
-    )
+    if gnss_bridge_node is not None:
+        launch_entities.append(gnss_bridge_node)
+    return LaunchDescription(launch_entities)

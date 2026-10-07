@@ -23,7 +23,7 @@ jobs:
   # firmware (what CI builds / what prebuilt binaries ship) and the GUI-rendered
   # firmware can never silently drift apart on a safety value.
   defaults-parity:
-    name: board_defaults single-source guard
+    name: Board defaults, blade reversal, sensor recovery and runtime parameters
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -33,6 +33,20 @@ jobs:
       - name: Check board.h/template consume board_defaults.h
         run: python3 firmware/scripts/board_defaults_parity.py
 
+      - name: Test blade direction and stopped reversal on both board variants
+        run: python3 firmware/scripts/test_blade_reverse.py
+
+      - name: Test external IMU and onboard tilt sensor recovery
+        run: |
+          python3 firmware/scripts/test_soft_i2c_recovery.py
+          python3 firmware/scripts/test_onboard_i2c_recovery.py
+
+      - name: Test runtime parameters and their flash persistence
+        run: python3 firmware/scripts/test_fw_params.py
+
+      - name: Validate published firmware permutations and release builds
+        run: python3 firmware/scripts/test_package_release.py
+
   build:
     runs-on: ubuntu-latest
     strategy:
@@ -40,6 +54,9 @@ jobs:
         environment:
           - Yardforce500
           - Yardforce500B
+          - BiltemaRM1000
+          - BiltemaRM1000_MPU6050_Yaw180
+          - Yardforce500_COASTDOWN_VALIDATION
     steps:
       - uses: actions/checkout@v6
 
@@ -75,7 +92,7 @@ jobs:
         run: pip install platformio
 
       - name: Run native firmware unit tests
-        run: pio test -e native
+        run: pio test -e native -e native_rm1000_yaw180
         working-directory: firmware/stm32/ros_usbnode
 
   # ─── Publish prebuilt binaries on a version tag ────────────────────────────
@@ -88,7 +105,10 @@ jobs:
   release:
     name: Publish prebuilt firmware
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    # A tag is a safety publication: do not attach flashable binaries unless
+    # both board permutations build, the native safety tests pass, and the
+    # committed/template board defaults still share their single source.
+    needs: [defaults-parity, build, test]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -119,6 +139,7 @@ jobs:
         run: |
           pio run -e Yardforce500
           pio run -e Yardforce500B
+          pio run -e BiltemaRM1000
 
       - name: Package binaries + manifest
         env:

@@ -78,7 +78,7 @@ On mobile, the dashboard stacks vertically: compact hero card, live mini-map, 2x
 | Page | Description |
 |------|-------------|
 | **Dashboard** | State-adaptive hero + live mini-map + telemetry tiles + health check |
-| **Map** | Mapbox GL map editor -- define mowing areas, navigation zones and obstacles, place the dock (position + heading), OpenMower map import, live robot position, joystick for manual mowing |
+| **Map** | Mapbox GL map editor -- define mowing areas, navigation zones and obstacles, place the dock (position + heading), OpenMower map import, [LiDAR ignore lines](LiDAR-Ignore-Lines) along boundary-side hedges/grasses, live robot position, joystick for manual mowing |
 | **Schedule** | Weekly grid view with color-coded schedule blocks, schedule cards with day toggles and time picker, IrriSense soil chip |
 | **Statistics** | Hero stat cards (distance, hours, completion rate, runs), weekly bar chart, a year-of-mowing heatmap, zone coverage bars, session history table |
 | **Settings** | Grouped configuration editor (Appearance, Hardware, Drive Motor, NTRIP Corrections, GPS & Positioning, Sensors, **Localization**, Mowing, Docking, Battery, Safety, Obstacles, Navigation, Rain, Status LEDs, IrriSense, Remote access, Notifications, Advanced) |
@@ -86,6 +86,12 @@ On mobile, the dashboard stacks vertically: compact hero card, live mini-map, 2x
 | **Onboarding** | First-time setup wizard (9 steps: welcome, robot model, firmware, NTRIP, GPS, datum, sensors, calibration, done) |
 | **Diagnostics** | Health hero + alert list, then tabs: System (containers, CPU temp, rosbag, raw `/diagnostics`), Localization (filtered pose, **Fusion Graph (iSAM2)**, heading sources), Robot (behavior tree + coverage, sensors), Calibration (config cross-checks, calibration status) |
 | **Logs** | Live container log viewer -- pick any container on the host (the `mowgli-*` ones carry an app label), tail it with a severity filter |
+| **Fleet** | Multi-robot coordination view -- robot identity, peer discovery, cross-robot commands and shared-map coordination for mowers covering one property (see `docs/MULTI_ROBOT.md`) |
+
+Live parameter writes require a reply from the bridge. If an update is reported as
+**unconfirmed**, the node may already have applied it: refresh the parameter list
+and check the current value before retrying. Bridges that do not reply can no
+longer report a successful write by simply echoing the requested value.
 
 ### Settings: Remote access section
 

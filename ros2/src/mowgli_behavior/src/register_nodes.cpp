@@ -35,8 +35,13 @@ void registerAllNodes(BT::BehaviorTreeFactory& factory)
   factory.registerNodeType<IsRainDetected>("IsRainDetected");
   factory.registerNodeType<NeedsDocking>("NeedsDocking");
   factory.registerNodeType<IsBatteryAbove>("IsBatteryAbove");
+  factory.registerNodeType<IsChargeCurrentBelow>("IsChargeCurrentBelow");
   factory.registerNodeType<IsManualResumeRequested>("IsManualResumeRequested");
   factory.registerNodeType<IsCommand>("IsCommand");
+  factory.registerNodeType<IsCriticalChargeStopHeld>("IsCriticalChargeStopHeld");
+  factory.registerNodeType<IsLastDockSucceeded>("IsLastDockSucceeded");
+  factory.registerNodeType<IsCriticalDockFailureLatched>("IsCriticalDockFailureLatched");
+  factory.registerNodeType<LatchCriticalDockFailure>("LatchCriticalDockFailure");
 
   factory.registerNodeType<IsGPSFixed>("IsGPSFixed");
   factory.registerNodeType<IsLocalizationPrecise>("IsLocalizationPrecise");
@@ -82,7 +87,6 @@ void registerAllNodes(BT::BehaviorTreeFactory& factory)
   factory.registerNodeType<EndSession>("EndSession");
   factory.registerNodeType<IncrementSkippedSwaths>("IncrementSkippedSwaths");
   factory.registerNodeType<SaveObstacles>("SaveObstacles");
-  factory.registerNodeType<DiscardNearbyDigKeepouts>("DiscardNearbyDigKeepouts");
   factory.registerNodeType<SetNavMode>("SetNavMode");
   factory.registerNodeType<WasRainingAtStart>("WasRainingAtStart");
   factory.registerNodeType<RecordUndockStart>("RecordUndockStart");

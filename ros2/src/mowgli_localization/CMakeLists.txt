@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.22.1)
 project(mowgli_localization)
 
 # ---------------------------------------------------------------------------
@@ -214,6 +214,7 @@ target_link_libraries(costmap_scan_filter_node
   ${rclcpp_TARGETS}
   ${sensor_msgs_TARGETS}
   ${mowgli_interfaces_TARGETS}
+  ${nav_msgs_TARGETS}
 )
 
 # ---------------------------------------------------------------------------
@@ -401,6 +402,17 @@ if(BUILD_TESTING)
     test/test_dock_cog_gate.cpp
   )
   target_include_directories(test_dock_cog_gate PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+
+  # ---- test_dock_persist_plan ----
+  # Pure C++ test of the dock calibration's two-step persistence
+  # (dock_persist_plan.hpp): the yaw step (robot OFF the dock) must never be a
+  # GPS position capture; the position step runs after the verified re-dock.
+  ament_add_gtest(test_dock_persist_plan
+    test/test_dock_persist_plan.cpp
+  )
+  target_include_directories(test_dock_persist_plan PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
 

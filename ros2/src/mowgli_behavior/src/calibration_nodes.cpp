@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "mowgli_behavior/dock_alignment.hpp"
+#include "mowgli_behavior/undock_resume.hpp"
 #include "mowgli_interfaces/motion_yaw_fit.hpp"
 #include "tf2/LinearMath/Quaternion.hpp"
 
@@ -87,6 +88,44 @@ BT::NodeStatus RecordUndockStart::tick()
               "RecordUndockStart: pos=(%.3f, %.3f)",
               ctx->undock_start_x,
               ctx->undock_start_y);
+  return BT::NodeStatus::SUCCESS;
+}
+
+// ---------------------------------------------------------------------------
+// IsUndockInterrupted / RemainingUndockDistance
+// ---------------------------------------------------------------------------
+
+BT::NodeStatus IsUndockInterrupted::tick()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+  return ctx->undock_start_recorded ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+
+BT::NodeStatus RemainingUndockDistance::tick()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+  double undock_distance = 1.0;
+  getInput("undock_distance", undock_distance);
+  // LiDAR primary: GNSS may be absent or not trusted, so measure the reverse
+  // with the LiDAR pose recorded at undock start (same source as the start).
+  const bool lidar = ctx->lidar_primary;
+  const double start_x = lidar ? ctx->undock_start_lidar_x : ctx->undock_start_x;
+  const double start_y = lidar ? ctx->undock_start_lidar_y : ctx->undock_start_y;
+  const double now_x = lidar ? ctx->lidar_x : ctx->gps_x;
+  const double now_y = lidar ? ctx->lidar_y : ctx->gps_y;
+  const double remaining = remainingUndockDistance(start_x, start_y, now_x, now_y, undock_distance);
+  RCLCPP_INFO(ctx->node->get_logger(),
+              "RemainingUndockDistance: interrupted undock from (%.3f, %.3f), now at "
+              "(%.3f, %.3f) — %.2f m of the %.2f m reverse left",
+              start_x,
+              start_y,
+              now_x,
+              now_y,
+              remaining,
+              undock_distance);
+  if (remaining <= 0.0)
+    return BT::NodeStatus::FAILURE;
+  setOutput("remaining", remaining);
   return BT::NodeStatus::SUCCESS;
 }
 

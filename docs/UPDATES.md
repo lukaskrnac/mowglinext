@@ -759,7 +759,9 @@ and updater binaries only when complete. All optional image variants are checked
 runs for main/dev/release tags, or by manual dispatch on a custom branch. A fork
 must enable the workflow and publish readable GHCR images and release assets.
 The separate `updater.yml` publishes exact-commit installer bootstrap binaries on
-every branch push (including documentation-only commits) and version-tag push.
+every `main`/`dev` push (including documentation-only commits) and version-tag
+push, and prunes bootstraps older than 30 days except version-tag commits and the
+current `main`/`dev` heads.
 If the asset is unavailable or CI has not finished, supported installation stops
 with an actionable error; it does not enable Watchtower as a fallback. A locally
 built `MOWGLI_UPDATER_BINARY` remains available for unpublished checkouts.
@@ -770,8 +772,10 @@ is accepted only after verifying the release exists. Software uploads its descri
 last, after the bundle and binaries, without overwriting firmware assets or an
 existing deployment. Development/custom snapshots use prereleases.
 The picker returns up to 30 deployments, scanning at most 1,000
-release headers. Hitting the scan limit reports an error. Publication and storage
-retention remain maintainer responsibilities. HTTPS and trusted repository
+release headers (newest first). A stable scan that fills the window keeps the
+production releases it found; it reports an error only when the window holds none.
+Clients up to v1.6.0 fail the whole scan at the limit, so the repository must stay
+under 1,000 releases: that is what the bootstrap pruning above guarantees. HTTPS and trusted repository
 configuration establish provenance; SHA-256 checks detect corruption, not an
 independent signing authority.
 

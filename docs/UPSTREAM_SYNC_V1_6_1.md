@@ -21,6 +21,27 @@ linear speed cap applied when constructing motion messages. Regression tests
 exercise the configured cap together with reconnect and STOP behavior.
 The settings types are regenerated from the merged schema.
 
+## Software validation
+
+- Production GUI build, TypeScript checking and ESLint passed (Node 24.22.1).
+- Six targeted frontend test files passed: 27 tests covering manual speed,
+  STOP/reconnect behavior, GLIM, LiDAR calibration/source helpers, translation
+  parity and generated settings types. The appearance/model registry passed
+  another 11 tests.
+- Six ROS2 launch/configuration test files passed: 224 tests.
+- Go 1.25.10 compiled and tested the backend. The complete run failed five tests
+  requiring Unix sockets, which this sandbox denies. All packages passed with
+  just those five tests excluded; the source tests were not changed. The
+  exclusions were `TestActiveDeploymentSourceRefusesADriftedRuntime`,
+  `TestActiveDeploymentSourceTrustsAMatchedRuntime`,
+  `TestActiveDeploymentSourceTrustsAnUnknownRuntime`,
+  `TestInstallerHealthRequiresReplacementIdentity`, and
+  `TestSupervisorCommitsHealthyWorkerAndRecoversCrashingCandidate`.
+- clang-format 18.1.8 passed for all 137 C++ files changed by the upstream merge.
+- The complete frontend suite did not finish within a 180-second run with two
+  thread workers. The full suite is therefore unverified; the 27 targeted tests
+  above passed separately. No full ROS2 C++ build or browser E2E run was available.
+
 ## Hardware acceptance — HARDWARE_REQUIRED
 
 No physical mower, ESP32 image, STM32 image, sensor-driver revision or external

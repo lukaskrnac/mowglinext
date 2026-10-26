@@ -1,3 +1,5 @@
+import {useAsyncHandler} from "../hooks/useAsyncHandler";
+import "./SettingsPage.css";
 import {useSectionFocus} from "../hooks/useSectionFocus.ts";
 import {settingSearchText} from "../utils/settingsSearch.ts";
 import { useCallback, useMemo, useRef, useEffect } from "react";
@@ -19,6 +21,10 @@ import { restartRos2 } from "../utils/containers.ts";
 import { useContainerRestart } from "../hooks/useContainerRestart.ts";
 import { SettingsNav } from "../components/settings/SettingsNav.tsx";
 import { HardwareSection } from "../components/settings/HardwareSection.tsx";
+import { HardwareBackendSection } from "../components/settings/HardwareBackendSection.tsx";
+import { HardwareBackendCard } from "../components/settings/HardwareBackendCard.tsx";
+import { HardwareViewSwitcher } from "../components/settings/HardwareViewSwitcher.tsx";
+import { FcuFeatureTool } from "../components/settings/FcuFeatureTool.tsx";
 import { DriveMotorSection } from "../components/settings/DriveMotorSection.tsx";
 import { NtripSection } from "../components/settings/NtripSection.tsx";
 import { PositioningSection } from "../components/settings/PositioningSection.tsx";
@@ -54,12 +60,16 @@ import {
     START_ESCAPE_GROUP,
     TURN_SPEED_GROUP,
     YAW_LOOP_GROUP,
+    OPENMOWER_WHEEL_LOOP_GROUP,
+    OPENMOWER_WIRING_GROUP,
+    groupForBackend,
     type SettingsFieldGroup,
 } from "../components/settings/settingsFieldGroups.ts";
 
 const { Text } = Typography;
 
 export const SettingsPage = () => {
+    const asyncHandler = useAsyncHandler();
     const { t } = useTranslation();
     const { modal } = App.useApp();
     const guiApi = useApi();
@@ -85,6 +95,7 @@ export const SettingsPage = () => {
         acknowledgeRestart,
         searchQuery,
         advancedKeys,
+        validateAdvancedKey,
         setSearchQuery,
         matchesSearch,
         handleChange,
@@ -97,8 +108,13 @@ export const SettingsPage = () => {
         savePartialValues,
         saveAndRestartGps,
         acceptPersistedValues,
+        acceptPersistedDockPose,
+        beginDockCapture,
+        finishDockCapture,
         revert,
         gpsRestarting,
+        hardwareBackend,
+        backendDefaultOverrides,
     } = useSettingsManager();
 
     // Long-running: container restart + rosbridge reconnect. Disable button
@@ -137,7 +153,9 @@ export const SettingsPage = () => {
     }, [sections, searchQuery, matchesSearch, t]);
 
     // Sections merged into "weather" keep their old links working.
-    const LEGACY_SECTIONS: Record<string, string> = { rain: "weather", irrisense: "weather" };
+    const LEGACY_SECTIONS: Record<string, string> = {
+        rain: "weather", irrisense: "weather", hardware_backend: "hardware",
+    };
     const rawSection = searchParams.get('section') ?? 'hardware';
     const requestedSection = LEGACY_SECTIONS[rawSection] ?? rawSection;
     const activeSection = visibleSections.find(section => section.id === requestedSection)?.id
@@ -160,8 +178,12 @@ export const SettingsPage = () => {
         .filter(key => matchesSearch(key))
         .map(key => ({section, key, label: settingSearchText(key, t)[0] || key}))) : [];
 
+    // Each card shows only what exists on this robot's hardware backend.
     const renderFieldCards = (...groups: SettingsFieldGroup[]) =>
-        groups.map((group) => (
+        groups
+            .map((group) => groupForBackend(group, hardwareBackend.backend))
+            .filter((group): group is SettingsFieldGroup => group !== null)
+            .map((group) => (
             <SettingsFieldCard
                 key={group.id}
                 group={group}
@@ -186,25 +208,51 @@ export const SettingsPage = () => {
                 );
             case "hardware":
                 return (
-                    <HardwareSection
-                        values={values}
-                        onChange={handleChange}
-                        onBulkChange={handleBulkChange}
-                        isOverridden={isOverridden}
-                        hasDefault={hasDefault}
-                        onReset={resetToDefault}
-                        revealAdvanced={!!targetField || !!searchQuery}
+                    <HardwareViewSwitcher
+                        backend={hardwareBackend.backend}
+                        fcu={<FcuFeatureTool />}
+                        chassis={
+                            <>
+                                <HardwareBackendCard info={hardwareBackend} />
+
+                                <HardwareBackendSection backend={hardwareBackend.backend}>
+                                    {renderFieldCards(OPENMOWER_WIRING_GROUP)}
+                                </HardwareBackendSection>
+
+                                <HardwareSection
+                                    values={values}
+                                    onChange={handleChange}
+                                    onBulkChange={handleBulkChange}
+                                    isOverridden={isOverridden}
+                                    hasDefault={hasDefault}
+                                    onReset={resetToDefault}
+                                    revealAdvanced={!!targetField || !!searchQuery}
+                                    backendDefaultOverrides={backendDefaultOverrides}
+                                    backendConfirmed={hardwareBackend.authority === "confirmed" && hardwareBackend.presetsAvailable}
+                                />
+                            </>
+                        }
                     />
                 );
             case "drive_motor":
+                if (hardwareBackend.authority !== "confirmed") return <HardwareBackendCard info={hardwareBackend}/>;
+                // Each backend exposes its own drive controls; never show
+                // Mowgli STM32 or OpenMower xESC controls on MAVROS.
+                if (hardwareBackend.backend === "openmower") {
+                    return <>{renderFieldCards(OPENMOWER_WHEEL_LOOP_GROUP)}</>;
+                }
+
                 return (
                     <>
                         <DriveMotorSection
                             values={values}
                             onChange={handleChange}
                             acceptPersistedValues={acceptPersistedValues}
+                            hardwareBackend={hardwareBackend.backend}
                         />
-                        {renderFieldCards(YAW_LOOP_GROUP)}
+
+                        {hardwareBackend.backend === "mowgli" &&
+                            renderFieldCards(YAW_LOOP_GROUP)}
                     </>
                 );
             case "ntrip":
@@ -226,7 +274,7 @@ export const SettingsPage = () => {
                     />
                 );
             case "sensors":
-                return <SensorsSection values={values} onChange={handleChange} />;
+                return <SensorsSection values={values} onChange={handleChange} onDockPosePersisted={acceptPersistedDockPose} onDockCaptureStart={beginDockCapture} onDockCaptureFinished={finishDockCapture} />;
             case "localization":
                 return (
                     <>
@@ -275,11 +323,15 @@ export const SettingsPage = () => {
                     </>
                 );
             case "safety":
+                if (hardwareBackend.backend === "mavros") {
+                    return <SafetySection values={values} onChange={handleChange} />;
+                }
+
                 return (
                     <>
                         <SafetySection values={values} onChange={handleChange} />
                         {renderFieldCards(FIRMWARE_SAFETY_GROUP)}
-                        <FirmwareParamsCard />
+                        {hardwareBackend.backend === "mowgli" && <FirmwareParamsCard />}
                     </>
                 );
             case "obstacles":
@@ -356,7 +408,7 @@ export const SettingsPage = () => {
                     />
                 );
             case "advanced":
-                return <AdvancedSection values={values} advancedKeys={advancedKeys} onChange={handleChange} />;
+                return <AdvancedSection values={values} advancedKeys={advancedKeys} onChange={handleChange} validateNewKey={validateAdvancedKey} />;
             default:
                 return null;
         }
@@ -453,7 +505,7 @@ export const SettingsPage = () => {
                         <SettingsNav
                             sections={visibleSections}
                             activeSection={activeSection}
-                        onSectionChange={selectSection}
+                            onSectionChange={selectSection}
                             isSectionDirty={isSectionDirty}
                         />
                     ) : (
@@ -525,7 +577,7 @@ export const SettingsPage = () => {
                 <Button
                     type="primary"
                     icon={<SaveOutlined />}
-                    onClick={save}
+                    onClick={asyncHandler(save)}
                     loading={saving}
                     disabled={!isDirty || ros2Restart.pending}
                 >

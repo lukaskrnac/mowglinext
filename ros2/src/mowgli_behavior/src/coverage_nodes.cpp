@@ -3107,7 +3107,9 @@ BT::NodeStatus GetNextUnmowedArea::onStart()
       // targeted area just earned and re-mow it forever. Guarded to the
       // explicit-target path, so normal COMMAND_START iteration still honors
       // completed/attempted skipping.
-      ctx->completed_areas.erase(*ctx->single_area_target);
+      // Its swaths and cursor too: dropping only the completed flag made the re-mow find every
+      // sub-path already done and "finish" in a second (field 2026-10-26).
+      clearAreaCoverageProgress(*ctx, *ctx->single_area_target);
       ctx->attempted_areas.erase(*ctx->single_area_target);
       ctx->incomplete_retired_areas.erase(*ctx->single_area_target);
     }
@@ -3191,8 +3193,7 @@ BT::NodeStatus GetNextUnmowedArea::onStart()
                   "(%zu incomplete retirement(s))",
                   ctx->incomplete_retired_areas.size());
     }
-    ctx->coverage_all_complete = exhaustedRunIsComplete(*ctx);
-    return BT::NodeStatus::FAILURE;
+    return finishExhaustedScan(*ctx);
   }
 
   // Fire off the first async existence probe.
@@ -3268,8 +3269,7 @@ BT::NodeStatus GetNextUnmowedArea::advanceAndProbe()
                 "retirement(s))",
                 areas_complete_,
                 ctx->incomplete_retired_areas.size());
-    ctx->coverage_all_complete = exhaustedRunIsComplete(*ctx);
-    return BT::NodeStatus::FAILURE;
+    return finishExhaustedScan(*ctx);
   }
   auto request = std::make_shared<mowgli_interfaces::srv::GetMowingArea::Request>();
   request->index = current_area_idx_;
@@ -3348,7 +3348,7 @@ BT::NodeStatus GetNextUnmowedArea::processResponse()
                   "retirement(s))",
                   areas_complete_,
                   ctx->incomplete_retired_areas.size());
-      ctx->coverage_all_complete = exhaustedRunIsComplete(*ctx);
+      return finishExhaustedScan(*ctx);
     }
     return BT::NodeStatus::FAILURE;
   }
@@ -3665,6 +3665,7 @@ BT::NodeStatus GetNextUnmowedArea::processResponse()
 
   setOutput("area_index", current_area_idx_);
   ctx->current_area = static_cast<int>(current_area_idx_);
+  ctx->start_awaiting_dispatch = false;
   RCLCPP_INFO(ctx->node->get_logger(),
               "GetNextUnmowedArea: area %u selected (%zu swath(s) done so far) "
               "— dispatch attempt %u/%u",
@@ -3673,6 +3674,26 @@ BT::NodeStatus GetNextUnmowedArea::processResponse()
               n,
               BTContext::kMaxAreaAttempts);
   return BT::NodeStatus::SUCCESS;
+}
+
+BT::NodeStatus GetNextUnmowedArea::finishExhaustedScan(BTContext& ctx)
+{
+  const bool complete = exhaustedRunIsComplete(ctx);
+  if (complete && ctx.start_awaiting_dispatch && hasRecordedCoverageProgress(ctx))
+  {
+    // Nothing was dispatched since the operator pressed Start, yet every area reads complete:
+    // that is the previous, finished session's progress (its EndSession never ran). Reporting
+    // MOWING_COMPLETE would undock, turn round and dock again on every Start, forever.
+    ctx.start_awaiting_dispatch = false;
+    RCLCPP_WARN(ctx.node->get_logger(),
+                "GetNextUnmowedArea: every area was already complete before this Start — that "
+                "progress is from a finished session, discarding it and mowing from the first "
+                "line");
+    clearRecordedCoverageProgress(ctx);
+    return onStart();
+  }
+  ctx.coverage_all_complete = complete;
+  return BT::NodeStatus::FAILURE;
 }
 
 void GetNextUnmowedArea::onHalted()

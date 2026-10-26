@@ -276,6 +276,15 @@ struct BTContext
   bool resume_after_incomplete_end{false};
   std::chrono::steady_clock::time_point resume_after_incomplete_end_time{};
 
+  /// Set by an operator START (~/high_level_control COMMAND_START, ~/start_in_area) and cleared
+  /// by the first area GetNextUnmowedArea dispatches after it. While set, a scan that finds every
+  /// area already COMPLETE has not mowed a thing for this Start: the progress it found belongs to
+  /// a session that finished without reaching EndSession (its dock was preempted, or the stack
+  /// restarted first). GetNextUnmowedArea then discards that progress and mows the lawn again
+  /// instead of reporting MOWING_COMPLETE — field 2026-10-26, v1.6.0: every Play undocked, said
+  /// "mowing complete" and drove back, for good. Not persisted: a restart is not a Start.
+  bool start_awaiting_dispatch{false};
+
   /// Stable id (mowglinext#637) of the area single_area_target's index
   /// pointed at when it was locked in — captured from the FIRST probe
   /// response after the request was consumed (NOT from the ~/start_in_area
@@ -1146,6 +1155,33 @@ inline bool hasRecordedCoverageProgress(const BTContext& ctx)
     }
   }
   return false;
+}
+
+/// Forget every recorded coverage progress — what hasRecordedCoverageProgress() looks at plus
+/// the plan fingerprints, swath counts and the per-area high-water mark — so the next scan
+/// plans and mows each area from its first line. Session budgets, flags and the single-area
+/// target are the caller's business.
+inline void clearRecordedCoverageProgress(BTContext& ctx)
+{
+  ctx.area_completed_swaths.clear();
+  ctx.area_swath_count.clear();
+  ctx.area_resume_pose_index.clear();
+  ctx.area_unit_progress.clear();
+  ctx.area_path_pose_count.clear();
+  ctx.area_plan_fingerprint.clear();
+  ctx.completed_areas.clear();
+  ctx.area_last_coverage.clear();
+  ctx.coverage_plausibility_warning = false;
+}
+
+/// Forget the recorded progress of ONE area, for an explicit "mow this area" request.
+inline void clearAreaCoverageProgress(BTContext& ctx, uint32_t area)
+{
+  ctx.area_completed_swaths.erase(area);
+  ctx.area_resume_pose_index.erase(area);
+  ctx.area_unit_progress.erase(area);
+  ctx.area_last_coverage.erase(area);
+  ctx.completed_areas.erase(area);
 }
 
 /// Does a plain COMMAND_START keep the single-area clip it finds latched? Yes when the operator

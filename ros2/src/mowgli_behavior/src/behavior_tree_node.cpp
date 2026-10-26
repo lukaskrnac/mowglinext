@@ -897,6 +897,10 @@ private:
             {
               clearSingleAreaMode(*context_);
             }
+            if (cmd == HighLevelControl::Request::COMMAND_START)
+            {
+              context_->start_awaiting_dispatch = true;
+            }
             // The previous session ended unfinished and EndSession kept its progress: this Start
             // resumes it. Unless it has aged out — then it begins fresh, like any other Start.
             if (cmd == HighLevelControl::Request::COMMAND_START &&
@@ -967,6 +971,7 @@ private:
             context_->resume_after_incomplete_end = false;
             context_->blade_direction.clearOperatorInhibit();
             context_->current_command = 1;  // COMMAND_START
+            context_->start_awaiting_dispatch = true;
             // A START retries a failed critical dock and keeps a pending charge.
             battery_recovery_changed = applyCommandToBatteryRecovery(*context_, 1);
           }
@@ -1616,17 +1621,10 @@ private:
     {
       std::lock_guard<std::mutex> lock(context_->context_mutex);
       context_->resume_after_incomplete_end = false;
-      context_->area_completed_swaths.clear();
-      context_->area_swath_count.clear();
-      context_->area_resume_pose_index.clear();
-      context_->area_unit_progress.clear();
-      context_->area_path_pose_count.clear();
-      context_->area_plan_fingerprint.clear();
-      context_->completed_areas.clear();
+      clearRecordedCoverageProgress(*context_);
       context_->attempted_areas.clear();
       context_->incomplete_retired_areas.clear();
       context_->area_attempt_count.clear();
-      context_->area_last_coverage.clear();
       context_->coverage_start_blocked = false;
       context_->start_blocked_area.reset();
       context_->area_start_blocked_count.clear();

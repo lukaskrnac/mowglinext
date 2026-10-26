@@ -1,3 +1,6 @@
+import {observeAsync} from "../utils/async";
+import {isJsonObject} from "../utils/json";
+import {useAsyncHandler} from "../hooks/useAsyncHandler";
 import {type ReactNode, useEffect, useMemo, useState} from "react";
 import {useMatches, useNavigate, useOutlet} from "react-router-dom";
 import {AnimatePresence, motion, LayoutGroup} from "framer-motion";
@@ -12,6 +15,7 @@ import {MowerStatus} from "./MowerStatus.tsx";
 import {NotificationBell} from "./NotificationBell.tsx";
 import {LanguageSwitcher} from "./LanguageSwitcher.tsx";
 import {LiveStatusStrip} from "./LiveStatusStrip.tsx";
+import {HardwareBackendBadge} from "./HardwareBackendBadge.tsx";
 import {IOSInstallBanner} from "./IOSInstallBanner.tsx";
 import {useIOSInstallPrompt} from "../hooks/useIOSInstallPrompt.ts";
 import {useAutoNotifications} from "../hooks/useNotificationCenter.tsx";
@@ -71,6 +75,7 @@ const PAGE_META: Record<string, {titleKey: string; subtitleKey?: string}> = {
 };
 
 export function AppShell() {
+  const asyncHandler = useAsyncHandler();
   const {colors} = useThemeMode();
   const {t} = useTranslation();
   const navigate = useNavigate();
@@ -89,7 +94,7 @@ export function AppShell() {
   // and we lost it in the AppShell rewrite).
   useEffect(() => {
     if (route.length === 1 && route[0].pathname === '/') {
-      navigate({pathname: '/mowglinext'}, {replace: true});
+      observeAsync(navigate({pathname: '/mowglinext'}, {replace: true}));
     }
   }, [route, navigate]);
 
@@ -97,16 +102,26 @@ export function AppShell() {
   const [configChecked, setConfigChecked] = useState(false);
   useEffect(() => {
     if (configChecked) return;
-    (async () => {
+    let active = true;
+    observeAsync((async () => {
       try {
         const res = await fetch(`${httpBase()}/api/settings/status`);
-        const data = await res.json();
-        if (!data.onboarding_completed && currentPath !== '/onboarding') {
-          navigate({pathname: '/onboarding'});
+        if (!active) return;
+        if (!res.ok) throw new Error('Onboarding status unavailable');
+        const data: unknown = await res.json();
+        if (!active) return;
+        if (!isJsonObject(data) || typeof data.onboarding_completed !== 'boolean') {
+          throw new Error('Invalid onboarding status');
         }
-      } catch { /* ignore */ }
-      setConfigChecked(true);
-    })();
+        if (data.onboarding_completed === false && currentPath !== '/onboarding') {
+          observeAsync(navigate({pathname: '/onboarding'}));
+        }
+      } catch (error) {
+        if (active) console.error('Failed to check onboarding status', error);
+      }
+      if (active) setConfigChecked(true);
+    })());
+    return () => { active = false; };
   }, [configChecked, currentPath, navigate]);
 
   // Auto-notifications hook (BT-state derived push notifications)
@@ -114,7 +129,7 @@ export function AppShell() {
   const emergency = useEmergency();
   const hwStatus = useStatus();
   useAutoNotifications({
-    emergencyActive: highLevelStatus.emergency ?? emergency.active_emergency ?? false,
+    emergencyActive: highLevelStatus.emergency === true || emergency.active_emergency === true,
     emergencyLatched: emergency.latched_emergency ?? false,
     rainDetected: hwStatus.rain_detected ?? false,
     state: highLevelStatus.state_name,
@@ -169,7 +184,10 @@ export function AppShell() {
             <LanguageSwitcher/>
             <NotificationBell/>
           </div>
-          <div style={{width:'100%', display:'flex', justifyContent:'flex-end', marginTop:4}}><MowerStatus/></div>
+          <div style={{width:'100%', display:'flex', alignItems:'center', justifyContent:'space-between', gap:8, marginTop:4}}>
+            <HardwareBackendBadge/>
+            <MowerStatus/>
+          </div>
         </header>
 
         <main style={{
@@ -187,13 +205,13 @@ export function AppShell() {
           items={overflowItems}
           activePath={currentPath}
           onClose={() => setMoreOpen(false)}
-          onNavigate={(k) => { setMoreOpen(false); navigate({pathname: k}); }}
+          onNavigate={(k) => { setMoreOpen(false); observeAsync(navigate({pathname: k})); }}
         />
 
         <MobileBottomNav
           items={bottomItems}
           activePath={currentPath}
-          onNavigate={(k) => navigate({pathname: k})}
+          onNavigate={asyncHandler((k) => navigate({pathname: k}))}
           onMore={() => setMoreOpen(true)}
           moreActive={overflowItems.some(n => n.key === currentPath) || moreOpen}
         />
@@ -215,7 +233,7 @@ export function AppShell() {
       <DesktopSideRail
         items={NAV}
         activePath={currentPath}
-        onNavigate={(k) => navigate({pathname: k})}
+        onNavigate={asyncHandler((k) => navigate({pathname: k}))}
       />
 
       <div style={{
@@ -246,6 +264,7 @@ export function AppShell() {
             )}
           </div>
           <div style={{display: 'flex', alignItems: 'center', gap: 12}}>
+            <HardwareBackendBadge/>
             <LanguageSwitcher/>
             <NotificationBell/>
             <MowerStatus/>

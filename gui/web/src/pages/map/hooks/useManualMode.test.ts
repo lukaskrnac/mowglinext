@@ -1,6 +1,7 @@
 import {describe, it, expect, vi, beforeEach, afterEach} from 'vitest';
 import {renderHook, act} from '@testing-library/react';
 import {resolveMaxLinearMps, useManualMode} from './useManualMode.ts';
+import type {IJoystickUpdateEvent} from 'react-joystick-component/build/lib/Joystick';
 
 describe('useManualMode', () => {
     let mowerAction: (action: string, params: Record<string, unknown>) => () => Promise<void>;
@@ -71,26 +72,35 @@ describe('useManualMode', () => {
         expect(result.current.manualMode).toBe(true);
 
         rerender({stateName: 'IDLE'});
-        act(() => vi.advanceTimersByTime(1199));
+        act(() => { vi.advanceTimersByTime(1199); });
         expect(result.current.manualMode).toBe(true);
 
-        act(() => vi.advanceTimersByTime(1));
+        act(() => { vi.advanceTimersByTime(1); });
         expect(result.current.manualMode).toBe(false);
     });
 
-    it('handleJoyMove scales joystick input by MAX_LINEAR_MPS and MAX_ANGULAR_RAD_S', () => {
+    it('handleJoyMove scales joystick input by MAX_LINEAR_MPS and MAX_ANGULAR_RAD_S', async () => {
         const {result} = renderManualMode();
+        await act(async () => { await result.current.handleManualMode(); });
+        const joystickEvent = {
+            type: 'move',
+            x: 0.5,
+            y: 0.8,
+            direction: null,
+            distance: null,
+        } satisfies IJoystickUpdateEvent;
         act(() => {
-            result.current.handleJoyMove({x: 0.5, y: 0.8} as any);
+            result.current.handleJoyStart();
+            result.current.handleJoyMove(joystickEvent);
         });
         // Raw joystick: x=0.5, y=0.8 → scaled to linear=0.8*0.25=0.2, angular=-0.5*0.6=-0.3
         expect(sendJsonMessage).toHaveBeenCalledWith({
             header: {stamp: {sec: 0, nanosec: 0}, frame_id: ""},
             twist: {linear: {x: 0.2, y: 0, z: 0}, angular: {z: -0.3, x: 0, y: 0}},
-        });
+        }, false);
     });
 
-    it('handleJoyMove uses the configured manual speed cap', () => {
+    it('handleJoyMove uses the configured manual speed cap', async () => {
         const {result} = renderHook(() =>
             useManualMode({
                 mowerAction,
@@ -98,14 +108,68 @@ describe('useManualMode', () => {
                 maxLinearMps: 0.4,
             })
         );
+        await act(async () => { await result.current.handleManualMode(); });
         act(() => {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            result.current.handleJoyMove({x: 0, y: 0.5} as any);
+            result.current.handleJoyStart();
+            result.current.handleJoyMove({type: 'move', x: 0, y: 0.5, direction: null, distance: null});
         });
         expect(sendJsonMessage).toHaveBeenCalledWith({
             header: {stamp: {sec: 0, nanosec: 0}, frame_id: ""},
             twist: {linear: {x: 0.2, y: 0, z: 0}, angular: {z: -0, x: 0, y: 0}},
+        }, false);
+    });
+
+    it('requires a fresh gesture after reconnect with a configured speed cap', () => {
+        let generation = 1;
+        const motionSession = () => ({connected: true, generation});
+        const {result} = renderHook(() => useManualMode({
+            mowerAction,
+            joyStream: {sendJsonMessage, start: startStream, motionSession},
+            stateName: 'MANUAL_MOWING',
+            maxLinearMps: 0.4,
+        }));
+        const move: IJoystickUpdateEvent = {type: 'move', x: 0, y: 0.5, direction: null, distance: null};
+        act(() => { result.current.handleJoyStart(); result.current.handleJoyMove(move); });
+        expect(vi.mocked(sendJsonMessage).mock.lastCall?.[0]).toMatchObject({
+            twist: {linear: {x: 0.2}},
         });
+        generation++;
+        act(() => { vi.advanceTimersByTime(100); });
+        expect(vi.mocked(sendJsonMessage).mock.lastCall?.[0]).toMatchObject({
+            twist: {linear: {x: 0}},
+        });
+        vi.mocked(sendJsonMessage).mockClear();
+        act(() => { result.current.handleJoyMove(move); vi.advanceTimersByTime(200); });
+        expect(sendJsonMessage).not.toHaveBeenCalled();
+        act(() => { result.current.handleJoyStart(); result.current.handleJoyMove(move); });
+        expect(vi.mocked(sendJsonMessage).mock.lastCall?.[0]).toMatchObject({
+            twist: {linear: {x: 0.2}},
+        });
+    });
+
+    it('blocks joystick movement immediately on STOP intent with a configured cap', () => {
+        const {result} = renderHook(() => useManualMode({
+            mowerAction,
+            joyStream: {sendJsonMessage, start: startStream},
+            stateName: 'MANUAL_MOWING',
+            maxLinearMps: 0.4,
+        }));
+        const move: IJoystickUpdateEvent = {type: 'move', x: 0, y: 0.5, direction: null, distance: null};
+        act(() => { result.current.handleJoyStart(); result.current.handleJoyMove(move); });
+        act(() => { result.current.handleStopIntent(); });
+        expect(vi.mocked(sendJsonMessage).mock.lastCall?.[0]).toMatchObject({
+            twist: {linear: {x: 0}},
+        });
+        vi.mocked(sendJsonMessage).mockClear();
+        act(() => {
+            result.current.handleJoyStart();
+            result.current.handleJoyMove(move);
+            vi.advanceTimersByTime(200);
+        });
+        for (const [message] of vi.mocked(sendJsonMessage).mock.calls) {
+            expect(message).toMatchObject({twist: {linear: {x: 0}, angular: {z: 0}}});
+        }
+        expect(result.current.manualMode).toBe(false);
     });
 
     it('resolveMaxLinearMps falls back and clamps', () => {
@@ -126,7 +190,7 @@ describe('useManualMode', () => {
         expect(sendJsonMessage).toHaveBeenCalledWith({
             header: {stamp: {sec: 0, nanosec: 0}, frame_id: ""},
             twist: {linear: {x: 0, y: 0, z: 0}, angular: {z: 0, x: 0, y: 0}},
-        });
+        }, false);
     });
 
     it('cleans up timers on unmount', async () => {

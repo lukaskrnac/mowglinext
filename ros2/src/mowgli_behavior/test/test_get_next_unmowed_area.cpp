@@ -316,6 +316,56 @@ TEST_F(GetNextUnmowedAreaTest, NearEndResumeWithoutSwathsRetiresAtAttemptCap)
   EXPECT_EQ(ctx->area_resume_pose_index.at(0u), kNearEndCursor);
 }
 
+// A large lawn drawn with few points plans into very few, very long units: the
+// ring unit is done and every pass mows ~30 m more of the one swath unit, then
+// stops inside it. No unit finishes, yet the area is plainly being mowed — it
+// must not be retired as "no progress" (area_progress.hpp).
+TEST_F(GetNextUnmowedAreaTest, PartialProgressInsideALongUnitKeepsTheAreaAlive)
+{
+  areas[0] = {"lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  constexpr std::size_t kPathPoseCount = 100000;  // minimum gain: 0.5 % = 500 poses
+  ctx->area_path_pose_count[0u] = kPathPoseCount;
+  ctx->area_completed_swaths[0u] = {0u};
+
+  for (uint32_t pass = 0; pass < 2 * BTContext::kMaxAreaAttempts; ++pass)
+  {
+    ctx->area_unit_progress[0u][1u] = 1000u * (pass + 1u);
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS) << "pass " << pass;
+    EXPECT_EQ(ctx->area_attempt_count[0u], 1u) << "pass " << pass;
+    EXPECT_EQ(ctx->attempted_areas.count(0u), 0u) << "pass " << pass;
+  }
+}
+
+// The credit is a high-water mark with a minimum gain proportional to the plan:
+// a pass that crept a few poses further is still no progress, and five of them
+// retire the area exactly as before.
+TEST_F(GetNextUnmowedAreaTest, PartialGainBelowTheMinimumStillRetiresAtAttemptCap)
+{
+  areas[0] = {"lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  constexpr std::size_t kPathPoseCount = 100000;
+  ctx->area_path_pose_count[0u] = kPathPoseCount;
+  ctx->area_completed_swaths[0u] = {0u};
+
+  for (uint32_t attempt = 1; attempt < BTContext::kMaxAreaAttempts; ++attempt)
+  {
+    ctx->area_unit_progress[0u][1u] = 5000u + 100u * attempt;  // +100 < 500 per pass
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS) << "dispatch " << attempt;
+    EXPECT_EQ(ctx->area_attempt_count[0u], attempt);
+  }
+
+  ctx->area_unit_progress[0u][1u] = 5000u + 100u * BTContext::kMaxAreaAttempts;
+  auto tree = makeTree(/*max_areas=*/5);
+  EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::FAILURE);
+  EXPECT_EQ(ctx->attempted_areas.count(0u), 1u);
+  EXPECT_TRUE(ctx->completed_areas.empty());
+}
+
 // ---------------------------------------------------------------------------
 // mowglinext#637 phase 2 — an index whose id no longer matches the last
 // observed one must not inherit stale per-index state (completed, attempted,
@@ -1592,6 +1642,53 @@ TEST_F(GetNextUnmowedAreaTest, FleetPreferredStartRotatesTheScanAndWraps)
     EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::FAILURE);
     EXPECT_TRUE(ctx->coverage_all_complete) << "everything done after the wrap";
   }
+}
+
+// Field 2026-10-26: a Play after the operator moved the mower must continue the area it was in,
+// not start at the lowest incomplete one (which sent it across the garden to an untouched area).
+TEST_F(GetNextUnmowedAreaTest, ResumePreferredStartScansFromTheAreaInProgressThenWraps)
+{
+  areas[0] = {"a", false};
+  areas[1] = {"b", false};
+  areas[2] = {"c", false};
+  waitForService();
+  ctx->resume_preferred_start = 2u;
+
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+    uint32_t selected = 99;
+    ASSERT_TRUE(blackboard->get("area_index", selected));
+    EXPECT_EQ(selected, 2u) << "the area that was in progress comes first";
+  }
+  EXPECT_TRUE(ctx->resume_preferred_start.has_value())
+      << "kept while the area is unfinished, so a short interruption does not lose it";
+  ctx->completed_areas.insert(2u);
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+    uint32_t selected = 99;
+    ASSERT_TRUE(blackboard->get("area_index", selected));
+    EXPECT_EQ(selected, 0u) << "afterwards the scan wraps to the lower indices";
+  }
+  EXPECT_FALSE(ctx->resume_preferred_start.has_value()) << "dropped once that area is done";
+}
+
+TEST_F(GetNextUnmowedAreaTest, ResumePreferredStartIsIgnoredWhenThatAreaWasRetired)
+{
+  areas[0] = {"a", false};
+  areas[1] = {"b", false};
+  areas[2] = {"c", false};
+  waitForService();
+  ctx->resume_preferred_start = 2u;
+  ctx->attempted_areas.insert(2u);
+
+  auto tree = makeTree(/*max_areas=*/5);
+  ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  uint32_t selected = 99;
+  ASSERT_TRUE(blackboard->get("area_index", selected));
+  EXPECT_EQ(selected, 0u) << "a retired area is not resumed: plain ascending order";
+  EXPECT_FALSE(ctx->resume_preferred_start.has_value());
 }
 
 // The fleet wrap into [0, preferred) must apply the SAME isSkipVerified()

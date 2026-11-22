@@ -15,8 +15,10 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <future>
 #include <limits>
@@ -28,9 +30,12 @@
 #include <string>
 #include <vector>
 
+#include <geometry_msgs/msg/twist_stamped.hpp>
+
 #include "behaviortree_cpp/behavior_tree.h"
 #include "behaviortree_cpp/bt_factory.h"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "map_msgs/msg/occupancy_grid_update.hpp"
 #include "mowgli_behavior/action_outcome.hpp"
 #include "mowgli_behavior/bt_context.hpp"
 #include "mowgli_behavior/cancel_goal.hpp"
@@ -90,6 +95,28 @@ inline double transitDeadlineSec(double gap_m)
   return t > kTransitTimeoutMinSec ? t : kTransitTimeoutMinSec;
 }
 
+/// Longest planned route [m] the route-aware bound honours: far beyond any
+/// garden, it only keeps a garbage feedback value from disabling the watchdog.
+constexpr double kTransitRouteMaxM = 2000.0;
+/// A route-driven widening of the transit bound smaller than this is applied
+/// silently on the next one that is not [s] (replans jitter by centimetres).
+constexpr double kTransitBoundLogStepSec = 1.0;
+
+/// The same bound, from the route nav2 actually PLANNED. The transit planner
+/// only crosses the recorded areas (their exact union), so the route can be many
+/// times the straight-line gap — round a concave edge, or round to where two
+/// areas really touch — and the gap-only bound cancelled exactly those
+/// legitimate detours, skipping the unit (large lawns drawn with few points).
+/// `route_m` is the LONGEST distance_remaining NavigateToPose reported for the
+/// goal, applied from the goal's start: the remaining route of a robot that is
+/// not getting anywhere does not grow, so it is still ended on time.
+inline double transitDeadlineForRouteSec(double gap_m, double route_m)
+{
+  const double route =
+      (std::isfinite(route_m) && route_m > 0.0) ? std::min(route_m, kTransitRouteMaxM) : 0.0;
+  return transitDeadlineSec(std::max(gap_m, route));
+}
+
 /// Two transit goals this close are the SAME destination. FollowStrip's first
 /// unit starts where TransitToStrip was sent (both come from the plan start or
 /// the resume cursor), give or take the dig-zone front trim.
@@ -116,6 +143,28 @@ struct TransitResultSlot
   bool ready = false;
   uint16_t error_code = 0;
   std::string error_msg;
+};
+/// Longest planned route NavigateToPose has reported for one transit goal
+/// (feedback distance_remaining): written by the feedback callback, read by the
+/// BT tick to size the transit bound (transitDeadlineForRouteSec).
+struct TransitRouteSlot
+{
+  void Record(double remaining_m)
+  {
+    if (!std::isfinite(remaining_m))
+      return;
+    std::lock_guard<std::mutex> lk(mutex_);
+    longest_m_ = std::max(longest_m_, remaining_m);
+  }
+  double Longest()
+  {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return longest_m_;
+  }
+
+private:
+  std::mutex mutex_;
+  double longest_m_ = 0.0;
 };
 /// The status topic reports a transit's abort before its result (and nav2's
 /// error code) lands. How long a caller waits for it before classifying the
@@ -300,6 +349,14 @@ public:
   FollowStrip(const std::string& name, const BT::NodeConfig& config)
       : BT::StatefulActionNode(name, config)
   {
+    // Subscribe to the global costmap when the tree is built (stack start),
+    // not at the first strip: in delta mode a late subscriber gets the latched
+    // FIRST full grid and none of the deltas published before it subscribed.
+    std::shared_ptr<BTContext> ctx;
+    if (config.blackboard && config.blackboard->get("context", ctx) && ctx && ctx->node)
+    {
+      ensureCostmapSubscriptions(ctx);
+    }
   }
 
   static BT::PortsList providedPorts()
@@ -326,7 +383,15 @@ public:
   void onHalted() override;
 
 private:
+  friend struct FollowStripOutcomeTestAccess;
   void setBladeEnabled(bool enabled);
+  bool stepPrecisionPause(const std::shared_ptr<BTContext>& ctx);
+  void publishPrecisionStop(const std::shared_ptr<BTContext>& ctx);
+  void requestPrecisionBladeOff();
+  bool precision_paused_ = false;
+  bool precision_had_goal_ = false;
+  std::chrono::steady_clock::time_point precision_last_blade_off_{};
+  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr precision_stop_pub_;
   bool bladeReadyForDispatch(const std::shared_ptr<BTContext>& ctx);
   void beginBladeReadyWait(const std::shared_ptr<BTContext>& ctx);
   // Cancel every in-flight follow / transit goal, reset the transit state
@@ -560,8 +625,13 @@ private:
   // (transient_local) subscription; updated on the node's single MutuallyExclusive
   // callback group so it is serialized against the BT tick (no extra mutex — see
   // bt_context.hpp). Null until the first costmap arrives → detour falls back.
+  // The global costmap publishes in delta mode: the full grid arrives on
+  // connect / resize only, later changes on costmap_updates, applied to this
+  // copy (mowgli_nav2_plugins/occupancy_grid_update.hpp).
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sub_;
+  rclcpp::Subscription<map_msgs::msg::OccupancyGridUpdate>::SharedPtr costmap_update_sub_;
   nav_msgs::msg::OccupancyGrid::SharedPtr latest_costmap_;
+  void ensureCostmapSubscriptions(const std::shared_ptr<BTContext>& ctx);
 
   // --- Coverage controller rejoin (FTC turn fallback) ------------------------
   // FTC republishes the rest of the unit on the goal checker's plan topic when
@@ -689,8 +759,13 @@ private:
   /// aborted/cancelled path skips the unit.
   std::chrono::steady_clock::time_point transit_start_time_{};
   double transit_deadline_s_{0.0};
+  double transit_gap_m_{0.0};
   bool transit_timeout_requested_{false};
+  /// Longest route nav2 planned for the running transit (feedback); widens
+  /// transit_deadline_s_ through transitDeadlineForRouteSec, never narrows it.
+  std::shared_ptr<TransitRouteSlot> transit_route_ = std::make_shared<TransitRouteSlot>();
   void armTransitWatchdog(double gap_m);
+  void widenTransitDeadline(const std::shared_ptr<BTContext>& ctx);
 
   /// Blade pause across a short LiDAR dropout (scan_pause.hpp): the coverage
   /// goal stays alive, only the blade is cut and later restored.
@@ -730,7 +805,8 @@ public:
     return {BT::InputPort<double>("timeout_sec",
                                   -1.0,
                                   "Hard bound on the transit [s]; <= 0 derives it from the "
-                                  "distance to the strip (transitDeadlineSec)")};
+                                  "distance to the strip, widened to the planned route "
+                                  "(transitDeadlineForRouteSec)")};
   }
 
   BT::NodeStatus onStart() override;
@@ -738,6 +814,7 @@ public:
   void onHalted() override;
 
 private:
+  friend struct FollowStripOutcomeTestAccess;
   /// The transit ended ABORTED/CANCELED. Waits (bounded) for nav2's error code,
   /// then records the destination in BTContext::transit_to_strip_failed_at so
   /// FollowStrip does not send the identical transit again — unless the planner
@@ -755,7 +832,11 @@ private:
   /// ran 53 s against a path its controller kept refusing.
   std::chrono::steady_clock::time_point start_time_{};
   double deadline_s_{0.0};
+  double gap_m_{0.0};
+  /// False when timeout_sec pinned the bound: an explicit bound is never widened.
+  bool deadline_follows_route_{true};
   bool timeout_requested_{false};
+  std::shared_ptr<TransitRouteSlot> nav_route_ = std::make_shared<TransitRouteSlot>();
   /// nav2's error code for the failure classification (issue #487).
   std::shared_ptr<TransitResultSlot> nav_result_ = std::make_shared<TransitResultSlot>();
   bool failure_seen_{false};
@@ -803,6 +884,7 @@ public:
   void onHalted() override;
 
 private:
+  friend struct FollowStripOutcomeTestAccess;
   rclcpp_action::Client<Nav2Navigate>::SharedPtr nav_client_;
   std::shared_future<NavGoalHandle::SharedPtr> nav_future_;
   NavGoalHandle::SharedPtr nav_handle_;

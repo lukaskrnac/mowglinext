@@ -16,6 +16,7 @@ export enum ProvidersRemoteAccessPhase {
   RemoteAccessStarting = "starting",
   RemoteAccessRunning = "running",
   RemoteAccessError = "error",
+  RemoteAccessDegraded = "degraded",
 }
 
 export interface ApiBlackboxStatusResponse {
@@ -223,6 +224,11 @@ export interface ApiOkResponse {
   ok?: string;
 }
 
+export interface ApiROSHealth {
+  ready?: boolean;
+  transport?: FoxgloveTransportHealth;
+}
+
 export interface ApiRemoteAccessSettingsResponse {
   authKeyMasked?: string;
   authKeySet?: boolean;
@@ -379,6 +385,12 @@ export interface BuildinfoInfo {
   modified?: boolean;
   revision?: string;
   version?: string;
+}
+
+export interface FoxgloveTransportHealth {
+  connected?: boolean;
+  heartbeat_ok?: boolean;
+  last_pong_at?: string;
 }
 
 export interface GeometryPoint {
@@ -547,13 +559,21 @@ export interface ProvidersRemoteAccessStatus {
   enabled?: boolean;
   error?: string;
   health?: string[];
+  hostNetworkOnline?: boolean;
   hostname?: string;
   httpUrls?: string[];
   httpsUrl?: string;
+  lastSuccessAt?: string;
   /** LoginUrl is set while the node waits for an interactive login. */
   loginUrl?: string;
   magicDnsEnabled?: boolean;
+  nextRecoveryAt?: string;
   phase?: ProvidersRemoteAccessPhase;
+  recoveryAttempts?: number;
+  recoveryError?: string;
+  recoveryState?: string;
+  selfOnline?: boolean;
+  statusUsable?: boolean;
   tailscaleIps?: string[];
   version?: string;
 }
@@ -1252,6 +1272,39 @@ export class Api<
         path: `/fleet/robots/${id}/call/${command}`,
         method: "POST",
         type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+  };
+  health = {
+    /**
+     * No description
+     *
+     * @tags health
+     * @name LiveList
+     * @summary Check GUI HTTP liveness
+     * @request GET:/health/live
+     */
+    liveList: (params: RequestParams = {}) =>
+      this.request<Record<string, string>, any>({
+        path: `/health/live`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description A healthy transport does not establish sensor freshness or mower safety readiness.
+     *
+     * @tags health
+     * @name GetHealth
+     * @summary Check the GUI to ROS transport
+     * @request GET:/health/ros
+     */
+    getHealth: (params: RequestParams = {}) =>
+      this.request<ApiROSHealth, ApiROSHealth>({
+        path: `/health/ros`,
+        method: "GET",
         format: "json",
         ...params,
       }),

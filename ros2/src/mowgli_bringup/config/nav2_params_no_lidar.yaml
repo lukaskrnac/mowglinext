@@ -40,12 +40,10 @@ planner_server:
 global_costmap:
   global_costmap:
     ros__parameters:
-      # ORDER IS LOAD-BEARING: inflation_layer BEFORE keepout_filter, so the
-      # keepout mask (recorded boundary + drawn obstacles) is NOT inflated —
-      # only the static_layer cells are. See the global_costmap block in
-      # nav2_params_base.yaml; test_nav2_params.py pins this in both variants.
-      # fleet_layer sits before inflation_layer so a peer's footprint IS inflated.
-      plugins: ["fleet_layer", "inflation_layer", "keepout_filter"]
+      # Inflate fleet peers in the sensor grid, then apply authorization in the
+      # separate final grid; retained mask cells must never become inflation seeds.
+      plugins: ["fleet_layer", "inflation_layer"]
+      filters: ["keepout_filter"]
 
       # fleet_layer: the other fleet members' footprints as lethal cells
       # (docs/MULTI_ROBOT.md). Without a LiDAR nothing else on this robot can
@@ -85,9 +83,15 @@ local_costmap:
         subscribe_to_updates: false
         transform_tolerance: 0.5
 
-      # Second copy of the global fleet_layer above — keep them identical.
+      # Second copy of the global fleet_layer above — keep them identical,
+      # plugin included. A plain ObstacleLayer never forgets a mark here:
+      # marking-only, no raytrace and no scan to clear it, so a moving peer
+      # left a lethal trail and a docked neighbour the fleet node stops
+      # publishing (fleet_peer_obstacles.py, dock-neighbour exception) stayed
+      # in the way of the undock. RecentObstacleLayer rebuilds from the last
+      # observation_persistence of clouds every update.
       fleet_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
+        plugin: "mowgli_nav2_plugins::RecentObstacleLayer"
         enabled: true
         observation_sources: fleet_peers
         fleet_peers:

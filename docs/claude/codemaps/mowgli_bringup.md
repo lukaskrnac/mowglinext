@@ -58,7 +58,7 @@
 | `scripts/wait_for_tf.py` | 70 | `--parent map --child odom --timeout 120`; exit 0 when TF resolvable, 1 on timeout |
 | `scripts/empty_static_map_pub.py` | 61 | Latched empty `OccupancyGrid` on `/no_lidar_static_map` (params `size_m` 200, `resolution` 0.5, `frame_id` map) |
 | `scripts/cmd_vel_ws_relay.py` | 121 | WebSocket 127.0.0.1:8766 JSON → `/cmd_vel_teleop` (`TwistStamped`, clamps ±2.0 m/s / ±5.0 rad/s) |
-| `scripts/fleet_peer_obstacles.py` | 158 | Fleet coordination (commit `4bc36b74`, 2026-09-15): subs `/fleet/peers`, publishes `/fleet/peer_obstacles` consumed by both Nav2 costmap variants as an obstacle source; launched unconditionally from `full_system.launch.py` |
+| `scripts/fleet_peer_obstacles.py` | 158 | Fleet coordination (commit `4bc36b74`, 2026-09-15): subs `/fleet/peers` + `/fleet/docked_peers` + `/odometry/filtered_map` + `/map_server_node/docking_pose`, publishes `/fleet/peer_obstacles` consumed by both Nav2 costmap variants as an obstacle source; a charging peer beside our dock is left out while we undock/dock (`classify_docked_peer`, side-by-side docks, 2026-10-28); launched unconditionally from `full_system.launch.py` |
 | **`urdf/`** | | |
 | `urdf/mowgli.urdf.xacro` | 408 | Frames + visuals only (no sim plugins): base_footprint→base_link→wheels/casters/blade/imu/gps/lidar; all dims are xacro args |
 | **`test/`** | | |
@@ -67,7 +67,7 @@
 | `test/test_launch_injection.py` | 262 | AST guards: `num_headland_passes` unclamped, `mowing_enabled` → hardware_bridge only, `dock_max_retries`/`dock_use_charger_detection` → docking_server |
 | `test/test_tf_ownership.py` | 100 | Only fusion_graph + wheel_odometry construct `TransformBroadcaster`; `wheel_odometry.yaml publish_tf: false`; no launch file sets `publish_tf` |
 | `test/test_gnss_launch_config.py` | 61 | `full_system` declares no `use_universal_gnss`, includes no `universal_gnss.launch.py`, passes no legacy `gnss_backend`/`gps_protocol` params |
-| `test/test_fleet_peer_obstacles.py` | 63 | Guards `fleet_peer_obstacles.py`'s `/fleet/peers` sub / `/fleet/peer_obstacles` pub wiring |
+| `test/test_fleet_peer_obstacles.py` | 63 | Guards `fleet_peer_obstacles.py`'s footprint/cloud helpers and the docked-neighbour exception (incl. the 2026-10-28 bag poses) |
 | `test/test_drive_pid_defaults.py` | 167 | Drive PID/yaw-tuning template defaults |
 | `test/test_fusion_graph_launch_types.py` | 146 | `fusion_graph.launch.py` param type/coercion guards |
 | `test/test_gnss_sidecar_launcher.py` | 178 | Guards the Universal GNSS sidecar inline launcher (`docker-compose.gps.yml`'s Python `command:` block) reads `mowgli_robot.yaml` correctly |
@@ -159,7 +159,7 @@ All injection is READ ONCE at launch (container restart required); exceptions: `
 | `chassis_length/width/height/mass_kg`, `chassis_center_x`, `wheel_radius/width/track`, `wheel_x_offset`, `caster_*`, `blade_radius`, `lidar_x/y/z/yaw`, `imu_x/y/z/yaw` (no `imu_roll`/`imu_pitch` template key — launch defaults them to 0.0), `gps_x/y/z` (L24–36, L190–219) | xacro args | `mowgli.launch.py` L93–164 |
 | `chassis_length/width/center_x` | Nav2 `footprint` (+0.05 m margin) | `navigation.launch.py` L304–317, L973–974 |
 | `dock_pose_x/y/yaw`, `imu_yaw`, `wheel_track`, `ticks_per_meter`, `wheel_pid_kp/ki/kd/integral_limit/pwm_per_mps`, `imu_cal_*`, `lift_recovery_mode`, `lift_blade_resume_delay_sec`, `mowing_enabled`, `yaw_kp/ki`, `yaw_trim_limit_mps`, `yaw_loop_enabled`, `yaw_gyro_sign` | hardware_bridge params | `mowgli.launch.py` L200–253 |
-| `tick_rate`, `bt_debug_logging`, `undock_speed/distance`, `idle_nav2_suspend`, `transit_speed`, `mowing_speed`, `mow_angle_deg`, `area_simplification_tolerance`, `area_record_rate_hz`, `loc_gnss_*`, `loc_sigma_*`, `start_blocked_escape_*`, `battery_*` | behavior_tree_node params | `full_system.launch.py` L226–352 |
+| `tick_rate`, `bt_debug_logging`, `undock_speed/distance`, `idle_nav2_suspend`, `transit_speed`, `mowing_speed`, `mow_angle_deg`, `area_simplification_tolerance`, `area_record_rate_hz`, `goto_timeout_sec`, `loc_gnss_*`, `loc_sigma_*`, `start_blocked_escape_*`, `battery_*` | behavior_tree_node params | `full_system.launch.py` L226–352 |
 | `dock_pose_*`, `dock_body_length_m/width_m`, `chassis_width`, `max_obstacle_avoidance_distance`, `keepout_obstacle_margin` (DERIVED: `robot_config_util.keepout_obstacle_margin`, not a yaml key), `lethal_outside_areas`, `enforce_boundary_margin_m`, `boundary_inner_margin_m`, `dock_inner_margin_exempt_radius_m`, `tool_width`, `datum_lat/lon` | map_server_node params | `full_system.launch.py` L380–434 |
 | `datum_lat/lon` | navsat_to_absolute_pose + cog_to_imu + mqtt_bridge_node (labels `<prefix>/area_boundary`) | `full_system.launch.py` L460–463; `navigation.launch.py` L1121–1122 |
 | `undock_*`, `dock_calib_*` (9 keys) | calibrate_imu_yaw_node | `full_system.launch.py` L492–513 |

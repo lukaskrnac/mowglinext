@@ -669,6 +669,13 @@
     "baseHeadingUncertaintyTooltip": "Standard deviation (rad) of the base heading used to seed the fusion graph at charging contact. Lower = the calibrated heading is trusted more."
   },
   "diagnosticsPage": {
+    "guiHttp": "GUI HTTP",
+    "guiResponding": "Responding",
+    "rosTransport": "ROS connection",
+    "transportHealthy": "Heartbeat verified",
+    "transportChecking": "Waiting for heartbeat",
+    "transportDisconnected": "Disconnected",
+    "transportHint": "The GUI can respond while ROS is unavailable. A healthy connection does not confirm fresh sensors or mower readiness.",
     "verdictEmergency": "Emergency",
     "verdictAttention": "Attention required",
     "verdictAllGood": "All good",
@@ -1009,6 +1016,17 @@
     }
   },
   "mowgliNextPage": {
+    "activity": {
+      "mowing": "Mowing",
+      "returning": "Returning to dock",
+      "transit": "In transit",
+      "manual": "Manual mowing",
+      "recording": "Recording boundary",
+      "autonomous": "Autonomous activity"
+    },
+    "cuttingEstimate": "About {{value}} min of cutting",
+    "cuttingEstimateScope": "{{area}} only, at current speed. Excludes turns, transit, charging and return to dock.",
+    "activityDetail": "{{activity}} · {{area}}",
     "mowerOnDockTop": "Mower on its dock — top view",
     "mowerTop": "Mower — top view",
     "headlineUntilHomePrefix": "Just ",
@@ -1286,6 +1304,10 @@
     "readinessCtaDrawArea": "Draw area"
   },
   "settingsPage": {
+    "leaveTitle": "Leave without saving?",
+    "leaveBody": "Your unsaved settings will be discarded. Stay on this page to save them.",
+    "discardAndLeave": "Discard and leave",
+    "keepEditing": "Keep editing",
     "ros2Restarting": "Restarting ROS2…",
     "ros2Restarted": "ROS2 restarted",
     "ros2RestartFailed": "ROS2 restart failed",
@@ -1306,6 +1328,8 @@
     "technicalDetails": "Technical details"
   },
   "schedulePage": {
+    "weeklyOverview": "Weekly start times",
+    "startSpacingHint": "Blocks mark scheduled starts with a minimum spacing of 60 minutes. Mowing has no fixed duration.",
     "planning": "Planning",
     "soilWetBlocking": "Soil wet — scheduled mows suspended",
     "soilWet": "Soil wet",
@@ -1391,10 +1415,16 @@
     "unknown": "Unknown"
   },
   "liveMapMini": {
+    "positionUnknown": "Robot position unknown",
+    "coverageUnavailable": "Coverage map unavailable",
     "noAreaYet": "No area recorded yet",
     "noAreaHint": "Record a mowing area to see the live map."
   },
   "statisticsPage": {
+    "readFailed": "Mowing history could not be loaded. Retry to read it.",
+    "refreshFailed": "Mowing history could not be refreshed. Showing the last confirmed data.",
+    "retry": "Retry",
+    "loadingHistory": "Loading mowing history…",
     "statistics": "Statistics",
     "aYearOfMowing": "A year of mowing",
     "noMowingYet": "No mowing yet",
@@ -1613,6 +1643,7 @@
     "stats": "Stats"
   },
   "actionCluster": {
+    "pending": "Command pending…",
     "emergencyStop": "Emergency stop",
     "returnToDock": "Return to dock",
     "startMowing": "Start mowing",
@@ -4018,6 +4049,7 @@
       "starting": "Starting the sidecar…",
       "running": "Sidecar running",
       "error": "Sidecar failed",
+      "degraded": "Needs attention",
       "unknown": "Status unknown"
     },
     "verdict": {
@@ -4025,7 +4057,8 @@
       "working": "Working…",
       "needsLogin": "Login required",
       "connected": "Connected",
-      "error": "Error"
+      "error": "Error",
+      "offline": "Node offline"
     },
     "backendState": "Tailscale: {{state}}",
     "errorTitle": "Remote access could not be started",
@@ -4033,6 +4066,21 @@
     "needsLoginBody": "Open the link, sign in to Tailscale and approve the device. This page updates by itself once the node is connected.",
     "openLogin": "Open Tailscale login",
     "workingHint": "Waiting for the node to come up… the first start downloads the image, which can take a minute on a slow connection.",
+    "recovery": {
+      "monitoring": "Health checks are running. Recovery restarts used: {{count}}.",
+      "suspect": "Tailscale is not responding reliably. Checking whether the fault is local before restarting.",
+      "cooldown": "A recovery attempt is cooling down. Restarts used: {{count}}.",
+      "degraded": "Automatic recovery stopped after {{count}} attempts. Check the connection, then use Retry.",
+      "paused": "Automatic recovery is paused; waiting for network access or maintenance to finish.",
+      "operator_action": "Tailscale needs an operator action. The sidecar will not restart automatically.",
+      "disabled": "Automatic health checks are off."
+    },
+    "lastSuccess": "Last successful health check: {{value}}",
+    "nextRecovery": "Next recovery check: {{value}}",
+    "networkUnavailable": "The robot cannot reach the Tailscale service. The sidecar will not restart for this network outage; it will reconnect when access returns.",
+    "nodeOffline": "Tailscale reports that this node is offline. Remote access URLs are hidden until it reconnects.",
+    "machineAuthRequired": "This device needs approval in the Tailscale admin console. Approve it there; automatic restarts will not resolve this.",
+    "degradedTitle": "Automatic recovery needs attention",
     "reachableAt": "From any device on your tailnet, open:",
     "noHttpsHint": "No HTTPS address yet: enable MagicDNS and HTTPS certificates in the Tailscale admin console (DNS page), or use the http:// address.",
     "noMagicDnsHint": "MagicDNS is off in your tailnet, so only the IP addresses resolve.",
@@ -4527,6 +4575,17 @@
     "unsavedSource": "Save source settings before reviewing an update.",
     "forkHelpTitle": "Using another repository or fork",
     "forkHelp": "Choose a repository enabled by your administrator, then Production, Development or Custom branch. Enter the full branch name, including slashes. A branch must publish a complete deployment before it can be installed. Forks are added to trusted_repositories in /etc/mowgli-updater.json on the host.",
+    "pullRequests": {
+      "label": "Pull request",
+      "placeholder": "Choose an open pull request",
+      "refresh": "Refresh",
+      "installable": "installable",
+      "fork": "fork: not installable",
+      "building": "being built",
+      "notBuilt": "not built: add label {{label}}",
+      "help": "Lists the open pull requests of this repository. A pull request becomes installable once CI publishes its deployment: add the label {{label}} on GitHub (pull requests from forks are not built). Choosing one fills in the branch; then Save settings and review the installation.",
+      "unavailable": "Pull requests unavailable"
+    },
     "technicalDetails": "Version details and history",
     "imageDetails": "Container image details",
     "componentsToUpdate": "Components",

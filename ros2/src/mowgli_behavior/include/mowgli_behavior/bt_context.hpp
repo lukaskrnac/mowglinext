@@ -17,6 +17,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -33,6 +34,7 @@
 #include "mowgli_behavior/blade_ready.hpp"
 #include "mowgli_behavior/cross_hatch.hpp"
 #include "mowgli_behavior/dig_skip.hpp"
+#include "mowgli_behavior/dock_alignment.hpp"
 #include "mowgli_behavior/fleet_yield.hpp"
 #include "mowgli_behavior/start_blocked_escape.hpp"
 #include "mowgli_behavior/transit_avoidance.hpp"
@@ -114,6 +116,7 @@ struct BTContext
   /// Does NOT cover the coverage-tracking fields below (command state +
   /// swath-completion model: target_area_index, single_area_target,
   /// attempted_areas, incomplete_retired_areas, area_attempt_count, area_last_coverage,
+  /// area_last_partial_poses,
   /// area_completed_swaths,
   /// area_swath_count, area_resume_pose_index, area_path_pose_count,
   /// area_plan_fingerprint, completed_areas, session_failed_transit_targets,
@@ -139,6 +142,9 @@ struct BTContext
   /// proofing note on behavior_tree_node's clear_resume_requested_ for the
   /// pattern to follow instead of a mutex if that ever happens.
   mutable std::mutex context_mutex;
+
+  // Set by the behavior node; absent evidence denies coverage dispatch.
+  std::function<bool()> coverage_precision_ready;
 
   /// Fleet stop ownership is never persisted; all access takes context_mutex.
   FleetYieldState fleet_yield;
@@ -325,13 +331,19 @@ struct BTContext
   /// despite advancing 0.3 → 18.6 % across the 5 dispatches. Cleared by
   /// EndSession.
   std::map<uint32_t, uint32_t> area_attempt_count;
-  /// Best coverage_percent seen for an area so far this session, used to
-  /// decide whether a dispatch made progress (and thus resets the
-  /// no-progress attempt counter). Cleared by EndSession.
+  /// High-water mark of the units booked fully mowed in an area this session
+  /// (area_completed_swaths size), used to decide whether a dispatch made
+  /// progress and thus resets the no-progress attempt counter. Cleared by
+  /// EndSession.
   std::map<uint32_t, float> area_last_coverage;
+  /// Its partner (area_progress.hpp): the high-water mark of the furthest
+  /// poses reached inside the area's UNFINISHED units (area_unit_progress), so
+  /// a pass that mowed a long stretch of a long unit is not "no progress".
+  /// Reset with area_last_coverage, everywhere.
+  std::map<uint32_t, std::size_t> area_last_partial_poses;
   static constexpr uint32_t kMaxAreaAttempts = 5;
-  /// Minimum coverage_percent gain that counts as progress (resets the
-  /// no-progress counter). Below this, a dispatch is treated as stuck.
+  /// Share of an area's plan an unfinished unit must gain to count as
+  /// progress (minPartialProgressPoses, never below ~1 m of path).
   static constexpr float kAreaProgressEpsilonPct = 0.5f;
 
   // -----------------------------------------------------------------------
@@ -420,6 +432,13 @@ struct BTContext
   /// indices afterwards), so idle fleet members do not all race for area 0.
   /// nullopt = plain ascending order. Ignored during a targeted run.
   std::optional<uint32_t> fleet_preferred_start;
+  /// The area that was in progress when the previous session ended unfinished (it has a resume
+  /// cursor): the next Start scans from here first and then wraps to the lower indices, the same
+  /// way fleet_preferred_start does. Without it the scan always began at the lowest incomplete
+  /// area, so a Play after the operator moved the mower sent it across the garden to an area it
+  /// had not started (field 2026-10-26). Kept until that area is completed or retired, so a
+  /// short interruption does not lose it; cleared by EndSession (a finished session).
+  std::optional<uint32_t> resume_preferred_start;
   /// Areas whose most recent FollowStrip pass ended because the area became
   /// excluded mid-mow (fleet yield, resume cursor saved). Consumed per area by
   /// the next GetNextUnmowedArea dispatch of that area, which exempts the pass
@@ -608,7 +627,8 @@ struct BTContext
   bool coverage_plausibility_warning{false};
   /// Why the mower is not mowing (HighLevelStatus.stop_reason / stop_detail). Written by
   /// recordStopReason (stop_reason.hpp) where a session ends or a hold begins without finishing,
-  /// cleared by the next HighLevelControl command. Empty = nothing to report.
+  /// cleared by the next HighLevelControl command or accepted ~/goto_pose. Empty = nothing to
+  /// report.
   std::string stop_reason;
   std::string stop_detail;
 
@@ -653,11 +673,26 @@ struct BTContext
   /// 0.5-1 V on motor transients; see battery_filter.hpp.
   float battery_voltage_filtered{0.0f};
 
+  /// Steady-clock time of the last valid /hardware_bridge/power sample (the one
+  /// battery_voltage_filtered was last updated from). Default-constructed until
+  /// the first valid sample. Read by ~/goto_pose to refuse a GOTO on stale
+  /// battery data.
+  std::chrono::steady_clock::time_point last_power_time{};
+
   float gps_quality{0.0f};
 
   /// Latest GPS position in map frame (from /gps/absolute_pose)
   double gps_x{0.0};
   double gps_y{0.0};
+
+  /// Latest fused (GNSS-anchored) pose in the map frame, from /odometry/filtered_map, with
+  /// its receipt time. DockRobot's stall check reads it: a spinning wheel reports travel the
+  /// chassis never made, the fused pose does not.
+  double fused_x{0.0};
+  double fused_y{0.0};
+  double fused_yaw{0.0};
+  std::chrono::steady_clock::time_point fused_pose_time{};
+  bool fused_pose_valid{false};
 
   // -----------------------------------------------------------------------
   // GPS quality classification (derived from gps_quality / fix_type)
@@ -747,6 +782,11 @@ struct BTContext
 
   /// Current navigation mode: "precise" or "degraded"
   std::string current_nav_mode{"precise"};
+  /// lidar_enabled AND use_lidar_map_anchor (behavior_tree_node param
+  /// precision_lidar_map_mode): the LiDAR map holds the pose, so RTK Float keeps
+  /// the full transit/mowing speed in SetNavMode "degraded" (operator decision
+  /// 2026-11-09, same as the precision gate's LiDAR-map mode).
+  bool lidar_map_mode{false};
 
   /// Whether SetNav2Lifecycle has suspended (PAUSEd) the Nav2 lifecycle
   /// stack to save CPU/thermal budget while idle on the dock. Tracked here
@@ -942,10 +982,11 @@ struct BTContext
   /// whenever a RUNNING StatefulActionNode is halted by a parent.
   ///
   /// Consumed by IsDocking, which BoundaryGuard uses to EXEMPT the blade-off
-  /// dock transit (command 1) from the SoftBoundaryHandler: every DockRobot
-  /// is entered only after SetMowerEnabled(false) and can never overlap the
-  /// blade-on FollowStrip subtree, so "docking_active under command 1" is
-  /// provably a blade-OFF transit — the boundary handler must NOT cancel it.
+  /// dock transit (command 1, or command 9 for a GOTO) from the
+  /// SoftBoundaryHandler: every DockRobot is entered only after
+  /// SetMowerEnabled(false) and can never overlap the blade-on FollowStrip
+  /// subtree, so "docking_active under command 1 or 9" is provably a blade-OFF
+  /// transit — the boundary handler must NOT cancel it.
   /// Blade-ON mowing (FollowStrip) keeps full boundary protection because
   /// docking_active is false there. See main_tree.xml BoundaryGuard.
   bool docking_active{false};
@@ -957,6 +998,9 @@ struct BTContext
   double dock_x{0.0};
   double dock_y{0.0};
   double dock_yaw{0.0};
+  /// False until map_server's latched /map_server_node/docking_pose arrives.
+  bool dock_pose_known{false};
+  DockStationZone dock_station_zone;
 
   // -----------------------------------------------------------------------
   // Legacy coverage path components (retained for potential future use).
@@ -1021,6 +1065,18 @@ struct BTContext
   /// Transit goal to reach the coverage path start (populated by
   /// PlanCoverageArea, consumed by TransitToStrip).
   geometry_msgs::msg::PoseStamped current_transit_goal;
+  /// Target pose for COMMAND_GOTO (9), set once by ~/goto_pose under
+  /// context_mutex and consumed by NavigateToPose's onStart() when its
+  /// `goal` port is absent. Map frame. Left unset (nullopt) outside an
+  /// active GOTO. Dropped once current_command is no longer COMMAND_GOTO.
+  std::optional<geometry_msgs::msg::PoseStamped> goto_target_pose;
+  /// How the current GOTO ended, as recorded by SetGotoOutcome right before its
+  /// terminal status (goto_outcome.hpp). Cleared when a GOTO is accepted, so it
+  /// always belongs to the latest GOTO. Read by the ~/goto action server.
+  std::string goto_outcome;
+  /// True when the last tick ended with the tree parked in a rest branch;
+  /// required by ~/goto_pose. Computed after each tick (see GotoRestObserver).
+  bool tree_at_rest{false};
   /// Where TransitToStrip last FAILED to take the robot (map frame), if it did.
   /// FollowStrip consumes it to skip — not repeat — the identical transit to its
   /// first unit (field 2026-09-21: 53 s in TransitToStrip, then 43 s more in
@@ -1189,6 +1245,7 @@ inline void clearRecordedCoverageProgress(BTContext& ctx)
   ctx.area_plan_fingerprint.clear();
   ctx.completed_areas.clear();
   ctx.area_last_coverage.clear();
+  ctx.area_last_partial_poses.clear();
   ctx.coverage_plausibility_warning = false;
 }
 
@@ -1199,6 +1256,7 @@ inline void clearAreaCoverageProgress(BTContext& ctx, uint32_t area)
   ctx.area_resume_pose_index.erase(area);
   ctx.area_unit_progress.erase(area);
   ctx.area_last_coverage.erase(area);
+  ctx.area_last_partial_poses.erase(area);
   ctx.completed_areas.erase(area);
 }
 

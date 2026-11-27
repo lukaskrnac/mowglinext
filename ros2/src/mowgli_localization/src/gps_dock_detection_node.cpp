@@ -285,7 +285,17 @@ public:
                                                    rclcpp::QoS(1).reliable().transient_local(),
                                                    [this](std_msgs::msg::String::ConstSharedPtr msg)
                                                    {
-                                                     lidar_primary_ = msg->data == "lidar";
+                                                     const bool next = msg->data == "lidar";
+                                                     if (next != lidar_primary_)
+                                                     {
+                                                       lidar_primary_ = next;
+                                                       // Do not mix GPS-antenna and
+                                                       // LiDAR-base_footprint points in one fit.
+                                                       track_fit_.reset();
+                                                       last_fit_ = TrackFitResult{};
+                                                       last_blend_ = TrackBlend{};
+                                                       frozen_ = false;
+                                                     }
                                                    });
     lidar_pose_sub_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
         "/fusion_graph/lidar_pose",
@@ -364,7 +374,8 @@ private:
     update_detection(msg->pose.pose.position.x,
                      msg->pose.pose.position.y,
                      rclcpp::Time(msg->header.stamp),
-                     approach);
+                     approach,
+                     /*apply_gps_lever=*/true);
   }
 
   // LiDAR-primary counterpart of on_absolute_pose: /fusion_graph/lidar_pose is
@@ -381,16 +392,19 @@ private:
     update_detection(msg->pose.pose.position.x,
                      msg->pose.pose.position.y,
                      rclcpp::Time(msg->header.stamp),
-                     approach);
+                     approach,
+                     /*apply_gps_lever=*/false);
   }
 
   // Robot map position (RTK-Fixed GPS or gated LiDAR) -> odom-frame dock detection.
   // `stamp` pairs the sample with the odom pose; `approach` is the episode state
-  // from update_approach_state().
+  // from update_approach_state(); `apply_gps_lever` is true for navsat_to_absolute_pose
+  // (which subtracted the GPS antenna lever arm) and false for LiDAR base_footprint poses.
   void update_detection(double robot_map_x,
                         double robot_map_y,
                         const rclcpp::Time& stamp,
-                        bool approach)
+                        bool approach,
+                        bool apply_gps_lever)
   {
     // Inside the freeze radius: hold the detection for the rest of the approach.
     if (approach && frozen_)
@@ -425,19 +439,19 @@ private:
       }
     }
 
-    // Anchor on the ANTENNA, seen in both frames. navsat_to_absolute_pose
-    // subtracted R(fused map yaw)·lever from it; the fused map yaw is
-    // odom yaw + map→odom yaw, so adding the same term back recovers the
-    // measured antenna, free of the fused heading.
+    // For GPS, anchor on the ANTENNA, seen in both frames: navsat_to_absolute_pose
+    // subtracted R(fused map yaw)·lever from it; adding the same term back recovers
+    // the measured antenna, free of the fused heading. For LiDAR primary,
+    // /fusion_graph/lidar_pose is already base_footprint directly — do NOT add the
+    // GPS antenna lever arm, which would inject tf_delta yaw error into the fit.
     const double robot_yaw_odom = tf2::getYaw(robot_odom.getRotation());
-    const Vec2 lever = lever_arm();
+    const Vec2 lever = apply_gps_lever ? lever_arm() : Vec2{};
     const Vec2 lever_odom = rotate(lever, robot_yaw_odom);
     const Vec2 lever_map =
         rotate(lever, robot_yaw_odom + (have_tf_delta ? tf_delta : gate_.value()));
     const Vec2 antenna_odom{robot_odom.getOrigin().x() + lever_odom.x,
                             robot_odom.getOrigin().y() + lever_odom.y};
-    const Vec2 antenna_map{robot_map_x + lever_map.x,
-                           robot_map_y + lever_map.y};
+    const Vec2 antenna_map{robot_map_x + lever_map.x, robot_map_y + lever_map.y};
 
     // Δ = gate_.value() (stabilised TF Δ), replaced during the final approach by
     // the GPS track fit once the robot has travelled far enough.

@@ -28,8 +28,8 @@
 #include "ament_index_cpp/get_package_share_path.hpp"
 #include "behaviortree_cpp/behavior_tree.h"
 #include "behaviortree_cpp/loggers/bt_cout_logger.h"
-#include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "mowgli_behavior/action_nodes.hpp"
 #include "mowgli_behavior/battery_filter.hpp"
@@ -90,6 +90,11 @@ namespace mowgli_behavior
 /// battery_low_percent when an installed config inverts the two: resuming at
 /// or below the dock threshold re-docks on the next NeedsDocking tick.
 constexpr double kManualResumeMinMarginPct = 5.0;
+
+/// Maximum age [s] of a /fusion_graph/lidar_pose sample for LiDAR-primary
+/// localization to count as fresh in both LocalizationHealth and the v1.7
+/// coverage precision gate.
+constexpr double kLidarPoseMaxAgeS = 1.0;
 
 // ---------------------------------------------------------------------------
 // BehaviorTreeNode
@@ -198,10 +203,51 @@ public:
     context_->coverage_precision_ready = [this]()
     {
       const auto ros_now = now();
+      const auto tf_current = [this, &ros_now]() -> bool
+      {
+        if (!context_->tf_buffer)
+          return false;
+        try
+        {
+          // Available at now (a static or future-dated chain), or the newest
+          // broadcast is recent: see PrecisionCoverageSupport::TfCurrent.
+          if (context_->tf_buffer->canTransform("map", "base_footprint", ros_now))
+            return true;
+          const auto latest =
+              context_->tf_buffer->lookupTransform("map", "base_footprint", tf2::TimePointZero);
+          return PrecisionCoverageSupport::TfCurrent(
+              rclcpp::Time(latest.header.stamp).nanoseconds(), ros_now.nanoseconds());
+        }
+        catch (const std::exception&)
+        {
+          return false;
+        }
+      };
+
+      // External LiDAR localization (fork): when fusion_graph runs on LiDAR
+      // as primary, OnGnss skips QueueGnss/RememberSupportFix so
+      // /fusion_graph/gnss_update never carries an applied fix (and GNSS may
+      // be absent). Gate coverage precision on fresh LiDAR localization,
+      // non-degraded localization health, and current map->base_footprint TF.
+      bool lidar_primary = false;
+      bool lidar_ready = false;
+      {
+        std::lock_guard<std::mutex> lock(context_->context_mutex);
+        lidar_primary = context_->lidar_primary;
+        if (lidar_primary)
+        {
+          const double age_s = ros_now.seconds() - context_->lidar_pose_rx_s;
+          lidar_ready = !context_->localization_degraded && context_->lidar_pose_rx_s > 0.0 &&
+                        age_s >= 0.0 && age_s < kLidarPoseMaxAgeS;
+        }
+      }
+      if (lidar_primary)
+        return lidar_ready && tf_current();
+
       return precision_support_->Ready(
           ros_now.nanoseconds(),
           steadyNowNs(),
-          [this, &ros_now](int64_t support_ns)
+          [this, &tf_current](int64_t support_ns)
           {
             if (!context_->tf_buffer)
               return false;
@@ -210,14 +256,7 @@ public:
               const rclcpp::Time support(support_ns, get_clock()->get_clock_type());
               if (!context_->tf_buffer->canTransform("map", "base_footprint", support))
                 return false;
-              // Available at now (a static or future-dated chain), or the newest
-              // broadcast is recent: see PrecisionCoverageSupport::TfCurrent.
-              if (context_->tf_buffer->canTransform("map", "base_footprint", ros_now))
-                return true;
-              const auto latest =
-                  context_->tf_buffer->lookupTransform("map", "base_footprint", tf2::TimePointZero);
-              return PrecisionCoverageSupport::TfCurrent(
-                  rclcpp::Time(latest.header.stamp).nanoseconds(), ros_now.nanoseconds());
+              return tf_current();
             }
             catch (const std::exception&)
             {
@@ -1303,9 +1342,9 @@ private:
     }
 
     const double now_s = ros_now.seconds();
-    constexpr double kLidarPoseMaxAgeS = 1.0;
+    const double lidar_age_s = now_s - context_->lidar_pose_rx_s;
     context_->lidar_localization_ok = context_->lidar_primary && context_->lidar_pose_rx_s > 0.0 &&
-                                      now_s - context_->lidar_pose_rx_s < kLidarPoseMaxAgeS;
+                                      lidar_age_s >= 0.0 && lidar_age_s < kLidarPoseMaxAgeS;
     loc_obs_.lidar_primary = context_->lidar_primary;
     loc_obs_.lidar_ok = context_->lidar_localization_ok;
 

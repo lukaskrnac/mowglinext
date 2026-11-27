@@ -355,6 +355,7 @@ void FusionGraphNode::OnLidarPose(geometry_msgs::msg::PoseWithCovarianceStamped:
     graph_->Initialize(gtsam::Pose2(mx, my, yaw0),
                        this->now().seconds(),
                        std::max(sigma, lidar_pose_sigma_floor_m_));
+    SynchronizeSupportEpoch();
     t_map_odom_anchor_valid_ = false;
     RCLCPP_INFO(get_logger(),
                 "fusion_graph: bootstrap init from /pcl_pose (LiDAR primary) at "
